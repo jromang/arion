@@ -1,0 +1,11 @@
+[package]
+name = "wdsp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Safe Rust wrapper around wdsp-sys"
+
+[dependencies]
+wdsp-sys.workspace = true
+thiserror.workspace = true
+tracing.workspace = true

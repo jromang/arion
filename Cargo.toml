@@ -1,0 +1,50 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/wdsp-sys",
+    "crates/wdsp",
+    "crates/hpsdr-protocol",
+    "crates/hpsdr-net",
+    "crates/thetis-audio",
+    "crates/thetis-core",
+    "crates/thetis-settings",
+    "crates/thetis-ui",
+    "apps/thetis",
+]
+
+[workspace.package]
+version = "0.0.1"
+edition = "2021"
+rust-version = "1.82"
+license = "GPL-2.0-or-later"
+repository = "https://github.com/jeff/thetis-rust"
+
+[workspace.dependencies]
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+arc-swap = "1"
+rtrb = "0.3"
+socket2 = { version = "0.6", features = ["all"] }
+cpal = "0.16"
+eframe = { version = "0.32", default-features = false, features = ["default_fonts", "wgpu", "wayland", "x11"] }
+egui = "0.32"
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+bytes = "1"
+
+# Internal crates
+wdsp-sys = { path = "crates/wdsp-sys" }
+wdsp = { path = "crates/wdsp" }
+hpsdr-protocol = { path = "crates/hpsdr-protocol" }
+hpsdr-net = { path = "crates/hpsdr-net" }
+thetis-audio = { path = "crates/thetis-audio" }
+thetis-core = { path = "crates/thetis-core" }
+thetis-settings = { path = "crates/thetis-settings" }
+thetis-ui = { path = "crates/thetis-ui" }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+debug = 1

@@ -1,0 +1,32 @@
+Fix eq_mults declaration mismatch between eq.h and eq.c
+
+Upstream eq.h declares eq_mults with 8 parameters (no Q) while eq.c defines
+it with 9 (extra `double* Q`). MSVC's relaxed prototype handling lets this
+through at /W4, but gcc and clang reject it as a conflicting declaration.
+
+The only live call site (calc_eq at eq.c:912) passes 9 arguments, so the
+declaration must be the 9-arg form. The commented-out RX/TX EQ property
+blocks at eq.c:1006-1224 still contain stale 8-arg calls but they live
+inside /* ... */ blocks and are never compiled.
+
+Upstream is archived (last commit 501e3f51 on 2026-04-05) so this patch is
+stable.
+
+--- a/eq.h
++++ b/eq.h
+@@ -110,7 +110,14 @@
+ 	fftw_plan CRev;
+ }eq, *EQ;
+
+-extern double* eq_mults (int size, int nfreqs, double* F, double* G, double samplerate, double scale, int ctfmode, int wintype);
++/* thetis-rust patch 0001: upstream eq.h declared 8 arguments but eq.c
++ * defines 9 (an extra `double* Q`). MSVC's relaxed prototype handling let
++ * it through; gcc rejects the conflict. The only live call site (calc_eq
++ * at eq.c:912) passes 9 arguments, so the declaration has been updated to
++ * match. The commented-out RX/TX EQ property blocks at eq.c:1006-1224
++ * still contain stale 8-arg calls but those are inside block comments and
++ * never compiled. */
++extern double* eq_mults (int size, int nfreqs, double* F, double* G, double* Q, double samplerate, double scale, int ctfmode, int wintype);
+
+ extern EQ create_eq (int run, int size, double *in, double *out, int nfreqs, double* F, double* G, int ctfmode, int wintype, int samplerate);
+

@@ -1,0 +1,22 @@
+[package]
+name = "hpsdr-net"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "UDP transport, discovery and session management for HPSDR radios"
+
+[dependencies]
+hpsdr-protocol.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+socket2.workspace = true
+rtrb.workspace = true
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+ctrlc = "3"
+
+[[example]]
+name = "rx_probe"
+path = "examples/rx_probe.rs"

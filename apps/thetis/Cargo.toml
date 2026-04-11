@@ -1,0 +1,17 @@
+[package]
+name = "thetis"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Thetis — cross-platform SDR control application"
+
+[[bin]]
+name = "thetis"
+path = "src/main.rs"
+
+[dependencies]
+thetis-ui.workspace = true
+thetis-core.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

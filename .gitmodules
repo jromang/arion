@@ -1,0 +1,3 @@
+[submodule "thetis-upstream"]
+	path = thetis-upstream
+	url = https://github.com/ramdor/Thetis.git

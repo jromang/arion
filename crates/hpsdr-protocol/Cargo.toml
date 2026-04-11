@@ -1,0 +1,9 @@
+[package]
+name = "hpsdr-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "HPSDR Protocol 1 packet encoding/decoding (Metis/Hermes/HermesLite 2)"
+
+[dependencies]
+thiserror.workspace = true
