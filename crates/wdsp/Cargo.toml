@@ -9,3 +9,4 @@ description = "Safe Rust wrapper around wdsp-sys"
 wdsp-sys.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+directories.workspace = true

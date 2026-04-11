@@ -16,6 +16,7 @@ tracing.workspace = true
 arc-swap.workspace = true
 rtrb.workspace = true
 rustfft = "6"
+thread-priority = "3"
 
 [dev-dependencies]
 tracing-subscriber = { workspace = true }

@@ -75,6 +75,16 @@ pub struct RadioConfig {
     pub volume: f32,
     /// Audio output device name. `None` uses the system default.
     pub audio_device: Option<String>,
+    /// Whether to prime the FFTW wisdom cache before opening the
+    /// WDSP channel.
+    ///
+    /// The user-facing `thetis` binary should leave this at `true` so
+    /// subsequent runs start instantly. Integration tests against the
+    /// loopback [`hpsdr_net::MockHl2`] should set it to `false` —
+    /// when the cache is cold, `WDSPwisdom` rebuilds the entire plan
+    /// table (sizes 64..262144) which easily takes 10+ minutes and
+    /// makes the test suite unusable on CI.
+    pub prime_wisdom: bool,
 }
 
 impl Default for RadioConfig {
@@ -85,6 +95,7 @@ impl Default for RadioConfig {
             mode:          Mode::Usb,
             volume:        0.5,
             audio_device:  None,
+            prime_wisdom:  true,
         }
     }
 }
@@ -176,6 +187,26 @@ impl Radio {
     /// 5. Set the initial frequency via [`Session::set_rx1_frequency`].
     pub fn start(config: RadioConfig) -> anyhow::Result<Self> {
         tracing::info!(?config, "starting Radio");
+
+        // --- Prime FFTW wisdom before opening any WDSP channel ------
+        //
+        // Best-effort: if the cache dir is unavailable, or if the
+        // import returns an error, we just continue and pay the slow
+        // plan-build cost once. Phase A already did that.
+        //
+        // On cache miss, `wdsp::prime_wisdom_default` rebuilds the full
+        // plan table (~10 minutes). That's slower than phase A's lazy
+        // behaviour on the very first run but makes every subsequent
+        // run instantaneous, which is the only trade-off that matters
+        // for daily use. Tests against the loopback mock opt out via
+        // `config.prime_wisdom = false`.
+        if config.prime_wisdom {
+            match wdsp::prime_wisdom_default() {
+                Ok(Some(status)) => tracing::info!(?status, "FFTW wisdom primed"),
+                Ok(None) => tracing::debug!("no wisdom cache dir, skipping"),
+                Err(e) => tracing::warn!(error = %e, "wisdom prime failed, continuing"),
+            }
+        }
 
         // --- Network session ----------------------------------------
         let session_config = SessionConfig {
@@ -381,6 +412,23 @@ fn dsp_loop(
     in_size:     usize,
     initial_volume: f32,
 ) {
+    // Upgrade this thread to a realtime scheduling class so scheduler
+    // jitter under load can't cause audio underruns. Needs
+    // `CAP_SYS_NICE` or `RLIMIT_RTPRIO` on Linux (`@audio` group +
+    // `/etc/security/limits.d/audio.conf` is the usual setup). On
+    // failure we just log and continue — the ring buffers in the
+    // pipeline are generous enough that SCHED_OTHER works fine on an
+    // idle machine.
+    use thread_priority::{set_current_thread_priority, ThreadPriority};
+    match set_current_thread_priority(ThreadPriority::Max) {
+        Ok(()) => tracing::info!("DSP thread running at max RT priority"),
+        Err(e) => tracing::warn!(
+            error = ?e,
+            "could not raise DSP thread priority \
+             (missing CAP_SYS_NICE / RLIMIT_RTPRIO?), continuing at default"
+        ),
+    }
+
     // Pre-allocate the WDSP exchange buffers — fexchange0 reads/writes
     // these in place so we want them stable for the lifetime of the loop.
     let mut wdsp_in  = vec![0.0_f64; 2 * in_size];
@@ -592,8 +640,9 @@ mod tests {
             radio_addr: mock.address(),
             rx1_frequency: 7_074_000,
             mode: Mode::Usb,
-            volume: 0.0, // silence — don't blast the test runner's speakers
+            volume: 0.0,          // silence — don't blast the test runner's speakers
             audio_device: None,
+            prime_wisdom: false,  // skip the FFTW plan table rebuild (~10 min)
         };
 
         // If there's no default output device, the Radio can't start.

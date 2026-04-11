@@ -8,7 +8,7 @@
 
 #![allow(non_upper_case_globals, non_camel_case_types, non_snake_case)]
 
-use std::os::raw::{c_double, c_float, c_int};
+use std::os::raw::{c_char, c_double, c_float, c_int};
 
 // --- Constants mirrored from comm.h -----------------------------------
 
@@ -164,6 +164,37 @@ unsafe extern "C" {
 
     /// Copy the latest pixel frame out of an analyzer instance.
     pub fn GetPixels(disp: c_int, pixout: c_int, pix: *mut c_float, flag: *mut c_int);
+}
+
+// --- Wisdom / FFTW plan cache -----------------------------------------
+//
+// Upstream `wisdom.c` pre-computes every FFT plan WDSP might ever need
+// (sizes 64..MAX_WISDOM_SIZE = 262144, forward and backward, complex and
+// real) and serialises them to a single file via FFTW's wisdom mechanism.
+//
+// The heavy lifting is hidden behind one exported function —
+// `WDSPwisdom(directory)` — that either imports an existing
+// `wdspWisdom00` file from `directory` or, if absent, rebuilds the full
+// table (slow: 30s+ on first run) and exports it. Subsequent calls find
+// the file and return immediately.
+//
+// **Important**: `directory` must end with the platform path separator;
+// upstream does a plain `strcat` with the filename. The Rust wrapper in
+// [`wdsp`](../../wdsp) takes care of that.
+
+unsafe extern "C" {
+    /// Prime (or rebuild) the FFTW wisdom cache.
+    ///
+    /// Returns `0` if wisdom was imported from the existing file and `1`
+    /// if the cache was rebuilt from scratch. A `1` return on the first
+    /// run is normal; subsequent runs should always return `0`.
+    pub fn WDSPwisdom(directory: *const c_char) -> c_int;
+
+    /// Human-readable status line set by the last (or in-progress) call
+    /// to `WDSPwisdom`. Useful for a "building FFT plans…" progress
+    /// label in the UI. The returned pointer is owned by WDSP's global
+    /// `static char status[128]` — do not free.
+    pub fn wisdom_get_status() -> *mut c_char;
 }
 
 #[cfg(test)]

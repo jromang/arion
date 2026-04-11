@@ -96,6 +96,7 @@ fn main() -> Result<()> {
         mode,
         volume:        0.25,
         audio_device:  std::env::var("AUDIO_DEVICE").ok(),
+        prime_wisdom:  true,
     })?;
 
     // ---- Ctrl+C handler -----------------------------------------------

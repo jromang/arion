@@ -228,6 +228,37 @@ static inline void *_aligned_malloc(size_t size, size_t alignment) {
 static inline void _aligned_free(void *p) { free(p); }
 
 /* --------------------------------------------------------------------- */
+/*  Console + freopen_s (used by wisdom.c for MSVC-style console output) */
+/* --------------------------------------------------------------------- */
+
+/* Upstream `wisdom.c` pops up a Win32 console window, redirects stdout
+ * into it with `freopen_s`, then prints FFT plan progress while WDSPwisdom
+ * runs. On POSIX stdout already works and we don't want a popup, so these
+ * are all no-ops. `freopen_s` is MSVC's secure-variant that writes the
+ * reopened FILE* into an out parameter; we just hand back the original
+ * stream unchanged. */
+#include <stdio.h>
+#ifndef ERRNO_T_DEFINED
+#  define ERRNO_T_DEFINED
+typedef int errno_t;
+#endif
+
+static inline BOOL AllocConsole(void) { return TRUE; }
+static inline BOOL FreeConsole(void)  { return TRUE; }
+static inline errno_t freopen_s(FILE **out_stream, const char *path,
+                                const char *mode, FILE *stream) {
+    (void)path; (void)mode;
+    if (out_stream) *out_stream = stream;
+    return 0;
+}
+
+/* `strcpy_s` / `strncat_s` / `sprintf_s` — only used in a few places in
+ * upstream; they behave like their non-`_s` cousins for our purposes. */
+#ifndef sprintf_s
+#  define sprintf_s(buf, size, fmt, ...) snprintf((buf), (size), (fmt), ##__VA_ARGS__)
+#endif
+
+/* --------------------------------------------------------------------- */
 /*  Sleep                                                                  */
 /* --------------------------------------------------------------------- */
 

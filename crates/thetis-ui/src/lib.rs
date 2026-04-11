@@ -108,6 +108,7 @@ impl ThetisApp {
             mode:          self.mode,
             volume:        self.volume,
             audio_device:  None,
+            prime_wisdom:  true,
         };
 
         match Radio::start(config) {

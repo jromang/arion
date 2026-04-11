@@ -23,6 +23,7 @@ repository = "https://github.com/jeff/thetis-rust"
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
+directories = "5"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 arc-swap = "1"
 rtrb = "0.3"

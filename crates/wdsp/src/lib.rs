@@ -29,6 +29,9 @@
 // checked by the caller". Downstream crates (`thetis-core`, the UI app)
 // never need `unsafe` themselves.
 
+pub mod wisdom;
+pub use wisdom::{default_cache_dir, prime as prime_wisdom, prime_default as prime_wisdom_default, WisdomError, WisdomStatus};
+
 use std::os::raw::c_int;
 
 use wdsp_sys as sys;
