@@ -251,8 +251,13 @@ impl Radio {
         );
 
         // --- Prime FFTW wisdom before opening any WDSP channel ------
+        //
+        // Uses the embedded-blob path so a fresh install (no
+        // user-local `wdspWisdom00`) gets seeded with the pre-built
+        // wisdom file at compile time. Without it, FFTW would spend
+        // 1–10 minutes building plans on the very first launch.
         if config.prime_wisdom {
-            match wdsp::prime_wisdom_default() {
+            match wdsp::prime_wisdom_with_embedded_default() {
                 Ok(Some(status)) => tracing::info!(?status, "FFTW wisdom primed"),
                 Ok(None) => tracing::debug!("no wisdom cache dir, skipping"),
                 Err(e) => tracing::warn!(error = %e, "wisdom prime failed, continuing"),

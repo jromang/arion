@@ -30,7 +30,10 @@
 // never need `unsafe` themselves.
 
 pub mod wisdom;
-pub use wisdom::{default_cache_dir, prime as prime_wisdom, prime_default as prime_wisdom_default, WisdomError, WisdomStatus};
+pub use wisdom::{
+    default_cache_dir, prime as prime_wisdom, prime_default as prime_wisdom_default,
+    prime_with_embedded_default as prime_wisdom_with_embedded_default, WisdomError, WisdomStatus,
+};
 
 use std::os::raw::c_int;
 

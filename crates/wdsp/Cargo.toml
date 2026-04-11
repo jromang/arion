@@ -10,3 +10,6 @@ wdsp-sys.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 directories.workspace = true
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
