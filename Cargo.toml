@@ -35,17 +35,22 @@ cpal = "0.16"
 #
 # IMPORTANT: eframe's "wgpu" feature pulls wgpu in with only the `wgsl`
 # cargo feature, which compiles *no* native backend. `thetis-ui` adds a
-# direct `wgpu = "25"` dep with default features to enable vulkan /
+# direct `wgpu = "29"` dep with default features to enable vulkan /
 # metal / dx12 / gles per platform — Cargo unifies the feature sets so
 # eframe ends up using a properly-configured wgpu.
-eframe = { version = "0.32", default-features = false, features = [
+#
+# Version alignment: eframe 0.34 → wgpu 29 → knows about the Vulkan 1.4
+# `VK_PRESENT_MODE_FIFO_LATEST_READY_EXT` enum that Mesa 26 advertises.
+# wgpu 25 logs a warn every frame about the unrecognised value; the
+# bump silences it at the source instead of filtering.
+eframe = { version = "0.34", default-features = false, features = [
     "default_fonts",
     "wgpu",
     "wayland",
     "x11",
     "accesskit",
 ] }
-egui = "0.32"
+egui = "0.34"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 bytes = "1"

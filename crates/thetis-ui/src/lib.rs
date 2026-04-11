@@ -172,21 +172,27 @@ impl ThetisApp {
 }
 
 impl eframe::App for ThetisApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         // Keep the UI animated even when the user isn't interacting —
         // the spectrum needs fresh draws at the DSP update rate (~23 Hz).
-        ctx.request_repaint_after(Duration::from_millis(40));
+        ui.ctx().request_repaint_after(Duration::from_millis(40));
 
-        egui::TopBottomPanel::top("top-bar").show(ctx, |ui| {
+        // eframe 0.34 changed `App::update(&Context)` to
+        // `App::ui(&mut Ui)`, marked `Panel::show` deprecated in
+        // favour of `show_inside`, and replaced the old
+        // `TopBottomPanel::top / ::bottom` constructors with
+        // `Panel::top / ::bottom` on the unified `Panel` type.
+        egui::Panel::top("top-bar").show_inside(ui, |ui| {
             self.draw_top_bar(ui);
         });
 
-        egui::TopBottomPanel::bottom("s-meter").show(ctx, |ui| {
+        egui::Panel::bottom("s-meter").show_inside(ui, |ui| {
             self.draw_s_meter(ui);
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            self.draw_main(ui, ctx);
+        let ctx = ui.ctx().clone();
+        egui::CentralPanel::default().show_inside(ui, |ui| {
+            self.draw_main(ui, &ctx);
         });
     }
 }

@@ -507,6 +507,87 @@ struct RxRuntime {
     mode:    Mode,
 }
 
+/// Raise the DSP thread to a real-time scheduling class so audio
+/// processing isn't preempted by the desktop compositor, browser
+/// tabs, or any other `SCHED_OTHER` load.
+///
+/// We bypass `thread-priority`'s default behaviour because it has
+/// a subtle footgun on Linux: `set_current_thread_priority` first
+/// calls `thread_schedule_policy()` which returns the thread's
+/// *current* policy (`SCHED_OTHER` by default), then asks the OS
+/// to change the priority under that policy — and `SCHED_OTHER`'s
+/// only valid static priority is zero. Result: `EPERM` / `EINVAL`
+/// for every non-trivial priority request, even when the user has
+/// `RLIMIT_RTPRIO` 99 properly configured via `@audio` group +
+/// `/etc/security/limits.d/`.
+///
+/// Instead, we explicitly request `SCHED_FIFO` with priority 80.
+/// Why 80: the Linux convention is to leave 90–99 to kernel RT
+/// threads (softirqs, irqbalance) and to audio-server critical
+/// paths like PipeWire's pulse bridge, so 80 is high enough to
+/// preempt the desktop but polite to the OS.
+///
+/// Fallbacks:
+///   1. `SCHED_FIFO` prio 80 — the real fix.
+///   2. `SCHED_RR` prio 80 — same effective priority, used if
+///      FIFO is unavailable (mostly a Windows thing).
+///   3. Log at `info!` level and keep running. The wide rtrb
+///      rings cover for most scheduler jitter on an idle machine.
+fn raise_dsp_thread_priority() {
+    use thread_priority::{
+        set_thread_priority_and_policy, thread_native_id, RealtimeThreadSchedulePolicy,
+        ThreadPriority, ThreadPriorityValue, ThreadSchedulePolicy,
+    };
+
+    // Linux SCHED_FIFO accepts priorities 1..=99. 80 is a common
+    // upper-middle value: high enough to preempt SCHED_OTHER, low
+    // enough to leave headroom for kernel RT threads at 90+.
+    const RT_PRIORITY: u8 = 80;
+
+    let native = thread_native_id();
+    let prio_value = ThreadPriorityValue::try_from(RT_PRIORITY)
+        .expect("80 fits in the valid ThreadPriorityValue range");
+
+    let fifo = ThreadSchedulePolicy::Realtime(RealtimeThreadSchedulePolicy::Fifo);
+    if set_thread_priority_and_policy(
+        native,
+        ThreadPriority::Crossplatform(prio_value),
+        fifo,
+    )
+    .is_ok()
+    {
+        tracing::info!(
+            priority = RT_PRIORITY,
+            "DSP thread running at SCHED_FIFO/{}",
+            RT_PRIORITY
+        );
+        return;
+    }
+
+    let rr = ThreadSchedulePolicy::Realtime(RealtimeThreadSchedulePolicy::RoundRobin);
+    if set_thread_priority_and_policy(
+        native,
+        ThreadPriority::Crossplatform(prio_value),
+        rr,
+    )
+    .is_ok()
+    {
+        tracing::info!(
+            priority = RT_PRIORITY,
+            "DSP thread running at SCHED_RR/{}",
+            RT_PRIORITY
+        );
+        return;
+    }
+
+    tracing::warn!(
+        "could not raise DSP thread priority: neither SCHED_FIFO nor \
+         SCHED_RR accepted. On Linux, join the `audio` group and ensure \
+         `/etc/security/limits.d/*-audio.conf` contains `@audio - rtprio 99`, \
+         then log out and back in."
+    );
+}
+
 /// Main DSP loop. Runs one thread for every WDSP channel we opened.
 ///
 /// Per buffer:
@@ -530,15 +611,7 @@ fn dsp_loop(
     center_freqs: [Arc<std::sync::atomic::AtomicU32>; MAX_RX],
     in_size:     usize,
 ) {
-    use thread_priority::{set_current_thread_priority, ThreadPriority};
-    match set_current_thread_priority(ThreadPriority::Max) {
-        Ok(()) => tracing::info!("DSP thread running at max RT priority"),
-        Err(e) => tracing::warn!(
-            error = ?e,
-            "could not raise DSP thread priority \
-             (missing CAP_SYS_NICE / RLIMIT_RTPRIO?), continuing at default"
-        ),
-    }
+    raise_dsp_thread_priority();
 
     // Per-RX exchange buffers.
     let mut wdsp_in:  Vec<Vec<f64>> = (0..num_rx).map(|_| vec![0.0; 2 * in_size]).collect();
