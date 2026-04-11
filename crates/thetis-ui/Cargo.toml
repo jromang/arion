@@ -11,3 +11,12 @@ eframe.workspace = true
 egui.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+arc-swap.workspace = true
+
+# Pulled in with default features so the native backends (vulkan /
+# metal / dx12 / gles) get compiled. eframe only enables the `wgsl`
+# feature on wgpu, which by itself leaves every backend out and
+# produces the "no wgpu backend feature" panic at Instance creation.
+# Cargo unifies our feature set with eframe's, so the resulting build
+# is a single wgpu crate with wgsl + the native backends.
+wgpu = "25"

@@ -45,11 +45,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver as MpscRx, Sender as MpscTx};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use arc_swap::ArcSwap;
 use hpsdr_net::{Session, SessionConfig, SessionStatus};
 use hpsdr_protocol::IqSample;
 use rtrb::Consumer;
+use rustfft::{num_complex::Complex32, Fft, FftPlanner};
 use thetis_audio::{AudioConfig, AudioOutput, AudioSink};
 use wdsp::{Channel as WdspChannel, Mode, RxConfig};
 
@@ -96,6 +98,51 @@ pub struct RadioStatus {
     pub audio_underruns: u64,
 }
 
+/// A frozen snapshot of everything the UI wants to render in one frame.
+///
+/// Published atomically from the DSP thread via [`arc_swap::ArcSwap`];
+/// the UI side loads the latest `Arc<Telemetry>` with a single
+/// lock-free read and can hold on to it for the rest of the frame
+/// without blocking the producer.
+#[derive(Debug, Clone)]
+pub struct Telemetry {
+    /// Log-magnitude FFT bins in dB, already `fftshift`ed so bin `0`
+    /// is the lowest frequency and bin `N-1` the highest. Length is
+    /// [`SPECTRUM_BINS`].
+    pub spectrum_bins_db: Vec<f32>,
+    /// Post-DSP audio RMS, in dB relative to full scale (0 dBFS = sine
+    /// at ±1.0). Exponentially smoothed for readable display.
+    pub s_meter_db: f32,
+    /// RX1 center frequency in Hz at the time this snapshot was taken.
+    pub center_freq_hz: u32,
+    /// Full spectral span covered by the FFT (= input sample rate).
+    pub span_hz: u32,
+    /// Monotonic timestamp of the last DSP frame. Lets the UI detect
+    /// a stalled pipeline.
+    pub last_update: Instant,
+}
+
+impl Default for Telemetry {
+    fn default() -> Self {
+        Telemetry {
+            spectrum_bins_db: vec![-140.0; SPECTRUM_BINS],
+            s_meter_db:       -140.0,
+            center_freq_hz:   0,
+            span_hz:          48_000,
+            last_update:      Instant::now(),
+        }
+    }
+}
+
+/// Fixed FFT size for the spectrum display. Matches the WDSP RX
+/// `in_size` so we can reuse the DSP thread's input buffer directly.
+pub const SPECTRUM_BINS: usize = 1024;
+
+/// How often we republish a spectrum snapshot. The DSP thread runs at
+/// ~47 buffers/sec (48 kHz / 1024 samples); refreshing the UI every
+/// other buffer ≈ 23 Hz is visually smooth without burning GPU.
+const SPECTRUM_UPDATE_INTERVAL: Duration = Duration::from_millis(40);
+
 /// Commands applied to a live radio from outside the DSP thread.
 #[derive(Debug, Clone, Copy)]
 enum DspCommand {
@@ -114,6 +161,8 @@ pub struct Radio {
     shutdown:    Arc<AtomicBool>,
     commands:    MpscTx<DspCommand>,
     samples_dsp: Arc<std::sync::atomic::AtomicU64>,
+    telemetry:   Arc<ArcSwap<Telemetry>>,
+    center_freq_hz: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl Radio {
@@ -158,10 +207,18 @@ impl Radio {
         let shutdown = Arc::new(AtomicBool::new(false));
         let samples_dsp = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let (command_tx, command_rx) = mpsc::channel::<DspCommand>();
+        let telemetry = Arc::new(ArcSwap::from_pointee(Telemetry {
+            center_freq_hz: config.rx1_frequency,
+            ..Telemetry::default()
+        }));
+        let center_freq_hz =
+            Arc::new(std::sync::atomic::AtomicU32::new(config.rx1_frequency));
 
         let dsp_thread = {
             let shutdown    = Arc::clone(&shutdown);
             let samples_dsp = Arc::clone(&samples_dsp);
+            let telemetry   = Arc::clone(&telemetry);
+            let center_freq = Arc::clone(&center_freq_hz);
             let volume      = config.volume;
             thread::Builder::new()
                 .name("thetis-dsp".into())
@@ -173,6 +230,8 @@ impl Radio {
                         command_rx,
                         shutdown,
                         samples_dsp,
+                        telemetry,
+                        center_freq,
                         in_size,
                         volume,
                     )
@@ -186,15 +245,28 @@ impl Radio {
             shutdown,
             commands:    command_tx,
             samples_dsp,
+            telemetry,
+            center_freq_hz,
         })
     }
 
+    /// Shared handle to the latest telemetry snapshot. The UI calls
+    /// `radio.telemetry().load()` once per frame; the DSP thread
+    /// publishes new snapshots via
+    /// [`arc_swap::ArcSwap::store`].
+    pub fn telemetry(&self) -> Arc<ArcSwap<Telemetry>> {
+        Arc::clone(&self.telemetry)
+    }
+
     /// Ask the radio to retune RX1. Propagated to the radio on the next
-    /// control thread tick.
+    /// TX keep-alive tick. Also bumps the atomic the DSP thread reads
+    /// when stamping spectrum snapshots so the UI frequency label
+    /// updates immediately without waiting for the next RX packet.
     pub fn set_frequency(&self, hz: u32) -> anyhow::Result<()> {
         if let Some(s) = &self.session {
             s.set_rx1_frequency(hz)?;
         }
+        self.center_freq_hz.store(hz, Ordering::Release);
         Ok(())
     }
 
@@ -290,6 +362,10 @@ fn dummy_consumer() -> Consumer<IqSample> {
 /// - Calls WDSP `fexchange0` to get `in_size` complex output samples.
 /// - Takes the real part (I) of each output complex and pushes it to the
 ///   audio sink as mono f32, scaled by `volume`.
+/// - Computes an FFT of the input IQ buffer for the UI spectrum display,
+///   rate-limited to [`SPECTRUM_UPDATE_INTERVAL`] to avoid wasting cycles
+///   on frames the UI won't draw.
+/// - Computes an RMS-based S-meter value over the DSP output.
 /// - Services [`DspCommand`]s between buffers.
 /// - Exits when `shutdown` flips.
 #[allow(clippy::too_many_arguments)]
@@ -300,6 +376,8 @@ fn dsp_loop(
     commands:    MpscRx<DspCommand>,
     shutdown:    Arc<AtomicBool>,
     samples_dsp: Arc<std::sync::atomic::AtomicU64>,
+    telemetry:   Arc<ArcSwap<Telemetry>>,
+    center_freq_hz: Arc<std::sync::atomic::AtomicU32>,
     in_size:     usize,
     initial_volume: f32,
 ) {
@@ -314,6 +392,28 @@ fn dsp_loop(
 
     let mut gathered = 0_usize;     // number of complex samples currently buffered in wdsp_in
     let mut volume   = initial_volume;
+
+    // --- Spectrum analysis state --------------------------------------
+    //
+    // rustfft plans are cheap to create once, expensive to rebuild. We
+    // plan a single forward FFT at the fixed DSP buffer size and reuse
+    // it for the lifetime of the thread. The Hann window is also
+    // precomputed.
+    let mut planner = FftPlanner::<f32>::new();
+    let fft: Arc<dyn Fft<f32>> = planner.plan_fft_forward(in_size);
+    let hann: Vec<f32> = (0..in_size)
+        .map(|n| {
+            let x = std::f32::consts::PI * (n as f32) / ((in_size - 1) as f32);
+            x.sin().powi(2) // equivalent to 0.5 * (1 - cos(2πn/(N-1)))
+        })
+        .collect();
+    let fft_norm = 1.0_f32 / (in_size as f32).sqrt();
+    let mut fft_buf: Vec<Complex32> = vec![Complex32::new(0.0, 0.0); in_size];
+    let mut fft_scratch: Vec<Complex32> =
+        vec![Complex32::new(0.0, 0.0); fft.get_inplace_scratch_len()];
+
+    let mut smoothed_s_meter_db: f32 = -140.0;
+    let mut last_spectrum_push = Instant::now() - SPECTRUM_UPDATE_INTERVAL;
 
     while !shutdown.load(Ordering::Acquire) {
         // 1. Apply any pending commands before starting a new buffer.
@@ -359,8 +459,11 @@ fn dsp_loop(
 
         // 4. Extract mono audio (real part of complex output) and push.
         //    Apply post-DSP volume on the way through.
+        let mut sum_sq = 0.0_f32;
         for (n, slot) in audio_burst.iter_mut().enumerate() {
-            *slot = (wdsp_out[2 * n] as f32) * volume;
+            let sample = (wdsp_out[2 * n] as f32) * volume;
+            *slot = sample;
+            sum_sq += sample * sample;
         }
         let pushed = audio.push_slice(&audio_burst);
         if pushed < audio_burst.len() {
@@ -369,9 +472,91 @@ fn dsp_loop(
                 "audio ring full, dropping samples"
             );
         }
+
+        // 5. S-meter: RMS → dBFS, exponentially smoothed.
+        //
+        //    `smoothing = 0.2` gives a ~200 ms time constant at 48 kHz /
+        //    1024-sample buffers, which feels right for a needle-style
+        //    meter. Raw `peak_db` at -140 dBFS is the floor.
+        let rms   = (sum_sq / in_size as f32).sqrt();
+        let raw_db = if rms > 1.0e-7 {
+            20.0 * rms.log10()
+        } else {
+            -140.0
+        };
+        smoothed_s_meter_db = 0.8 * smoothed_s_meter_db + 0.2 * raw_db;
+
+        // 6. Spectrum: rate-limit to SPECTRUM_UPDATE_INTERVAL.
+        if last_spectrum_push.elapsed() >= SPECTRUM_UPDATE_INTERVAL {
+            compute_spectrum(
+                &wdsp_in,
+                &hann,
+                fft_norm,
+                &fft,
+                &mut fft_buf,
+                &mut fft_scratch,
+            );
+            let bins_db = spectrum_to_db(&fft_buf);
+
+            // Publish the snapshot. `ArcSwap::store` is lock-free on
+            // the reader side and a single CAS on this side.
+            let snapshot = Arc::new(Telemetry {
+                spectrum_bins_db: bins_db,
+                s_meter_db:       smoothed_s_meter_db,
+                center_freq_hz:   center_freq_hz.load(Ordering::Acquire),
+                span_hz:          48_000,
+                last_update:      Instant::now(),
+            });
+            telemetry.store(snapshot);
+
+            last_spectrum_push = Instant::now();
+        }
     }
 
     tracing::debug!("DSP loop exiting");
+}
+
+/// Fill `fft_buf` with a windowed copy of the interleaved input IQ
+/// buffer (I at even indices, Q at odd) and run the forward FFT
+/// in-place.
+fn compute_spectrum(
+    wdsp_in:  &[f64],
+    hann:     &[f32],
+    norm:     f32,
+    fft:      &Arc<dyn Fft<f32>>,
+    fft_buf:  &mut [Complex32],
+    scratch:  &mut [Complex32],
+) {
+    debug_assert_eq!(wdsp_in.len(),    2 * fft_buf.len());
+    debug_assert_eq!(hann.len(),       fft_buf.len());
+
+    for (n, slot) in fft_buf.iter_mut().enumerate() {
+        let i = wdsp_in[2 * n]     as f32;
+        let q = wdsp_in[2 * n + 1] as f32;
+        let w = hann[n] * norm;
+        *slot = Complex32::new(i * w, q * w);
+    }
+    fft.process_with_scratch(fft_buf, scratch);
+}
+
+/// Convert FFT bins to log-magnitude dB, `fftshift`ed so bin 0 is the
+/// lowest frequency (negative Nyquist) and bin N-1 the highest.
+fn spectrum_to_db(fft_buf: &[Complex32]) -> Vec<f32> {
+    let n    = fft_buf.len();
+    let half = n / 2;
+    let mut out = vec![0.0_f32; n];
+    for (k, slot) in out.iter_mut().enumerate() {
+        // rustfft outputs bins 0..N, where 0..N/2 are positive freqs
+        // and N/2..N are negative freqs. Shift so negative comes first.
+        let src = if k < half { k + half } else { k - half };
+        let mag = fft_buf[src].norm();
+        *slot = if mag > 1.0e-7 {
+            20.0 * mag.log10()
+        } else {
+            -140.0
+        };
+    }
+    out
 }
 
 #[cfg(test)]

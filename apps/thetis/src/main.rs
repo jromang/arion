@@ -1,6 +1,6 @@
-use anyhow::Result;
+//! Thetis-rs entry point: start tracing, hand off to the egui app.
 
-fn main() -> Result<()> {
+fn main() -> eframe::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
@@ -8,6 +8,6 @@ fn main() -> Result<()> {
         )
         .init();
 
-    tracing::info!("thetis phase A skeleton — UI not yet wired (task A.7)");
-    Ok(())
+    tracing::info!("starting thetis-rs UI");
+    thetis_ui::run()
 }
