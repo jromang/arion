@@ -6,9 +6,18 @@ license.workspace = true
 description = "Raw FFI bindings to Warren Pratt's WDSP library"
 links = "wdsp"
 
+[features]
+# Noise reduction (NR3 RNNoise + NR4 libspecbleach). Enabled by
+# default. Disabling the feature skips compiling the vendored NR
+# libraries and falls back to the no-op stubs in
+# `shim/wdsp_nr_stubs.c`; useful for a minimum-dependency build or
+# for debugging the WDSP pipeline in isolation.
+default = ["nr"]
+nr = []
+
 [build-dependencies]
-cc = "1.2"
-pkg-config = "0.3"
+cc    = "1.2"
+cmake = "0.1"
 
 [lib]
 doctest = false

@@ -1,3 +1,11 @@
 [submodule "thetis-upstream"]
 	path = thetis-upstream
 	url = https://github.com/ramdor/Thetis.git
+[submodule "crates/wdsp-sys/vendor-nr/rnnoise"]
+	path = crates/wdsp-sys/vendor-nr/rnnoise
+	url = https://github.com/xiph/rnnoise.git
+	branch = master
+[submodule "crates/wdsp-sys/vendor-nr/libspecbleach"]
+	path = crates/wdsp-sys/vendor-nr/libspecbleach
+	url = https://github.com/lucianodato/libspecbleach.git
+	branch = main

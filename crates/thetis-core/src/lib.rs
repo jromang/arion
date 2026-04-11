@@ -533,6 +533,22 @@ struct RxRuntime {
 ///      FIFO is unavailable (mostly a Windows thing).
 ///   3. Log at `info!` level and keep running. The wide rtrb
 ///      rings cover for most scheduler jitter on an idle machine.
+#[cfg(windows)]
+fn raise_dsp_thread_priority() {
+    // Windows doesn't expose SCHED_FIFO — the closest equivalent is
+    // THREAD_PRIORITY_TIME_CRITICAL, which `thread_priority::Max`
+    // maps onto. That's more than enough to preempt desktop apps
+    // under normal load and keeps us off the MMCSS "Pro Audio" tier
+    // (reserved for WASAPI exclusive-mode audio).
+    use thread_priority::{set_current_thread_priority, ThreadPriority};
+
+    match set_current_thread_priority(ThreadPriority::Max) {
+        Ok(()) => tracing::info!("DSP thread running at THREAD_PRIORITY_TIME_CRITICAL"),
+        Err(e) => tracing::warn!("could not raise DSP thread priority on Windows: {e:?}"),
+    }
+}
+
+#[cfg(unix)]
 fn raise_dsp_thread_priority() {
     use thread_priority::{
         set_thread_priority_and_policy, thread_native_id, RealtimeThreadSchedulePolicy,

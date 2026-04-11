@@ -29,10 +29,13 @@ thetis-upstream/    Submodule : code source Thetis d'origine (référence)
 ## Dépendances système
 
 - Rust stable ≥ 1.82
-- FFTW3 (single & double precision) — `libfftw3-dev` / `fftw` selon la distro
 - Un runtime audio supporté par [cpal](https://crates.io/crates/cpal) : ALSA (Linux),
   CoreAudio (macOS), WASAPI (Windows)
 - Pour l'UI : bibliothèques Vulkan/OpenGL via wgpu
+
+FFTW3, rnnoise et libspecbleach sont **vendorés** dans `crates/wdsp-sys/vendor*/`
+et compilés par le `build.rs` via les crates `cmake` et `cc`. Aucune lib C
+externe n'est nécessaire — `pkg-config` n'est plus requis.
 
 ## Build
 
@@ -41,6 +44,32 @@ git clone --recurse-submodules <url> thetis-rust
 cd thetis-rust
 cargo build --workspace
 ```
+
+### Cross-compile Linux → Windows
+
+Depuis une machine Linux, on peut produire un `thetis.exe` natif
+x86_64 (PE32+) sans toucher à Windows :
+
+```sh
+# 1. Installer le compilateur C cross (Arch : pacman -S mingw-w64-gcc)
+# 2. Ajouter la cible Rust
+rustup target add x86_64-pc-windows-gnu
+# 3. Compiler. Sur les distros où `/usr/bin/rustc` shadow rustup (Arch
+#    notamment), forcer le PATH vers le rustc rustup-managed qui
+#    connaît la sysroot windows-gnu :
+PATH="$HOME/.cargo/bin:$PATH" \
+  cargo build --target x86_64-pc-windows-gnu --release -p thetis
+```
+
+L'artefact final est `target/x86_64-pc-windows-gnu/release/thetis.exe`.
+`wdsp-sys/build.rs` détecte le target et :
+- construit FFTW 3.3.10 avec `WITH_OUR_MALLOC` (mingw n'a ni `posix_memalign`
+  ni `memalign`),
+- injecte `shim-win/Windows.h` pour corriger la casse (WDSP inclut
+  `<Windows.h>`, w32api fournit `<windows.h>`),
+- ne compile pas le shim POSIX (pthread / pseudo-Win32), le vrai w32api
+  de mingw fournissant `CRITICAL_SECTION`, `_beginthread`, etc.
+- linke contre `avrt` + `winmm` (MMCSS + timeBeginPeriod).
 
 ## Licence
 

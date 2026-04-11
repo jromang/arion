@@ -1,0 +1,38 @@
+Migrate rnnr.c to rnnoise's current `rnnoise_model_from_file` API
+
+Upstream Thetis' rnnr.c was written against an older rnnoise that
+exported `rnnoise_model_from_filename(const char*)`. Current
+rnnoise master dropped that wrapper in favour of the lower-level
+`rnnoise_model_from_file(FILE*)`, which takes a caller-opened
+stdio handle. The change was part of a broader symbol-rename
+cleanup (`use rnn_ prefix for non-exported symbols`, commit
+6cbfd53) — the underlying file format stays identical.
+
+The fix is a 7-line conversion at the single call site in
+`RNNRloadModel()`: fopen the file, call the new API, fclose.
+Nothing else in rnnr.c touches the rnnoise surface so this is the
+only mismatch.
+
+We intentionally vendor rnnoise at its current upstream HEAD
+rather than pinning v0.2 (Aug 2022) so that future phase-B
+improvements to the NN model land automatically. Upstream WDSP
+itself can't keep up because it's archived — hence this small
+patch on our side.
+
+--- a/rnnr.c
++++ b/rnnr.c
+@@ -368,7 +368,13 @@ void RNNRloadModel(const char* file_path)
+     // try to load
+     if (file_path && file_path[0])
+     {
+-        _rnnr_model = rnnoise_model_from_filename(file_path);
++        FILE* fp = fopen(file_path, "rb");
++        if (fp)
++        {
++            _rnnr_model = rnnoise_model_from_file(fp);
++            fclose(fp);
++        }
++        // If fopen fails, _rnnr_model stays NULL (baked-in model).
+     }
+
+     // recreate any we had created previously and restart if needed
