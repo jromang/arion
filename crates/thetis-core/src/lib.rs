@@ -209,14 +209,22 @@ impl Radio {
         }
 
         // --- Network session ----------------------------------------
-        let session_config = SessionConfig {
+        //
+        // Phase B.2.2: the Session now returns one consumer per RX,
+        // but `thetis-core` is still single-RX; B.2.3 will extend
+        // `Radio` to own multiple WDSP channels. For now we just pop
+        // the first consumer and discard any others — RX2 gets turned
+        // on wholesale once the orchestration catches up.
+        let mut session_config = SessionConfig {
             radio_addr:        config.radio_addr,
-            rx1_frequency:     config.rx1_frequency,
             sample_rate_index: 0, // 48 kHz
             ring_capacity:     32_768,
             start_timeout:     Duration::from_secs(2),
+            ..SessionConfig::default()
         };
-        let (session, mut iq_consumer) = Session::start(session_config)?;
+        session_config.rx_frequencies[0] = config.rx1_frequency;
+        let (session, mut consumers) = Session::start(session_config)?;
+        let mut iq_consumer = consumers.remove(0);
 
         // --- WDSP channel -------------------------------------------
         let rx_cfg = RxConfig {

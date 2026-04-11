@@ -125,14 +125,16 @@ fn main() -> anyhow::Result<()> {
         freq = freq_hz as f64 / 1.0e6,
     );
 
-    let config = SessionConfig {
+    let mut config = SessionConfig {
         radio_addr:        target.addr,
-        rx1_frequency:     freq_hz,
         sample_rate_index: 0, // 48 kHz
         ring_capacity:     32_768,
         start_timeout:     Duration::from_secs(2),
+        ..SessionConfig::default()
     };
-    let (session, consumer) = Session::start(config)?;
+    config.rx_frequencies[0] = freq_hz;
+    let (session, mut consumers) = Session::start(config)?;
+    let consumer = consumers.pop().expect("at least one consumer");
 
     // ---- Ctrl+C handler ------------------------------------------------
     let keep_going = Arc::new(AtomicBool::new(true));

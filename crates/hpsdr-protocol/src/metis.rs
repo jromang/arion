@@ -1,7 +1,10 @@
 //! 1032-byte Metis data packets and their two 512-byte USB frames.
 
 use crate::control::CommandFrame;
-use crate::sample::{IqSample, SAMPLES_PER_USB_FRAME, SAMPLE_WIRE_LEN};
+use crate::sample::{
+    sample_wire_stride, samples_per_usb_frame_n, IqSample, MultiIqSample,
+    SAMPLES_PER_USB_FRAME, SAMPLE_WIRE_LEN,
+};
 use crate::ProtocolError;
 
 /// Full size of a Metis data packet on the wire.
@@ -136,7 +139,10 @@ impl UsbFrame {
         out[8..].copy_from_slice(&self.samples);
     }
 
-    /// Walk the 63 IQ samples carried by this frame without allocating.
+    /// Walk the 63 IQ samples carried by this frame assuming `num_rx == 1`.
+    /// Fast path with a fixed stride — prefer this when you know the
+    /// session is single-RX. For multi-RX sessions use
+    /// [`Self::iter_iq_multi`].
     pub fn iq_samples(&self) -> impl Iterator<Item = IqSample> + '_ {
         (0..SAMPLES_PER_USB_FRAME).map(move |n| {
             let start = n * SAMPLE_WIRE_LEN;
@@ -146,14 +152,60 @@ impl UsbFrame {
         })
     }
 
-    /// Overwrite the 63 samples of this frame from an iterator. The
-    /// iterator must yield exactly `SAMPLES_PER_USB_FRAME` items; if it
-    /// yields fewer, the remaining bytes of the frame are zeroed.
+    /// Walk the samples carried by this frame, decoding them as
+    /// multi-RX samples. `num_rx` must match what the radio was
+    /// configured with in register 0 — if it disagrees, the decoded
+    /// values will be nonsense.
+    ///
+    /// Yields exactly [`samples_per_usb_frame_n(num_rx)`] items. Any
+    /// trailing unused bytes in the frame payload are ignored.
+    pub fn iter_iq_multi(
+        &self,
+        num_rx: usize,
+    ) -> impl Iterator<Item = MultiIqSample> + '_ {
+        let stride = sample_wire_stride(num_rx);
+        let count  = samples_per_usb_frame_n(num_rx);
+        (0..count).map(move |n| {
+            let start = n * stride;
+            MultiIqSample::from_bytes(&self.samples[start..start + stride], num_rx)
+        })
+    }
+
+    /// Overwrite the 63 samples of this frame from an iterator of
+    /// single-RX samples. The iterator must yield exactly
+    /// `SAMPLES_PER_USB_FRAME` items; if it yields fewer, the remaining
+    /// bytes of the frame are zeroed.
     pub fn fill_samples<I: IntoIterator<Item = IqSample>>(&mut self, it: I) {
         self.samples.fill(0);
         for (n, s) in it.into_iter().take(SAMPLES_PER_USB_FRAME).enumerate() {
             let start = n * SAMPLE_WIRE_LEN;
             self.samples[start..start + SAMPLE_WIRE_LEN].copy_from_slice(&s.to_bytes());
+        }
+    }
+
+    /// Overwrite the samples of this frame with multi-RX data at the
+    /// given receiver count. The iterator may yield fewer than
+    /// `samples_per_usb_frame_n(num_rx)` items; in that case the rest
+    /// of the frame is left zero.
+    ///
+    /// Every yielded sample's `num_rx` must match the `num_rx` argument
+    /// — mismatches are a programmer error.
+    pub fn fill_samples_multi<I: IntoIterator<Item = MultiIqSample>>(
+        &mut self,
+        num_rx: usize,
+        it: I,
+    ) {
+        let stride = sample_wire_stride(num_rx);
+        let count  = samples_per_usb_frame_n(num_rx);
+        self.samples.fill(0);
+        for (n, s) in it.into_iter().take(count).enumerate() {
+            debug_assert_eq!(
+                s.num_rx as usize, num_rx,
+                "MultiIqSample.num_rx {} doesn't match caller num_rx {}",
+                s.num_rx, num_rx,
+            );
+            let start = n * stride;
+            s.to_bytes(&mut self.samples[start..start + stride]);
         }
     }
 }
@@ -309,6 +361,52 @@ mod tests {
             MetisPacket::parse(&buf),
             Err(ProtocolError::Truncated { expected: 1032, got: 1031 })
         ));
+    }
+
+    #[test]
+    fn multi_rx_iter_roundtrip_num_rx_2() {
+        // Build a frame with 36 samples at num_rx=2 carrying a
+        // distinguishable pattern, encode it, decode via
+        // iter_iq_multi, and check that every sample comes back
+        // intact.
+        use crate::sample::{samples_per_usb_frame_n, MAX_RX};
+        let num_rx = 2;
+        let count  = samples_per_usb_frame_n(num_rx);
+        assert_eq!(count, 36);
+
+        let make_sample = |n: usize| {
+            let mut s = MultiIqSample {
+                num_rx: num_rx as u8,
+                mic:    n as i16,
+                ..MultiIqSample::default()
+            };
+            s.rx[0] = ((n as f32) / 1000.0, -(n as f32) / 1000.0);
+            s.rx[1] = ((n as f32) / 500.0,   (n as f32) / 2000.0);
+            s
+        };
+
+        let mut frame = UsbFrame::default();
+        frame.fill_samples_multi(num_rx, (0..count).map(make_sample));
+
+        let decoded: Vec<_> = frame.iter_iq_multi(num_rx).collect();
+        assert_eq!(decoded.len(), count);
+        for (n, got) in decoded.iter().enumerate() {
+            let expected = make_sample(n);
+            assert_eq!(got.num_rx, expected.num_rx);
+            assert_eq!(got.mic,    expected.mic);
+            for r in 0..num_rx {
+                assert!((got.rx[r].0 - expected.rx[r].0).abs() < 1e-4,
+                    "sample {n} rx{r}.i: got {} expected {}",
+                    got.rx[r].0, expected.rx[r].0);
+                assert!((got.rx[r].1 - expected.rx[r].1).abs() < 1e-4,
+                    "sample {n} rx{r}.q: got {} expected {}",
+                    got.rx[r].1, expected.rx[r].1);
+            }
+            // Slots past num_rx are zeroed.
+            for r in num_rx..MAX_RX {
+                assert_eq!(got.rx[r], (0.0, 0.0));
+            }
+        }
     }
 
     #[test]

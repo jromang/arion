@@ -65,7 +65,10 @@ pub mod sample;
 pub use control::{register, CommandFrame, ControlByte, StartCommand, StopCommand};
 pub use discovery::{DiscoveryRequest, DiscoveryReply, HpsdrModel};
 pub use metis::{Endpoint, MetisPacket, UsbFrame, METIS_PACKET_LEN, USB_FRAME_LEN};
-pub use sample::{IqSample, SAMPLES_PER_USB_FRAME};
+pub use sample::{
+    sample_wire_stride, samples_per_usb_frame_n, IqSample, MultiIqSample, MAX_RX,
+    SAMPLES_PER_USB_FRAME,
+};
 
 /// Errors produced by decoders in this crate. Encoders never fail.
 #[derive(Debug, thiserror::Error)]

@@ -43,19 +43,21 @@ fn session_start_receives_samples_and_stops_cleanly() {
     init_tracing();
     let mock = MockHl2::spawn().expect("spawn mock HL2");
 
-    let config = SessionConfig {
+    let mut config = SessionConfig {
         radio_addr: mock.address(),
-        rx1_frequency: 7_074_000,
-        sample_rate_index: 0,
         ring_capacity: 8_192,
         start_timeout: Duration::from_secs(2),
+        ..SessionConfig::default()
     };
+    config.rx_frequencies[0] = 7_074_000;
 
-    let (session, mut consumer) = Session::start(config).expect("session start");
+    let (session, mut consumers) = Session::start(config).expect("session start");
+    assert_eq!(consumers.len(), 1);
 
     // Collect samples for up to 250 ms. The mock emits roughly
-    // 1000 packets/sec × 126 samples = ~126 k samples/sec, so we expect
-    // the ring to fill fast.
+    // 1000 packets/sec × 126 samples = ~126 k samples/sec, so we
+    // expect the ring to fill fast.
+    let mut consumer = consumers.pop().unwrap();
     let deadline = Instant::now() + Duration::from_millis(250);
     let mut collected = 0usize;
     while Instant::now() < deadline && collected < 2_000 {
@@ -89,7 +91,8 @@ fn session_reports_disconnection_after_mock_drop() {
         start_timeout: Duration::from_secs(2),
         ..SessionConfig::default()
     };
-    let (session, mut consumer) = Session::start(config).expect("session start");
+    let (session, mut consumers) = Session::start(config).expect("session start");
+    let mut consumer = consumers.pop().unwrap();
 
     // Burn through a handful of samples so we know the link was alive.
     let deadline = Instant::now() + Duration::from_millis(100);
@@ -103,9 +106,53 @@ fn session_reports_disconnection_after_mock_drop() {
     // Pull the plug.
     drop(mock);
 
-    // Wait longer than the 1-second "connected" threshold and confirm the
-    // watchdog flips.
+    // Wait longer than the 1-second "connected" threshold and confirm
+    // the watchdog flips.
     std::thread::sleep(Duration::from_millis(1_200));
     let status = session.status();
     assert!(!status.is_connected(Instant::now()));
+}
+
+#[test]
+fn session_with_num_rx_2_receives_on_both_consumers() {
+    init_tracing();
+    let mock = MockHl2::spawn_with(2).expect("spawn mock HL2 num_rx=2");
+
+    let mut config = SessionConfig {
+        radio_addr: mock.address(),
+        num_rx: 2,
+        ring_capacity: 8_192,
+        start_timeout: Duration::from_secs(2),
+        ..SessionConfig::default()
+    };
+    config.rx_frequencies[0] = 7_074_000;
+    config.rx_frequencies[1] = 14_074_000;
+
+    let (session, mut consumers) = Session::start(config).expect("session start");
+    assert_eq!(consumers.len(), 2, "expected one consumer per RX");
+
+    // Drain a modest number of samples from *both* consumers. If the
+    // multi-RX demux is wrong we'd see RX2 starved (no samples at all)
+    // or see RX1's pattern bleed into RX2.
+    let deadline = Instant::now() + Duration::from_millis(500);
+    let mut counts = [0usize; 2];
+    while Instant::now() < deadline && (counts[0] < 1_000 || counts[1] < 1_000) {
+        let mut made_progress = false;
+        for (r, c) in consumers.iter_mut().enumerate() {
+            if let Ok(_s) = c.pop() {
+                counts[r] += 1;
+                made_progress = true;
+            }
+        }
+        if !made_progress {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    assert!(
+        counts[0] >= 1_000 && counts[1] >= 1_000,
+        "expected at least 1000 samples per RX, got {:?}", counts
+    );
+
+    session.stop().expect("stop");
 }

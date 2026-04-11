@@ -28,7 +28,7 @@ use std::time::{Duration, Instant};
 
 use hpsdr_protocol::{
     control::{register, CommandFrame, StartCommand, StopCommand},
-    Endpoint, IqSample, MetisPacket, UsbFrame, METIS_PACKET_LEN,
+    Endpoint, IqSample, MetisPacket, UsbFrame, METIS_PACKET_LEN, MAX_RX,
 };
 use rtrb::{Consumer, Producer, RingBuffer};
 
@@ -39,14 +39,19 @@ use crate::NetError;
 pub struct SessionConfig {
     /// Radio UDP endpoint, typically `<radio ip>:1024`.
     pub radio_addr: SocketAddr,
-    /// Initial RX1 tuned frequency in Hz.
-    pub rx1_frequency: u32,
+    /// Number of simultaneous receivers to enable. HL2 supports up to
+    /// 2; larger radios (Saturn / ANAN-G2) support more. Must be in
+    /// `1..=MAX_RX`.
+    pub num_rx: u8,
+    /// Initial tuned frequency of each RX in Hz. Only the first
+    /// `num_rx` entries are meaningful on the wire.
+    pub rx_frequencies: [u32; MAX_RX],
     /// Sample rate index as encoded in register 0 `C1 & 0x03`
     /// (0 = 48 kHz, 1 = 96 kHz, 2 = 192 kHz, 3 = 384 kHz).
     pub sample_rate_index: u8,
-    /// Size of the IQ ring buffer in samples. Must fit at least one
-    /// burst of incoming data at the chosen sample rate; defaults to
-    /// 16384 which gives roughly 340 ms of headroom at 48 kHz.
+    /// Size of each per-RX IQ ring buffer in samples. Must fit at
+    /// least one burst of incoming data at the chosen sample rate.
+    /// Defaults to 16384 (~340 ms of headroom at 48 kHz, per RX).
     pub ring_capacity: usize,
     /// How long [`Session::start`] waits for the first data packet after
     /// issuing the Start command before giving up.
@@ -55,12 +60,15 @@ pub struct SessionConfig {
 
 impl Default for SessionConfig {
     fn default() -> Self {
+        let mut rx_frequencies = [0u32; MAX_RX];
+        rx_frequencies[0] = 7_074_000;
         SessionConfig {
-            radio_addr: "127.0.0.1:1024".parse().unwrap(),
-            rx1_frequency: 7_074_000,
+            radio_addr:        "127.0.0.1:1024".parse().unwrap(),
+            num_rx:            1,
+            rx_frequencies,
             sample_rate_index: 0,
-            ring_capacity: 16_384,
-            start_timeout: Duration::from_millis(1_500),
+            ring_capacity:     16_384,
+            start_timeout:     Duration::from_millis(1_500),
         }
     }
 }
@@ -68,7 +76,9 @@ impl Default for SessionConfig {
 /// Commands the owning task can push into a running session.
 #[derive(Debug, Clone, Copy)]
 pub enum SessionCommand {
-    SetRx1Frequency(u32),
+    /// Retune one of the receivers (`rx` is a 0-based RX index).
+    SetRxFrequency { rx: u8, hz: u32 },
+    /// Change the sample rate (encoded value 0..=3).
     SetSampleRateIndex(u8),
 }
 
@@ -126,7 +136,15 @@ impl Session {
     /// 2. Send the Start command (`0xEF 0xFE 0x04 0x01`).
     /// 3. Wait up to 50 ms for a data frame. If nothing arrives, repeat
     ///    steps 1–2 up to five times.
-    pub fn start(config: SessionConfig) -> Result<(Self, Consumer<IqSample>), NetError> {
+    pub fn start(
+        config: SessionConfig,
+    ) -> Result<(Self, Vec<Consumer<IqSample>>), NetError> {
+        let num_rx = config.num_rx as usize;
+        if num_rx == 0 || num_rx > MAX_SESSION_RX {
+            return Err(NetError::Io(io::Error::other(format!(
+                "num_rx must be in 1..={MAX_SESSION_RX}, got {num_rx}"
+            ))));
+        }
         // We deliberately do NOT call `connect()` on this socket. On Linux
         // that would filter incoming packets to the exact `(radio_ip,
         // 1024)` 5-tuple, which is correct once streaming starts, but
@@ -164,7 +182,15 @@ impl Session {
 
         let socket = Arc::new(socket);
 
-        let (producer, consumer) = RingBuffer::<IqSample>::new(config.ring_capacity);
+        // One ring per RX so consumers can drive independent DSP chains
+        // without having to demux on their side.
+        let mut producers = Vec::with_capacity(num_rx);
+        let mut consumers = Vec::with_capacity(num_rx);
+        for _ in 0..num_rx {
+            let (p, c) = RingBuffer::<IqSample>::new(config.ring_capacity);
+            producers.push(p);
+            consumers.push(c);
+        }
 
         let shared = Arc::new(SharedState {
             status: Mutex::new(SessionStatus {
@@ -183,10 +209,11 @@ impl Session {
             &socket,
             config.radio_addr,
             config.sample_rate_index,
-            config.rx1_frequency,
+            num_rx,
+            &config.rx_frequencies[..num_rx],
             config.start_timeout,
         )?;
-        tracing::info!(attempts, "HL2 start handshake succeeded");
+        tracing::info!(attempts, num_rx, "HL2 start handshake succeeded");
 
         // Relax the recv timeout now that we're streaming.
         socket.set_read_timeout(Some(Duration::from_millis(100)))?;
@@ -195,9 +222,10 @@ impl Session {
         let rx_thread = {
             let shared = Arc::clone(&shared);
             let socket = Arc::clone(&socket);
+            let rx_producers = producers;
             thread::Builder::new()
                 .name("hpsdr-rx".into())
-                .spawn(move || rx_loop(socket, shared, producer))
+                .spawn(move || rx_loop(socket, shared, rx_producers, num_rx))
                 .map_err(|e| NetError::Io(io::Error::other(e.to_string())))?
         };
 
@@ -206,12 +234,17 @@ impl Session {
             let shared = Arc::clone(&shared);
             let socket = Arc::clone(&socket);
             let radio_addr = config.radio_addr;
-            // Start the TX sequence number after the handshake's initial
-            // packets so the radio sees a monotonically increasing stream.
-            let initial_tx_seq = 2;
+            // Start the TX sequence number after the handshake's
+            // pre-start packets. The handshake sent `num_rx + 1`
+            // packets (TX NCO + one per RX NCO) per attempt; we don't
+            // know how many attempts it took, so we play it safe with
+            // a high-ish starting seq. The radio doesn't check inbound
+            // sequence numbers anyway.
+            let initial_tx_seq = (num_rx as u32 + 1) * 5;
             let initial = TxState {
                 sample_rate_index: config.sample_rate_index,
-                rx1_frequency:     config.rx1_frequency,
+                num_rx:            num_rx as u8,
+                rx_frequencies:    config.rx_frequencies,
             };
             thread::Builder::new()
                 .name("hpsdr-tx".into())
@@ -228,16 +261,21 @@ impl Session {
                 radio_addr:  config.radio_addr,
                 socket,
             },
-            consumer,
+            consumers,
         ))
     }
 
-    /// Ask the radio to tune RX1. The change is applied by the control
-    /// thread on its next iteration.
-    pub fn set_rx1_frequency(&self, hz: u32) -> Result<(), NetError> {
+    /// Retune one of the receivers. The change is applied by the TX
+    /// thread on its next iteration through the C&C rotation.
+    pub fn set_rx_frequency(&self, rx: u8, hz: u32) -> Result<(), NetError> {
         self.command_tx
-            .send(SessionCommand::SetRx1Frequency(hz))
+            .send(SessionCommand::SetRxFrequency { rx, hz })
             .map_err(|_| NetError::AlreadyStopped)
+    }
+
+    /// Convenience wrapper that retunes RX1 (index 0).
+    pub fn set_rx1_frequency(&self, hz: u32) -> Result<(), NetError> {
+        self.set_rx_frequency(0, hz)
     }
 
     /// Change the sample rate. Takes effect on the next control frame.
@@ -285,54 +323,85 @@ impl Drop for Session {
     }
 }
 
+/// Number of receivers this crate's Session implementation supports.
+/// `hpsdr-protocol::MAX_RX` is 8 to give the wire-format maths a
+/// power-of-2 array, but only 7 RX NCO register addresses are
+/// defined on HPSDR P1 (0x02..0x08); slot 0x09 is already claimed by
+/// Alex. HL2 only goes to 2, ANAN-G2 / Saturn go up to 7.
+pub const MAX_SESSION_RX: usize = 7;
+
+/// Ordered list of per-RX NCO registers (register 2 = RX1, register 3
+/// = RX2, etc.).
+const RX_NCO_REGISTERS: [u8; MAX_SESSION_RX] = [
+    register::RX1_NCO,
+    register::RX2_NCO,
+    register::RX3_NCO,
+    register::RX4_NCO,
+    register::RX5_NCO,
+    register::RX6_NCO,
+    register::RX7_NCO,
+];
+
 /// Perform the pre-streaming handshake against a fresh UDP socket.
 ///
-/// Mirrors `SendStartToMetis` in upstream `networkproto1.c` byte-for-byte:
+/// Mirrors `SendStartToMetis` in upstream `networkproto1.c`, extended to
+/// prime every RX NCO the session has configured (not just RX1):
 ///
 /// ```text
 /// loop up to 5 times {
-///     ForceCandCFrames(c0 = 2, freq = 0)   // [config reg 0] + [reg 1 TX NCO]
+///     send [config reg 0] + [reg 1 TX NCO = 0]
 ///     sleep 10 ms
-///     ForceCandCFrames(c0 = 4, freq = rx1) // [config reg 0] + [reg 2 RX1 NCO]
-///     sleep 10 ms
-///     send_to(start_command, radio)
+///     for r in 0..num_rx {
+///         send [config reg 0] + [reg (2+r) RXr NCO = rx_freqs[r]]
+///         sleep 10 ms
+///     }
+///     send Start command
 ///     recv_from with 500 ms deadline
 ///     if got a data frame, break
 /// }
 /// ```
 ///
-/// Everything is logged at `debug` / `info` / `warn` level so we can see
-/// exactly what's happening on the wire when running against real HW.
+/// The extra RX NCO packets are critical for multi-RX sessions: without
+/// them DDC1 has no tuned frequency and HL2 streams garbage on its
+/// samples.
 fn perform_handshake(
     socket: &UdpSocket,
     radio_addr: std::net::SocketAddr,
     sample_rate_index: u8,
-    rx1_frequency: u32,
+    num_rx: usize,
+    rx_frequencies: &[u32],
     total_timeout: Duration,
 ) -> Result<u32, NetError> {
+    debug_assert_eq!(rx_frequencies.len(), num_rx);
     const MAX_ATTEMPTS: u32 = 5;
     let per_attempt_recv = (total_timeout / MAX_ATTEMPTS).max(Duration::from_millis(500));
     let mut buf = [0u8; 2048];
     let mut tx_seq: u32 = 0;
 
     for attempt in 1..=MAX_ATTEMPTS {
-        // 1. [config reg 0] + [reg 1 TX NCO = 0]
+        // 1. [config reg 0 (with num_rx in C4)] + [reg 1 TX NCO = 0]
         let cc_tx_nco = build_handshake_cc_packet(
-            tx_seq, sample_rate_index, register::TX_NCO, 0,
+            tx_seq, sample_rate_index, num_rx, register::TX_NCO, 0,
         );
         tx_seq = tx_seq.wrapping_add(1);
         let n = socket.send_to(&cc_tx_nco, radio_addr)?;
         tracing::debug!(attempt, sent = n, "handshake: C&C TX NCO packet sent");
         std::thread::sleep(Duration::from_millis(10));
 
-        // 2. [config reg 0] + [reg 2 RX1 NCO = rx1_frequency]
-        let cc_rx_nco = build_handshake_cc_packet(
-            tx_seq, sample_rate_index, register::RX1_NCO, rx1_frequency,
-        );
-        tx_seq = tx_seq.wrapping_add(1);
-        let n = socket.send_to(&cc_rx_nco, radio_addr)?;
-        tracing::debug!(attempt, sent = n, "handshake: C&C RX NCO packet sent");
-        std::thread::sleep(Duration::from_millis(10));
+        // 2. One packet per RX NCO.
+        for (r, &freq) in rx_frequencies.iter().enumerate() {
+            let reg = RX_NCO_REGISTERS[r];
+            let cc_rx_nco = build_handshake_cc_packet(
+                tx_seq, sample_rate_index, num_rx, reg, freq,
+            );
+            tx_seq = tx_seq.wrapping_add(1);
+            let n = socket.send_to(&cc_rx_nco, radio_addr)?;
+            tracing::debug!(
+                attempt, rx = r, freq, sent = n,
+                "handshake: C&C RX NCO packet sent"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
 
         // 3. Start command.
         let start = StartCommand.encode();
@@ -391,19 +460,17 @@ fn perform_handshake(
 }
 
 /// Build the 1032-byte data packet used during the Start handshake:
-/// register 0 (config/sample rate) in USB frame 0, a caller-chosen
-/// frequency register in USB frame 1, zero IQ payload in both.
+/// register 0 (config/sample rate/num_rx) in USB frame 0, a
+/// caller-chosen frequency register in USB frame 1, zero IQ payload in
+/// both.
 fn build_handshake_cc_packet(
     tx_seq: u32,
     sample_rate_index: u8,
+    num_rx: usize,
     frame1_register: u8,
     frame1_frequency: u32,
 ) -> [u8; METIS_PACKET_LEN] {
-    let frame0_cmd = CommandFrame::raw(
-        register::CONFIG,
-        false,
-        [sample_rate_index & 0x03, 0x00, 0x00, 0x00],
-    );
+    let frame0_cmd = build_config_command(sample_rate_index, num_rx);
     let frame1_cmd = CommandFrame::set_frequency(frame1_register, frame1_frequency);
 
     let packet = MetisPacket {
@@ -423,11 +490,30 @@ fn build_handshake_cc_packet(
     packet.encode()
 }
 
+/// Build the C0..C4 payload for register 0 (config). C1 carries the
+/// sample-rate index, C4 carries the duplex flag plus `(num_rx - 1)`
+/// in bits 3..5.
+fn build_config_command(sample_rate_index: u8, num_rx: usize) -> CommandFrame {
+    // C4 = duplex (bit 2) | ((num_rx - 1) << 3)
+    let c4 = 0b0000_0100u8 | ((((num_rx - 1) & 0x07) as u8) << 3);
+    CommandFrame::raw(
+        register::CONFIG,
+        false,
+        [sample_rate_index & 0x03, 0x00, 0x00, c4],
+    )
+}
+
 /// Read loop for the RX thread. Exits as soon as `shared.shutdown` flips.
+///
+/// For a single-RX session we take a fast path (`UsbFrame::iq_samples`,
+/// which avoids any runtime stride arithmetic). For multi-RX sessions
+/// we use `iter_iq_multi(num_rx)` and demux each sample's per-RX I/Q
+/// pair into its own producer.
 fn rx_loop(
     socket: Arc<UdpSocket>,
     shared: Arc<SharedState>,
-    mut producer: Producer<IqSample>,
+    mut producers: Vec<Producer<IqSample>>,
+    num_rx: usize,
 ) {
     let mut buf = [0u8; 2048];
     let mut last_seq: Option<u32> = None;
@@ -451,8 +537,18 @@ fn rx_loop(
                 last_seq = Some(packet.sequence);
 
                 let mut samples_pushed = 0u64;
-                push_samples(&mut producer, &packet.frame0, &mut samples_pushed);
-                push_samples(&mut producer, &packet.frame1, &mut samples_pushed);
+                push_frame_samples(
+                    &mut producers,
+                    num_rx,
+                    &packet.frame0,
+                    &mut samples_pushed,
+                );
+                push_frame_samples(
+                    &mut producers,
+                    num_rx,
+                    &packet.frame1,
+                    &mut samples_pushed,
+                );
 
                 let mut status = shared.status.lock().unwrap();
                 status.packets_received += 1;
@@ -479,16 +575,39 @@ fn rx_loop(
     }
 }
 
-fn push_samples(producer: &mut Producer<IqSample>, frame: &UsbFrame, counter: &mut u64) {
-    for sample in frame.iq_samples() {
-        if producer.push(sample).is_ok() {
-            *counter += 1;
-        } else {
-            // Ring full. Phase A treats this as "DSP stage is slower than
-            // the radio" — we drop the oldest-that-didn't-fit and let the
-            // caller spot the overrun via `samples_received` lagging
-            // behind `packets_received`.
-            return;
+/// Demux a single USB frame's samples into the per-RX producers.
+///
+/// `samples_counted` is incremented by the number of *mono IqSamples*
+/// that were accepted by the RX0 ring — it's used purely for stats, so
+/// we only count one producer's worth even though multi-RX pushes to
+/// all of them. If any producer's ring is full we bail and let the
+/// caller's stats pick up the discrepancy.
+fn push_frame_samples(
+    producers: &mut [Producer<IqSample>],
+    num_rx: usize,
+    frame: &UsbFrame,
+    samples_counted: &mut u64,
+) {
+    if num_rx == 1 {
+        // Fast path: single RX, no multi-sample decode.
+        for sample in frame.iq_samples() {
+            if producers[0].push(sample).is_err() {
+                return;
+            }
+            *samples_counted += 1;
+        }
+    } else {
+        for ms in frame.iter_iq_multi(num_rx) {
+            for (r, producer) in producers.iter_mut().enumerate().take(num_rx) {
+                let (i, q) = ms.rx[r];
+                // mic only goes to RX0 — it's a single physical input
+                // shared by the radio regardless of DDC count.
+                let mic = if r == 0 { ms.mic } else { 0 };
+                if producer.push(IqSample { i, q, mic }).is_err() {
+                    return;
+                }
+            }
+            *samples_counted += 1;
         }
     }
 }
@@ -496,7 +615,8 @@ fn push_samples(producer: &mut Producer<IqSample>, frame: &UsbFrame, counter: &m
 #[derive(Debug, Clone, Copy)]
 struct TxState {
     sample_rate_index: u8,
-    rx1_frequency:     u32,
+    num_rx:            u8,
+    rx_frequencies:    [u32; MAX_RX],
 }
 
 /// TX keep-alive interval. HL2 expects the host to stream data packets
@@ -529,13 +649,18 @@ fn tx_loop(
     let mut state  = initial;
     let mut tx_seq = initial_tx_seq;
 
-    // Registers the C&C rotation cycles through. Upstream cycles CONFIG
-    // / TX_NCO / RX1_NCO / ALEX / … ; phase A needs the first three.
-    const REGISTERS: &[u8] = &[
-        register::CONFIG,
-        register::TX_NCO,
-        register::RX1_NCO,
-    ];
+    // Registers the C&C rotation cycles through. We always refresh
+    // CONFIG (register 0) and TX_NCO (register 1), plus one RXn NCO
+    // register per enabled receiver. Upstream cycles ALEX and a few
+    // others too; phase B only needs the frequency-critical subset.
+    let registers: Vec<u8> = {
+        let num_rx = state.num_rx as usize;
+        let mut r = Vec::with_capacity(2 + num_rx);
+        r.push(register::CONFIG);
+        r.push(register::TX_NCO);
+        r.extend(RX_NCO_REGISTERS.iter().take(num_rx).copied());
+        r
+    };
     let mut reg_idx: usize = 0;
 
     let mut next_send = Instant::now();
@@ -544,9 +669,16 @@ fn tx_loop(
         // Drain any pending commands (non-blocking).
         loop {
             match commands.try_recv() {
-                Ok(SessionCommand::SetRx1Frequency(hz)) => {
-                    state.rx1_frequency = hz;
-                    tracing::debug!(hz, "tx_loop: RX1 frequency updated");
+                Ok(SessionCommand::SetRxFrequency { rx, hz }) => {
+                    if (rx as usize) < state.num_rx as usize {
+                        state.rx_frequencies[rx as usize] = hz;
+                        tracing::debug!(rx, hz, "tx_loop: RX frequency updated");
+                    } else {
+                        tracing::warn!(
+                            rx, num_rx = state.num_rx,
+                            "tx_loop: ignoring SetRxFrequency for out-of-range rx",
+                        );
+                    }
                 }
                 Ok(SessionCommand::SetSampleRateIndex(idx)) => {
                     state.sample_rate_index = idx & 0x03;
@@ -558,9 +690,9 @@ fn tx_loop(
         }
 
         // Pick the two registers this packet will carry.
-        let reg0 = REGISTERS[reg_idx % REGISTERS.len()];
-        let reg1 = REGISTERS[(reg_idx + 1) % REGISTERS.len()];
-        reg_idx = (reg_idx + 1) % REGISTERS.len();
+        let reg0 = registers[reg_idx % registers.len()];
+        let reg1 = registers[(reg_idx + 1) % registers.len()];
+        reg_idx = (reg_idx + 1) % registers.len();
 
         let packet = build_tx_packet(tx_seq, &state, reg0, reg1);
         tx_seq = tx_seq.wrapping_add(1);
@@ -614,28 +746,20 @@ fn build_tx_packet(
 /// Build a single command word for the given register, reading the
 /// current `TxState` for registers that carry live data.
 fn build_command(reg: u8, state: &TxState) -> CommandFrame {
-    match reg {
-        register::CONFIG => {
-            // C1 = sample rate (bits 0-1)
-            // C4 bit 2 = duplex (upstream always sets this)
-            // C4 bits 3-5 = num_rx - 1 (0 for single RX)
-            let c4 = 0b0000_0100u8;
-            CommandFrame::raw(
-                register::CONFIG,
-                false,
-                [state.sample_rate_index & 0x03, 0x00, 0x00, c4],
-            )
-        }
-        register::TX_NCO => {
-            // Phase A never asserts TX — keep the NCO parked at 0 Hz.
-            CommandFrame::set_frequency(register::TX_NCO, 0)
-        }
-        register::RX1_NCO => {
-            CommandFrame::set_frequency(register::RX1_NCO, state.rx1_frequency)
-        }
-        other => {
-            // Unknown register — zero-payload write preserves layout.
-            CommandFrame::raw(other, false, [0, 0, 0, 0])
+    if reg == register::CONFIG {
+        return build_config_command(state.sample_rate_index, state.num_rx as usize);
+    }
+    if reg == register::TX_NCO {
+        // Phase B never asserts TX — keep the NCO parked at 0 Hz.
+        return CommandFrame::set_frequency(register::TX_NCO, 0);
+    }
+    // RX NCO registers: map `reg` back to an RX index and emit that
+    // receiver's tuned frequency. Unknown registers get a zero payload
+    // so the packet layout stays well-formed.
+    for (idx, &rx_reg) in RX_NCO_REGISTERS.iter().enumerate() {
+        if rx_reg == reg && idx < state.num_rx as usize {
+            return CommandFrame::set_frequency(reg, state.rx_frequencies[idx]);
         }
     }
+    CommandFrame::raw(reg, false, [0, 0, 0, 0])
 }
