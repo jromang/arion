@@ -384,6 +384,23 @@ impl ThetisApp {
             }
 
             ui.separator();
+            // Memories toggle, promoted to a prominent left-side spot
+            // so it doesn't get visually drowned by the connection
+            // status counters on the right.
+            let mem_label = if self.show_memories {
+                "Memories ▼"
+            } else {
+                "Memories ▶"
+            };
+            if ui
+                .selectable_label(self.show_memories, mem_label)
+                .on_hover_text("Toggle the memories window (named freq/mode bookmarks)")
+                .clicked()
+            {
+                self.show_memories = !self.show_memories;
+            }
+
+            ui.separator();
             ui.label("IP:");
             let ip_resp = ui.add_enabled(
                 self.radio.is_none(),
@@ -404,9 +421,6 @@ impl ThetisApp {
             if self.num_rx != prev_num_rx {
                 self.mark_dirty();
             }
-
-            ui.separator();
-            ui.toggle_value(&mut self.show_memories, "Memories");
 
             ui.separator();
             self.draw_connection_status(ui);
