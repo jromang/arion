@@ -52,50 +52,72 @@ use hpsdr_net::{Session, SessionConfig, SessionStatus};
 use hpsdr_protocol::IqSample;
 use rtrb::Consumer;
 use rustfft::{num_complex::Complex32, Fft, FftPlanner};
-use thetis_audio::{AudioConfig, AudioOutput, AudioSink};
-use wdsp::{Channel as WdspChannel, Mode, RxConfig};
+use thetis_audio::{AudioConfig, AudioOutput, AudioSink, StereoFrame};
+use wdsp::{Channel as WdspChannel, Mode, RxConfig as WdspRxConfig};
 
 // Re-exports so downstream crates only need to depend on `thetis-core`.
 pub use hpsdr_net::{discover, DiscoveryOptions, RadioInfo};
+pub use hpsdr_net::session::MAX_SESSION_RX as MAX_RX;
 pub use thetis_audio::{list_output_devices, AudioStats};
 pub use wdsp::Mode as WdspMode;
+
+/// Per-receiver configuration passed to [`Radio::start`].
+#[derive(Debug, Clone, Copy)]
+pub struct RxConfig {
+    /// RX enabled on session startup. If `false`, the receiver's
+    /// spectrum and audio contribution are suppressed but its DDC
+    /// is still allocated on the radio — you can `set_rx_enabled`
+    /// it back on at runtime without reconnecting.
+    pub enabled: bool,
+    /// Initial tuned frequency in Hz.
+    pub frequency_hz: u32,
+    /// Initial demodulation mode.
+    pub mode: WdspMode,
+    /// Linear gain applied after WDSP's panel gain, just before this
+    /// RX's audio is mixed into the stereo bus.
+    pub volume: f32,
+}
+
+impl Default for RxConfig {
+    fn default() -> Self {
+        RxConfig {
+            enabled:      false,
+            frequency_hz: 7_074_000,
+            mode:         WdspMode::Usb,
+            volume:       0.25,
+        }
+    }
+}
 
 /// Knobs for [`Radio::start`].
 #[derive(Debug, Clone)]
 pub struct RadioConfig {
     /// UDP endpoint of the HL2 (typically `<ip>:1024`).
     pub radio_addr: std::net::SocketAddr,
-    /// Initial tuned frequency of RX1, in Hz.
-    pub rx1_frequency: u32,
-    /// Initial demodulation mode.
-    pub mode: Mode,
-    /// Linear gain applied after WDSP's panel gain, just before pushing
-    /// to the audio sink. `1.0` = unity, and anything much higher than
-    /// that is likely to clip on a loud AM station.
-    pub volume: f32,
+    /// Number of simultaneous receivers to start. Must be in
+    /// `1..=MAX_RX`. HL2 only supports 2; larger radios go up to 7.
+    pub num_rx: u8,
+    /// Per-RX configuration. Only the first `num_rx` entries are
+    /// consulted; the rest stay at [`RxConfig::default`].
+    pub rx: [RxConfig; MAX_RX],
     /// Audio output device name. `None` uses the system default.
     pub audio_device: Option<String>,
-    /// Whether to prime the FFTW wisdom cache before opening the
-    /// WDSP channel.
-    ///
-    /// The user-facing `thetis` binary should leave this at `true` so
-    /// subsequent runs start instantly. Integration tests against the
-    /// loopback [`hpsdr_net::MockHl2`] should set it to `false` —
-    /// when the cache is cold, `WDSPwisdom` rebuilds the entire plan
-    /// table (sizes 64..262144) which easily takes 10+ minutes and
-    /// makes the test suite unusable on CI.
+    /// Whether to prime the FFTW wisdom cache before opening any
+    /// WDSP channel. See the field doc on the phase-A `RadioConfig`
+    /// for the test-vs-user trade-off.
     pub prime_wisdom: bool,
 }
 
 impl Default for RadioConfig {
     fn default() -> Self {
+        let mut rx = [RxConfig::default(); MAX_RX];
+        rx[0].enabled = true;
         RadioConfig {
-            radio_addr:    "127.0.0.1:1024".parse().unwrap(),
-            rx1_frequency: 7_074_000,
-            mode:          Mode::Usb,
-            volume:        0.5,
-            audio_device:  None,
-            prime_wisdom:  true,
+            radio_addr:   "127.0.0.1:1024".parse().unwrap(),
+            num_rx:       1,
+            rx,
+            audio_device: None,
+            prime_wisdom: true,
         }
     }
 }
@@ -109,6 +131,41 @@ pub struct RadioStatus {
     pub audio_underruns: u64,
 }
 
+/// Per-RX telemetry snapshot. One of these lives inside [`Telemetry`]
+/// for every entry in the `rx` array.
+#[derive(Debug, Clone)]
+pub struct RxTelemetry {
+    /// Whether this RX is currently contributing audio / spectrum. The
+    /// UI should gray out the corresponding panel when this is false.
+    pub enabled: bool,
+    /// Log-magnitude FFT bins in dB, already `fftshift`ed so bin `0`
+    /// is the lowest frequency and bin `N-1` the highest. Length is
+    /// [`SPECTRUM_BINS`].
+    pub spectrum_bins_db: Vec<f32>,
+    /// Post-DSP audio RMS, in dB relative to full scale (0 dBFS = sine
+    /// at ±1.0). Exponentially smoothed for readable display.
+    pub s_meter_db: f32,
+    /// Center frequency in Hz at the time this snapshot was taken.
+    pub center_freq_hz: u32,
+    /// Full spectral span covered by the FFT (= input sample rate).
+    pub span_hz: u32,
+    /// Current demodulation mode.
+    pub mode: WdspMode,
+}
+
+impl Default for RxTelemetry {
+    fn default() -> Self {
+        RxTelemetry {
+            enabled:          false,
+            spectrum_bins_db: vec![-140.0; SPECTRUM_BINS],
+            s_meter_db:       -140.0,
+            center_freq_hz:   0,
+            span_hz:          48_000,
+            mode:             WdspMode::Usb,
+        }
+    }
+}
+
 /// A frozen snapshot of everything the UI wants to render in one frame.
 ///
 /// Published atomically from the DSP thread via [`arc_swap::ArcSwap`];
@@ -117,17 +174,11 @@ pub struct RadioStatus {
 /// without blocking the producer.
 #[derive(Debug, Clone)]
 pub struct Telemetry {
-    /// Log-magnitude FFT bins in dB, already `fftshift`ed so bin `0`
-    /// is the lowest frequency and bin `N-1` the highest. Length is
-    /// [`SPECTRUM_BINS`].
-    pub spectrum_bins_db: Vec<f32>,
-    /// Post-DSP audio RMS, in dB relative to full scale (0 dBFS = sine
-    /// at ±1.0). Exponentially smoothed for readable display.
-    pub s_meter_db: f32,
-    /// RX1 center frequency in Hz at the time this snapshot was taken.
-    pub center_freq_hz: u32,
-    /// Full spectral span covered by the FFT (= input sample rate).
-    pub span_hz: u32,
+    /// Per-receiver telemetry. Only `rx[0..num_rx as usize]` holds
+    /// live data; the rest is the default sentinel.
+    pub rx: [RxTelemetry; MAX_RX],
+    /// Number of configured receivers.
+    pub num_rx: u8,
     /// Monotonic timestamp of the last DSP frame. Lets the UI detect
     /// a stalled pipeline.
     pub last_update: Instant,
@@ -136,11 +187,9 @@ pub struct Telemetry {
 impl Default for Telemetry {
     fn default() -> Self {
         Telemetry {
-            spectrum_bins_db: vec![-140.0; SPECTRUM_BINS],
-            s_meter_db:       -140.0,
-            center_freq_hz:   0,
-            span_hz:          48_000,
-            last_update:      Instant::now(),
+            rx:          std::array::from_fn(|_| RxTelemetry::default()),
+            num_rx:      1,
+            last_update: Instant::now(),
         }
     }
 }
@@ -156,9 +205,11 @@ const SPECTRUM_UPDATE_INTERVAL: Duration = Duration::from_millis(40);
 
 /// Commands applied to a live radio from outside the DSP thread.
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::enum_variant_names)]
 enum DspCommand {
-    SetMode(Mode),
-    SetVolume(f32),
+    SetRxMode { rx: u8, mode: Mode },
+    SetRxVolume { rx: u8, volume: f32 },
+    SetRxEnabled { rx: u8, enabled: bool },
 }
 
 /// A running end-to-end receive session.
@@ -173,7 +224,11 @@ pub struct Radio {
     commands:    MpscTx<DspCommand>,
     samples_dsp: Arc<std::sync::atomic::AtomicU64>,
     telemetry:   Arc<ArcSwap<Telemetry>>,
-    center_freq_hz: Arc<std::sync::atomic::AtomicU32>,
+    /// One atomic u32 per RX so the UI can read the live tuned
+    /// frequency without locking. Written by `Radio::set_rx_frequency`
+    /// and also refreshed at every telemetry snapshot.
+    center_freqs: [Arc<std::sync::atomic::AtomicU32>; MAX_RX],
+    num_rx:      u8,
 }
 
 impl Radio {
@@ -184,22 +239,16 @@ impl Radio {
     /// 2. Open a WDSP channel tuned to the requested mode.
     /// 3. Open the audio output.
     /// 4. Start the DSP thread that reads IQ → `fexchange0` → audio.
-    /// 5. Set the initial frequency via [`Session::set_rx1_frequency`].
+    /// 5. Set the initial frequency via [`Session::set_rx_frequency`].
     pub fn start(config: RadioConfig) -> anyhow::Result<Self> {
         tracing::info!(?config, "starting Radio");
+        let num_rx = config.num_rx as usize;
+        anyhow::ensure!(
+            (1..=MAX_RX).contains(&num_rx),
+            "num_rx must be in 1..={MAX_RX}, got {num_rx}"
+        );
 
         // --- Prime FFTW wisdom before opening any WDSP channel ------
-        //
-        // Best-effort: if the cache dir is unavailable, or if the
-        // import returns an error, we just continue and pay the slow
-        // plan-build cost once. Phase A already did that.
-        //
-        // On cache miss, `wdsp::prime_wisdom_default` rebuilds the full
-        // plan table (~10 minutes). That's slower than phase A's lazy
-        // behaviour on the very first run but makes every subsequent
-        // run instantaneous, which is the only trade-off that matters
-        // for daily use. Tests against the loopback mock opt out via
-        // `config.prime_wisdom = false`.
         if config.prime_wisdom {
             match wdsp::prime_wisdom_default() {
                 Ok(Some(status)) => tracing::info!(?status, "FFTW wisdom primed"),
@@ -209,31 +258,40 @@ impl Radio {
         }
 
         // --- Network session ----------------------------------------
-        //
-        // Phase B.2.2: the Session now returns one consumer per RX,
-        // but `thetis-core` is still single-RX; B.2.3 will extend
-        // `Radio` to own multiple WDSP channels. For now we just pop
-        // the first consumer and discard any others — RX2 gets turned
-        // on wholesale once the orchestration catches up.
         let mut session_config = SessionConfig {
             radio_addr:        config.radio_addr,
+            num_rx:            config.num_rx,
             sample_rate_index: 0, // 48 kHz
             ring_capacity:     32_768,
             start_timeout:     Duration::from_secs(2),
             ..SessionConfig::default()
         };
-        session_config.rx_frequencies[0] = config.rx1_frequency;
-        let (session, mut consumers) = Session::start(session_config)?;
-        let mut iq_consumer = consumers.remove(0);
+        for r in 0..num_rx {
+            session_config.rx_frequencies[r] = config.rx[r].frequency_hz;
+        }
+        let (session, consumers) = Session::start(session_config)?;
+        anyhow::ensure!(
+            consumers.len() == num_rx,
+            "session returned {} consumers, expected {}",
+            consumers.len(), num_rx
+        );
 
-        // --- WDSP channel -------------------------------------------
-        let rx_cfg = RxConfig {
-            id: 0,
-            mode: config.mode,
-            ..RxConfig::default()
-        };
-        let wdsp_channel = WdspChannel::open_rx(rx_cfg)?;
-        let in_size = wdsp_channel.in_size();
+        // --- WDSP channels ------------------------------------------
+        //
+        // One WDSP channel per RX, indexed 0..num_rx. FFTW plan reuse
+        // across opens is handled by the wisdom cache (B.1.1) so
+        // opening N channels sequentially is only slow on the very
+        // first uncached run.
+        let mut channels: Vec<WdspChannel> = Vec::with_capacity(num_rx);
+        for r in 0..num_rx {
+            let rx_cfg = WdspRxConfig {
+                id:   r as i32,
+                mode: config.rx[r].mode,
+                ..WdspRxConfig::default()
+            };
+            channels.push(WdspChannel::open_rx(rx_cfg)?);
+        }
+        let in_size = channels[0].in_size();
 
         // --- Audio output -------------------------------------------
         let (audio_out, audio_sink) = AudioOutput::start(AudioConfig {
@@ -246,33 +304,52 @@ impl Radio {
         let shutdown = Arc::new(AtomicBool::new(false));
         let samples_dsp = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let (command_tx, command_rx) = mpsc::channel::<DspCommand>();
-        let telemetry = Arc::new(ArcSwap::from_pointee(Telemetry {
-            center_freq_hz: config.rx1_frequency,
+
+        let center_freqs: [Arc<std::sync::atomic::AtomicU32>; MAX_RX] =
+            std::array::from_fn(|r| {
+                let hz = if r < num_rx { config.rx[r].frequency_hz } else { 0 };
+                Arc::new(std::sync::atomic::AtomicU32::new(hz))
+            });
+
+        let mut initial_telemetry = Telemetry {
+            num_rx: config.num_rx,
             ..Telemetry::default()
-        }));
-        let center_freq_hz =
-            Arc::new(std::sync::atomic::AtomicU32::new(config.rx1_frequency));
+        };
+        for r in 0..num_rx {
+            initial_telemetry.rx[r].enabled        = config.rx[r].enabled;
+            initial_telemetry.rx[r].center_freq_hz = config.rx[r].frequency_hz;
+            initial_telemetry.rx[r].mode           = config.rx[r].mode;
+        }
+        let telemetry = Arc::new(ArcSwap::from_pointee(initial_telemetry));
+
+        // Snapshot per-RX initial state for the DSP thread.
+        let initial_rx: [RxRuntime; MAX_RX] =
+            std::array::from_fn(|r| RxRuntime {
+                enabled: r < num_rx && config.rx[r].enabled,
+                volume:  config.rx[r].volume,
+                mode:    config.rx[r].mode,
+            });
 
         let dsp_thread = {
-            let shutdown    = Arc::clone(&shutdown);
-            let samples_dsp = Arc::clone(&samples_dsp);
-            let telemetry   = Arc::clone(&telemetry);
-            let center_freq = Arc::clone(&center_freq_hz);
-            let volume      = config.volume;
+            let shutdown     = Arc::clone(&shutdown);
+            let samples_dsp  = Arc::clone(&samples_dsp);
+            let telemetry    = Arc::clone(&telemetry);
+            let center_freqs = center_freqs.clone();
             thread::Builder::new()
                 .name("thetis-dsp".into())
                 .spawn(move || {
                     dsp_loop(
-                        wdsp_channel,
-                        iq_consumer_take(&mut iq_consumer),
+                        channels,
+                        consumers,
+                        num_rx,
+                        initial_rx,
                         audio_sink,
                         command_rx,
                         shutdown,
                         samples_dsp,
                         telemetry,
-                        center_freq,
+                        center_freqs,
                         in_size,
-                        volume,
                     )
                 })?
         };
@@ -285,9 +362,12 @@ impl Radio {
             commands:    command_tx,
             samples_dsp,
             telemetry,
-            center_freq_hz,
+            center_freqs,
+            num_rx:      config.num_rx,
         })
     }
+
+    pub fn num_rx(&self) -> u8 { self.num_rx }
 
     /// Shared handle to the latest telemetry snapshot. The UI calls
     /// `radio.telemetry().load()` once per frame; the DSP thread
@@ -297,28 +377,51 @@ impl Radio {
         Arc::clone(&self.telemetry)
     }
 
-    /// Ask the radio to retune RX1. Propagated to the radio on the next
-    /// TX keep-alive tick. Also bumps the atomic the DSP thread reads
-    /// when stamping spectrum snapshots so the UI frequency label
-    /// updates immediately without waiting for the next RX packet.
-    pub fn set_frequency(&self, hz: u32) -> anyhow::Result<()> {
+    /// Ask the radio to retune the given RX. Propagated to the radio
+    /// on the next TX keep-alive tick. Also bumps the atomic the DSP
+    /// thread reads when stamping spectrum snapshots so the UI
+    /// frequency label updates immediately.
+    pub fn set_rx_frequency(&self, rx: u8, hz: u32) -> anyhow::Result<()> {
+        let r = rx as usize;
+        anyhow::ensure!(r < self.num_rx as usize, "rx {rx} out of range");
         if let Some(s) = &self.session {
-            s.set_rx1_frequency(hz)?;
+            s.set_rx_frequency(rx, hz)?;
         }
-        self.center_freq_hz.store(hz, Ordering::Release);
+        self.center_freqs[r].store(hz, Ordering::Release);
         Ok(())
     }
 
-    /// Change demodulation mode. Takes effect on the DSP thread between
-    /// buffers.
+    /// Back-compat convenience: retune RX0.
+    pub fn set_frequency(&self, hz: u32) -> anyhow::Result<()> {
+        self.set_rx_frequency(0, hz)
+    }
+
+    /// Change demodulation mode for a given RX.
+    pub fn set_rx_mode(&self, rx: u8, mode: Mode) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxMode { rx, mode })?;
+        Ok(())
+    }
+
+    /// Back-compat: set RX0 mode.
     pub fn set_mode(&self, mode: Mode) -> anyhow::Result<()> {
-        self.commands.send(DspCommand::SetMode(mode))?;
+        self.set_rx_mode(0, mode)
+    }
+
+    /// Set the post-DSP linear audio gain for a given RX.
+    pub fn set_rx_volume(&self, rx: u8, volume: f32) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxVolume { rx, volume })?;
         Ok(())
     }
 
-    /// Set the post-DSP linear audio gain.
+    /// Back-compat: set RX0 volume.
     pub fn set_volume(&self, linear: f32) -> anyhow::Result<()> {
-        self.commands.send(DspCommand::SetVolume(linear))?;
+        self.set_rx_volume(0, linear)
+    }
+
+    /// Enable / disable a receiver's contribution to the audio mix and
+    /// spectrum. The WDSP channel keeps processing in either case.
+    pub fn set_rx_enabled(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxEnabled { rx, enabled })?;
         Ok(())
     }
 
@@ -376,57 +479,39 @@ impl Drop for Radio {
     }
 }
 
-/// Tiny helper to move the consumer out of the mut-ref spot into the
-/// thread closure without having to name the rtrb internal type at the
-/// call site.
-fn iq_consumer_take(c: &mut Consumer<IqSample>) -> Consumer<IqSample> {
-    // `rtrb::Consumer` is not `Clone`; the caller passed a `&mut` so we
-    // swap it out. Since `Session::start` returns a fresh consumer and
-    // we immediately hand it to the DSP thread, there's no prior
-    // consumer to preserve here.
-    std::mem::replace(c, dummy_consumer())
+/// Snapshot of per-RX runtime state used by the DSP loop. Kept simple
+/// (Copy) so the main loop can mutate entries in place without having
+/// to worry about borrows.
+#[derive(Debug, Clone, Copy)]
+struct RxRuntime {
+    enabled: bool,
+    volume:  f32,
+    mode:    Mode,
 }
 
-fn dummy_consumer() -> Consumer<IqSample> {
-    // A freshly-created 1-slot ring we drop the producer of. The
-    // consumer is valid (just useless), which is all we need to plug
-    // the `replace` above.
-    let (_p, c) = rtrb::RingBuffer::<IqSample>::new(1);
-    c
-}
-
-/// Main DSP loop.
+/// Main DSP loop. Runs one thread for every WDSP channel we opened.
 ///
-/// - Accumulates `in_size` complex IQ samples from the network ring.
-/// - Calls WDSP `fexchange0` to get `in_size` complex output samples.
-/// - Takes the real part (I) of each output complex and pushes it to the
-///   audio sink as mono f32, scaled by `volume`.
-/// - Computes an FFT of the input IQ buffer for the UI spectrum display,
-///   rate-limited to [`SPECTRUM_UPDATE_INTERVAL`] to avoid wasting cycles
-///   on frames the UI won't draw.
-/// - Computes an RMS-based S-meter value over the DSP output.
-/// - Services [`DspCommand`]s between buffers.
-/// - Exits when `shutdown` flips.
+/// Per buffer:
+/// 1. Drain pending [`DspCommand`]s.
+/// 2. For each RX, gather `in_size` IQ samples from its consumer.
+/// 3. For each RX, run WDSP `fexchange0` to produce demodulated output.
+/// 4. Mix into a stereo bus: RX0 → L, RX1 → R, others → mixed into L.
+/// 5. Every [`SPECTRUM_UPDATE_INTERVAL`], compute a per-RX FFT and
+///    publish a new [`Telemetry`] snapshot.
 #[allow(clippy::too_many_arguments)]
 fn dsp_loop(
-    mut channel: WdspChannel,
-    mut iq_in:   Consumer<IqSample>,
-    mut audio:   AudioSink,
-    commands:    MpscRx<DspCommand>,
-    shutdown:    Arc<AtomicBool>,
+    mut channels: Vec<WdspChannel>,
+    mut consumers: Vec<Consumer<IqSample>>,
+    num_rx: usize,
+    initial_rx: [RxRuntime; MAX_RX],
+    mut audio: AudioSink,
+    commands:  MpscRx<DspCommand>,
+    shutdown:  Arc<AtomicBool>,
     samples_dsp: Arc<std::sync::atomic::AtomicU64>,
     telemetry:   Arc<ArcSwap<Telemetry>>,
-    center_freq_hz: Arc<std::sync::atomic::AtomicU32>,
+    center_freqs: [Arc<std::sync::atomic::AtomicU32>; MAX_RX],
     in_size:     usize,
-    initial_volume: f32,
 ) {
-    // Upgrade this thread to a realtime scheduling class so scheduler
-    // jitter under load can't cause audio underruns. Needs
-    // `CAP_SYS_NICE` or `RLIMIT_RTPRIO` on Linux (`@audio` group +
-    // `/etc/security/limits.d/audio.conf` is the usual setup). On
-    // failure we just log and continue — the ring buffers in the
-    // pipeline are generous enough that SCHED_OTHER works fine on an
-    // idle machine.
     use thread_priority::{set_current_thread_priority, ThreadPriority};
     match set_current_thread_priority(ThreadPriority::Max) {
         Ok(()) => tracing::info!("DSP thread running at max RT priority"),
@@ -437,30 +522,24 @@ fn dsp_loop(
         ),
     }
 
-    // Pre-allocate the WDSP exchange buffers — fexchange0 reads/writes
-    // these in place so we want them stable for the lifetime of the loop.
-    let mut wdsp_in  = vec![0.0_f64; 2 * in_size];
-    let mut wdsp_out = vec![0.0_f64; 2 * in_size];
+    // Per-RX exchange buffers.
+    let mut wdsp_in:  Vec<Vec<f64>> = (0..num_rx).map(|_| vec![0.0; 2 * in_size]).collect();
+    let mut wdsp_out: Vec<Vec<f64>> = (0..num_rx).map(|_| vec![0.0; 2 * in_size]).collect();
+    let mut gathered:  Vec<usize>   = vec![0usize; num_rx];
 
-    // Scratch for the mono-audio burst we push to the sink after each
-    // WDSP process call.
-    let mut audio_burst = vec![0.0_f32; in_size];
+    // Stereo audio burst scratch — one entry per input sample.
+    let mut audio_burst: Vec<StereoFrame> = vec![[0.0; 2]; in_size];
 
-    let mut gathered = 0_usize;     // number of complex samples currently buffered in wdsp_in
-    let mut volume   = initial_volume;
+    // Per-RX runtime (volume, enabled, mode).
+    let mut rx_state: [RxRuntime; MAX_RX] = initial_rx;
 
-    // --- Spectrum analysis state --------------------------------------
-    //
-    // rustfft plans are cheap to create once, expensive to rebuild. We
-    // plan a single forward FFT at the fixed DSP buffer size and reuse
-    // it for the lifetime of the thread. The Hann window is also
-    // precomputed.
+    // --- Spectrum state (shared across RXs since all use the same FFT size) ---
     let mut planner = FftPlanner::<f32>::new();
     let fft: Arc<dyn Fft<f32>> = planner.plan_fft_forward(in_size);
     let hann: Vec<f32> = (0..in_size)
         .map(|n| {
             let x = std::f32::consts::PI * (n as f32) / ((in_size - 1) as f32);
-            x.sin().powi(2) // equivalent to 0.5 * (1 - cos(2πn/(N-1)))
+            x.sin().powi(2)
         })
         .collect();
     let fft_norm = 1.0_f32 / (in_size as f32).sqrt();
@@ -468,60 +547,119 @@ fn dsp_loop(
     let mut fft_scratch: Vec<Complex32> =
         vec![Complex32::new(0.0, 0.0); fft.get_inplace_scratch_len()];
 
-    let mut smoothed_s_meter_db: f32 = -140.0;
+    let mut smoothed_s_meter_db: [f32; MAX_RX] = [-140.0; MAX_RX];
     let mut last_spectrum_push = Instant::now() - SPECTRUM_UPDATE_INTERVAL;
 
     while !shutdown.load(Ordering::Acquire) {
         // 1. Apply any pending commands before starting a new buffer.
         while let Ok(cmd) = commands.try_recv() {
             match cmd {
-                DspCommand::SetMode(m) => {
-                    tracing::info!(new_mode = ?m, "DSP: mode change");
-                    channel.set_mode(m);
-                }
-                DspCommand::SetVolume(v) => {
-                    volume = v;
-                }
-            }
-        }
-
-        // 2. Pull IQ samples until we've accumulated a full buffer.
-        while gathered < in_size {
-            match iq_in.pop() {
-                Ok(sample) => {
-                    wdsp_in[2 * gathered]     = sample.i as f64;
-                    wdsp_in[2 * gathered + 1] = sample.q as f64;
-                    gathered += 1;
-                }
-                Err(_) => {
-                    // Ring empty — network thread hasn't delivered more
-                    // yet. Short sleep avoids burning CPU while still
-                    // being responsive to shutdown.
-                    if shutdown.load(Ordering::Acquire) {
-                        return;
+                DspCommand::SetRxMode { rx, mode } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        tracing::info!(rx, new_mode = ?mode, "DSP: mode change");
+                        channels[r].set_mode(mode);
+                        rx_state[r].mode = mode;
                     }
-                    thread::sleep(Duration::from_micros(500));
+                }
+                DspCommand::SetRxVolume { rx, volume } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        rx_state[r].volume = volume;
+                    }
+                }
+                DspCommand::SetRxEnabled { rx, enabled } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        rx_state[r].enabled = enabled;
+                    }
                 }
             }
         }
-        gathered = 0;
 
-        // 3. Run the DSP pass.
-        if let Err(e) = channel.process(&mut wdsp_in, &mut wdsp_out) {
-            tracing::warn!(error = %e, "WDSP process error");
-            continue;
+        // 2. Pull `in_size` IQ samples from *each* consumer, in
+        //    lockstep. Because all receivers ride the same wire packet,
+        //    the rings stay approximately balanced, so the loop
+        //    typically spins one micro-sleep or less per iteration.
+        let mut all_full = false;
+        while !all_full {
+            if shutdown.load(Ordering::Acquire) {
+                return;
+            }
+            all_full = true;
+            for r in 0..num_rx {
+                while gathered[r] < in_size {
+                    match consumers[r].pop() {
+                        Ok(sample) => {
+                            wdsp_in[r][2 * gathered[r]]     = sample.i as f64;
+                            wdsp_in[r][2 * gathered[r] + 1] = sample.q as f64;
+                            gathered[r] += 1;
+                        }
+                        Err(_) => {
+                            all_full = false;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !all_full {
+                thread::sleep(Duration::from_micros(500));
+            }
+        }
+        gathered.fill(0);
+
+        // 3. Run each channel's DSP pass.
+        for r in 0..num_rx {
+            if let Err(e) = channels[r].process(&mut wdsp_in[r], &mut wdsp_out[r]) {
+                tracing::warn!(rx = r, error = %e, "WDSP process error");
+                continue;
+            }
         }
         samples_dsp.fetch_add(in_size as u64, Ordering::Relaxed);
 
-        // 4. Extract mono audio (real part of complex output) and push.
-        //    Apply post-DSP volume on the way through.
-        let mut sum_sq = 0.0_f32;
-        for (n, slot) in audio_burst.iter_mut().enumerate() {
-            let sample = (wdsp_out[2 * n] as f32) * volume;
-            *slot = sample;
-            sum_sq += sample * sample;
+        // 4. Mix into a stereo audio burst.
+        //
+        //    - num_rx == 1:                  L = R = RX0
+        //    - num_rx >= 2:                  L = RX0, R = RX1
+        //    - disabled RX contributes 0     (enable flag gates output)
+        //
+        //    Any RX beyond index 1 is ignored for audio in phase B —
+        //    they still get their spectrum published for the UI.
+        let mut sum_sq: [f32; MAX_RX] = [0.0; MAX_RX];
+        for n in 0..in_size {
+            let l_sample = if rx_state[0].enabled {
+                let s = (wdsp_out[0][2 * n] as f32) * rx_state[0].volume;
+                sum_sq[0] += s * s;
+                s
+            } else {
+                0.0
+            };
+            let r_sample = if num_rx >= 2 && rx_state[1].enabled {
+                let s = (wdsp_out[1][2 * n] as f32) * rx_state[1].volume;
+                sum_sq[1] += s * s;
+                s
+            } else if num_rx == 1 {
+                // Mono case: duplicate L to R so stereo output still
+                // plays through both speakers.
+                l_sample
+            } else {
+                0.0
+            };
+            audio_burst[n] = [l_sample, r_sample];
         }
-        let pushed = audio.push_slice(&audio_burst);
+        // S-meter for any RX we don't mix into the stereo bus (index >= 2).
+        for r in 2..num_rx {
+            let mut ss = 0.0_f32;
+            if rx_state[r].enabled {
+                for n in 0..in_size {
+                    let s = (wdsp_out[r][2 * n] as f32) * rx_state[r].volume;
+                    ss += s * s;
+                }
+            }
+            sum_sq[r] = ss;
+        }
+
+        let pushed = audio.push_stereo_slice(&audio_burst);
         if pushed < audio_burst.len() {
             tracing::trace!(
                 dropped = audio_burst.len() - pushed,
@@ -529,42 +667,40 @@ fn dsp_loop(
             );
         }
 
-        // 5. S-meter: RMS → dBFS, exponentially smoothed.
-        //
-        //    `smoothing = 0.2` gives a ~200 ms time constant at 48 kHz /
-        //    1024-sample buffers, which feels right for a needle-style
-        //    meter. Raw `peak_db` at -140 dBFS is the floor.
-        let rms   = (sum_sq / in_size as f32).sqrt();
-        let raw_db = if rms > 1.0e-7 {
-            20.0 * rms.log10()
-        } else {
-            -140.0
-        };
-        smoothed_s_meter_db = 0.8 * smoothed_s_meter_db + 0.2 * raw_db;
+        // 5. Per-RX S-meter smoothing (200 ms time constant).
+        for r in 0..num_rx {
+            let rms = (sum_sq[r] / in_size as f32).sqrt();
+            let raw_db = if rms > 1.0e-7 { 20.0 * rms.log10() } else { -140.0 };
+            smoothed_s_meter_db[r] = 0.8 * smoothed_s_meter_db[r] + 0.2 * raw_db;
+        }
 
-        // 6. Spectrum: rate-limit to SPECTRUM_UPDATE_INTERVAL.
+        // 6. Spectrum publish — rate limited.
         if last_spectrum_push.elapsed() >= SPECTRUM_UPDATE_INTERVAL {
-            compute_spectrum(
-                &wdsp_in,
-                &hann,
-                fft_norm,
-                &fft,
-                &mut fft_buf,
-                &mut fft_scratch,
-            );
-            let bins_db = spectrum_to_db(&fft_buf);
-
-            // Publish the snapshot. `ArcSwap::store` is lock-free on
-            // the reader side and a single CAS on this side.
-            let snapshot = Arc::new(Telemetry {
-                spectrum_bins_db: bins_db,
-                s_meter_db:       smoothed_s_meter_db,
-                center_freq_hz:   center_freq_hz.load(Ordering::Acquire),
-                span_hz:          48_000,
-                last_update:      Instant::now(),
-            });
-            telemetry.store(snapshot);
-
+            let mut snapshot = Telemetry {
+                num_rx: num_rx as u8,
+                ..Telemetry::default()
+            };
+            for r in 0..num_rx {
+                compute_spectrum(
+                    &wdsp_in[r],
+                    &hann,
+                    fft_norm,
+                    &fft,
+                    &mut fft_buf,
+                    &mut fft_scratch,
+                );
+                let bins_db = spectrum_to_db(&fft_buf);
+                snapshot.rx[r] = RxTelemetry {
+                    enabled:          rx_state[r].enabled,
+                    spectrum_bins_db: bins_db,
+                    s_meter_db:       smoothed_s_meter_db[r],
+                    center_freq_hz:   center_freqs[r].load(Ordering::Acquire),
+                    span_hz:          48_000,
+                    mode:             rx_state[r].mode,
+                };
+            }
+            snapshot.last_update = Instant::now();
+            telemetry.store(Arc::new(snapshot));
             last_spectrum_push = Instant::now();
         }
     }
@@ -644,13 +780,18 @@ mod tests {
 
         let mock = MockHl2::spawn().expect("mock HL2");
 
-        let cfg = RadioConfig {
-            radio_addr: mock.address(),
-            rx1_frequency: 7_074_000,
-            mode: Mode::Usb,
-            volume: 0.0,          // silence — don't blast the test runner's speakers
+        let mut cfg = RadioConfig {
+            radio_addr:   mock.address(),
+            num_rx:       1,
             audio_device: None,
-            prime_wisdom: false,  // skip the FFTW plan table rebuild (~10 min)
+            prime_wisdom: false, // skip the FFTW plan table rebuild (~10 min)
+            ..RadioConfig::default()
+        };
+        cfg.rx[0] = RxConfig {
+            enabled:      true,
+            frequency_hz: 7_074_000,
+            mode:         Mode::Usb,
+            volume:       0.0, // silence — don't blast the test runner's speakers
         };
 
         // If there's no default output device, the Radio can't start.

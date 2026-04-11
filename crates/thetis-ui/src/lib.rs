@@ -31,7 +31,7 @@ use std::time::{Duration, Instant};
 use arc_swap::ArcSwap;
 use eframe::egui;
 use egui::{Color32, ColorImage, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
-use thetis_core::{Radio, RadioConfig, Telemetry, WdspMode, SPECTRUM_BINS};
+use thetis_core::{Radio, RadioConfig, RxConfig, Telemetry, WdspMode, MAX_RX, SPECTRUM_BINS};
 
 /// One-stop entry point for the binary: create and run the app.
 ///
@@ -56,6 +56,30 @@ pub fn run() -> eframe::Result<()> {
     )
 }
 
+/// Per-RX UI state: form-field values plus the RX's waterfall texture
+/// cache. Stored in a fixed-size array inside [`ThetisApp`] so
+/// disconnecting and reconnecting with a different `num_rx` doesn't
+/// lose the user's last-edited frequency / mode.
+struct RxView {
+    enabled:      bool,
+    frequency_hz: u32,
+    mode:         WdspMode,
+    volume:       f32,
+    waterfall:    Waterfall,
+}
+
+impl RxView {
+    fn new(freq: u32, mode: WdspMode, enabled: bool) -> Self {
+        RxView {
+            enabled,
+            frequency_hz: freq,
+            mode,
+            volume: 0.25,
+            waterfall: Waterfall::new(),
+        }
+    }
+}
+
 /// Top-level eframe app state.
 pub struct ThetisApp {
     // --- Live radio handle (None = disconnected) --------------------
@@ -64,13 +88,12 @@ pub struct ThetisApp {
     last_error: Option<String>,
 
     // --- UI state / form fields ------------------------------------
-    radio_ip:     String,
-    frequency_hz: u32,
-    mode:         WdspMode,
-    volume:       f32,
-
-    // --- Waterfall renderer ----------------------------------------
-    waterfall: Waterfall,
+    radio_ip: String,
+    /// How many receivers to request on the next `Connect`. Fixed
+    /// for the lifetime of a session; changing it requires a
+    /// disconnect/reconnect cycle.
+    num_rx:   u8,
+    rxs:      Vec<RxView>,
 }
 
 impl ThetisApp {
@@ -80,15 +103,21 @@ impl ThetisApp {
         // to a running receiver.
         let radio_ip = std::env::var("HL2_IP").unwrap_or_else(|_| "192.168.1.40".into());
 
+        let mut rxs: Vec<RxView> = Vec::with_capacity(MAX_RX);
+        // Seed two sensible defaults: 40m USB on RX1, 20m USB on RX2.
+        rxs.push(RxView::new( 7_074_000, WdspMode::Usb, true));
+        rxs.push(RxView::new(14_074_000, WdspMode::Usb, false));
+        while rxs.len() < MAX_RX {
+            rxs.push(RxView::new(7_074_000, WdspMode::Usb, false));
+        }
+
         ThetisApp {
             radio:     None,
             telemetry: None,
             last_error: None,
             radio_ip,
-            frequency_hz: 7_074_000,
-            mode:         WdspMode::Usb,
-            volume:       0.25,
-            waterfall:    Waterfall::new(),
+            num_rx: 1,
+            rxs,
         }
     }
 
@@ -102,14 +131,21 @@ impl ThetisApp {
             }
         };
 
-        let config = RadioConfig {
+        let mut config = RadioConfig {
             radio_addr:    addr,
-            rx1_frequency: self.frequency_hz,
-            mode:          self.mode,
-            volume:        self.volume,
+            num_rx:        self.num_rx,
             audio_device:  None,
             prime_wisdom:  true,
+            ..RadioConfig::default()
         };
+        for (r, view) in self.rxs.iter().enumerate().take(self.num_rx as usize) {
+            config.rx[r] = RxConfig {
+                enabled:      view.enabled,
+                frequency_hz: view.frequency_hz,
+                mode:         view.mode,
+                volume:       view.volume,
+            };
+        }
 
         match Radio::start(config) {
             Ok(r) => {
@@ -155,6 +191,7 @@ impl eframe::App for ThetisApp {
 
 impl ThetisApp {
     fn draw_top_bar(&mut self, ui: &mut egui::Ui) {
+        // Row 1: global session controls (Connect / IP / num_rx / status)
         ui.horizontal(|ui| {
             if self.radio.is_some() {
                 if ui.button("Disconnect").clicked() {
@@ -172,8 +209,47 @@ impl ThetisApp {
             );
 
             ui.separator();
+            ui.label("RX:");
+            // num_rx can only change while disconnected.
+            ui.add_enabled_ui(self.radio.is_none(), |ui| {
+                ui.radio_value(&mut self.num_rx, 1u8, "1");
+                ui.radio_value(&mut self.num_rx, 2u8, "2");
+            });
+
+            ui.separator();
+            self.draw_connection_status(ui);
+        });
+
+        // Row 2+: one "VFO bar" per configured RX.
+        for rx in 0..self.num_rx as usize {
+            ui.separator();
+            self.draw_rx_row(ui, rx);
+        }
+
+        if let Some(e) = &self.last_error {
+            ui.colored_label(Color32::LIGHT_RED, format!("error: {e}"));
+        }
+    }
+
+    fn draw_rx_row(&mut self, ui: &mut egui::Ui, rx: usize) {
+        let rx_u8 = rx as u8;
+        ui.horizontal(|ui| {
+            let label = format!("RX{}:", rx + 1);
+            ui.label(egui::RichText::new(label).strong());
+
+            // Enable toggle
+            let mut enabled = self.rxs[rx].enabled;
+            let enabled_changed = ui.checkbox(&mut enabled, "on").changed();
+            if enabled_changed {
+                self.rxs[rx].enabled = enabled;
+                if let Some(r) = &self.radio {
+                    let _ = r.set_rx_enabled(rx_u8, enabled);
+                }
+            }
+
+            ui.separator();
             ui.label("VFO:");
-            let mut freq = self.frequency_hz as f64;
+            let mut freq = self.rxs[rx].frequency_hz as f64;
             let changed = ui
                 .add(
                     egui::DragValue::new(&mut freq)
@@ -183,50 +259,43 @@ impl ThetisApp {
                 )
                 .changed();
             if changed {
-                self.frequency_hz = freq.max(0.0) as u32;
+                self.rxs[rx].frequency_hz = freq.max(0.0) as u32;
                 if let Some(r) = &self.radio {
-                    let _ = r.set_frequency(self.frequency_hz);
+                    let _ = r.set_rx_frequency(rx_u8, self.rxs[rx].frequency_hz);
                 }
             }
-            ui.label(format!("({:.3} MHz)", self.frequency_hz as f64 / 1.0e6));
+            ui.label(format!("({:.3} MHz)", self.rxs[rx].frequency_hz as f64 / 1.0e6));
 
             ui.separator();
             ui.label("Mode:");
-            let prev_mode = self.mode;
-            egui::ComboBox::from_id_salt("mode")
-                .selected_text(format!("{:?}", self.mode))
+            let prev_mode = self.rxs[rx].mode;
+            egui::ComboBox::from_id_salt(("mode", rx))
+                .selected_text(format!("{:?}", self.rxs[rx].mode))
                 .show_ui(ui, |ui| {
                     for m in [
                         WdspMode::Lsb, WdspMode::Usb, WdspMode::Am, WdspMode::Sam,
                         WdspMode::Fm, WdspMode::CwL, WdspMode::CwU,
                         WdspMode::DigL, WdspMode::DigU,
                     ] {
-                        ui.selectable_value(&mut self.mode, m, format!("{m:?}"));
+                        ui.selectable_value(&mut self.rxs[rx].mode, m, format!("{m:?}"));
                     }
                 });
-            if self.mode != prev_mode {
+            if self.rxs[rx].mode != prev_mode {
                 if let Some(r) = &self.radio {
-                    let _ = r.set_mode(self.mode);
+                    let _ = r.set_rx_mode(rx_u8, self.rxs[rx].mode);
                 }
             }
 
             ui.separator();
             ui.label("Vol:");
-            let prev_vol = self.volume;
-            ui.add(egui::Slider::new(&mut self.volume, 0.0..=2.0).show_value(true));
-            if (self.volume - prev_vol).abs() > f32::EPSILON {
+            let prev_vol = self.rxs[rx].volume;
+            ui.add(egui::Slider::new(&mut self.rxs[rx].volume, 0.0..=2.0).show_value(true));
+            if (self.rxs[rx].volume - prev_vol).abs() > f32::EPSILON {
                 if let Some(r) = &self.radio {
-                    let _ = r.set_volume(self.volume);
+                    let _ = r.set_rx_volume(rx_u8, self.rxs[rx].volume);
                 }
             }
-
-            ui.separator();
-            self.draw_connection_status(ui);
         });
-
-        if let Some(e) = &self.last_error {
-            ui.colored_label(Color32::LIGHT_RED, format!("error: {e}"));
-        }
     }
 
     fn draw_connection_status(&self, ui: &mut egui::Ui) {
@@ -257,61 +326,106 @@ impl ThetisApp {
                 ui.add_space(40.0);
                 ui.heading("Not connected");
                 ui.label(
-                    "Set the radio IP in the top bar and click Connect.",
+                    "Set the radio IP + RX count in the top bar and click Connect.",
                 );
             });
             return;
         };
 
         let snapshot = telem.load_full();
+        let num_rx = snapshot.num_rx.min(MAX_RX as u8) as usize;
+        if num_rx == 0 {
+            return;
+        }
 
-        // Feed the newest row into the waterfall before drawing.
-        self.waterfall.push_row(&snapshot.spectrum_bins_db);
+        // Push fresh rows into each RX's waterfall *before* drawing so
+        // the visual and the data stay in sync.
+        for r in 0..num_rx {
+            self.rxs[r].waterfall.push_row(&snapshot.rx[r].spectrum_bins_db);
+        }
 
-        // Split the central area 1/3 spectrum, 2/3 waterfall.
+        // Divide the central area into `num_rx` horizontal bands.
+        // Each band gets its own spectrum on top and waterfall below.
         let avail = ui.available_size();
-        let spec_h  = (avail.y * 0.35).max(120.0);
-        let water_h = (avail.y - spec_h - 6.0).max(120.0);
+        let band_h = (avail.y / num_rx as f32).max(240.0);
 
         ui.vertical(|ui| {
-            let (rect, _) = ui.allocate_exact_size(
-                Vec2::new(avail.x, spec_h),
-                Sense::hover(),
-            );
-            draw_spectrum(ui, rect, &snapshot.spectrum_bins_db);
+            for r in 0..num_rx {
+                if r > 0 {
+                    ui.separator();
+                }
+                let (band_rect, _) = ui.allocate_exact_size(
+                    Vec2::new(avail.x, band_h - 8.0),
+                    Sense::hover(),
+                );
+                // Split vertically: top 35% spectrum, bottom 65% waterfall.
+                let spec_h  = (band_rect.height() * 0.35).max(80.0);
+                let water_h = (band_rect.height() - spec_h - 4.0).max(60.0);
+                let spec_rect = Rect::from_min_size(
+                    band_rect.min,
+                    Vec2::new(band_rect.width(), spec_h),
+                );
+                let water_rect = Rect::from_min_size(
+                    Pos2::new(band_rect.min.x, band_rect.min.y + spec_h + 4.0),
+                    Vec2::new(band_rect.width(), water_h),
+                );
 
-            ui.add_space(4.0);
+                draw_spectrum(ui, spec_rect, &snapshot.rx[r].spectrum_bins_db);
+                // RX label in the corner of the spectrum rect
+                ui.painter_at(spec_rect).text(
+                    spec_rect.min + Vec2::new(6.0, 4.0),
+                    egui::Align2::LEFT_TOP,
+                    format!("RX{}  {:.3} MHz  {:?}",
+                        r + 1,
+                        snapshot.rx[r].center_freq_hz as f64 / 1.0e6,
+                        snapshot.rx[r].mode),
+                    egui::FontId::monospace(12.0),
+                    if snapshot.rx[r].enabled {
+                        Color32::LIGHT_GREEN
+                    } else {
+                        Color32::GRAY
+                    },
+                );
 
-            let (rect, _) = ui.allocate_exact_size(
-                Vec2::new(avail.x, water_h),
-                Sense::hover(),
-            );
-            self.waterfall.draw(ui, ctx, rect);
+                self.rxs[r].waterfall.draw(ui, ctx, water_rect);
+            }
         });
     }
 
     fn draw_s_meter(&self, ui: &mut egui::Ui) {
-        ui.horizontal(|ui| {
-            let db = match &self.telemetry {
-                Some(t) => t.load_full().s_meter_db,
-                None    => -140.0,
-            };
-            // Map -100..0 dBFS to 0..1 fill.
-            let norm = ((db + 100.0) / 100.0).clamp(0.0, 1.0);
+        let Some(telem) = &self.telemetry else {
+            ui.horizontal(|ui| {
+                ui.monospace("S-meter: --");
+            });
+            return;
+        };
+        let snapshot = telem.load_full();
+        let num_rx = snapshot.num_rx.min(MAX_RX as u8) as usize;
 
-            let (rect, _) = ui.allocate_exact_size(
-                Vec2::new(ui.available_width() - 120.0, 18.0),
-                Sense::hover(),
-            );
-            let painter = ui.painter();
-            painter.rect_filled(rect, 2.0, Color32::from_gray(40));
-            let filled = Rect::from_min_size(
-                rect.min,
-                Vec2::new(rect.width() * norm, rect.height()),
-            );
-            painter.rect_filled(filled, 2.0, level_color(db));
+        ui.vertical(|ui| {
+            for r in 0..num_rx {
+                ui.horizontal(|ui| {
+                    ui.monospace(format!("RX{}", r + 1));
+                    let db = snapshot.rx[r].s_meter_db;
+                    // Map -100..0 dBFS to 0..1 fill.
+                    let norm = ((db + 100.0) / 100.0).clamp(0.0, 1.0);
 
-            ui.monospace(format!("{:>6.1} dBFS", db));
+                    let bar_width = (ui.available_width() - 120.0).max(120.0);
+                    let (rect, _) = ui.allocate_exact_size(
+                        Vec2::new(bar_width, 14.0),
+                        Sense::hover(),
+                    );
+                    let painter = ui.painter();
+                    painter.rect_filled(rect, 2.0, Color32::from_gray(40));
+                    let filled = Rect::from_min_size(
+                        rect.min,
+                        Vec2::new(rect.width() * norm, rect.height()),
+                    );
+                    painter.rect_filled(filled, 2.0, level_color(db));
+
+                    ui.monospace(format!("{:>6.1} dBFS", db));
+                });
+            }
         });
     }
 }

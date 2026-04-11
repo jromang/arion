@@ -23,7 +23,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
-use thetis_core::{discover, DiscoveryOptions, Radio, RadioConfig, WdspMode};
+use thetis_core::{discover, DiscoveryOptions, Radio, RadioConfig, RxConfig, WdspMode};
 
 const DEFAULT_SECONDS:   u64 = 30;
 const DEFAULT_FREQUENCY: u32 = 7_074_000;
@@ -90,14 +90,20 @@ fn main() -> Result<()> {
         freq = freq_hz as f64 / 1.0e6,
     );
 
-    let radio = Radio::start(RadioConfig {
-        radio_addr:    target_addr,
-        rx1_frequency: freq_hz,
+    let mut cfg = RadioConfig {
+        radio_addr:   target_addr,
+        num_rx:       1,
+        audio_device: std::env::var("AUDIO_DEVICE").ok(),
+        prime_wisdom: true,
+        ..RadioConfig::default()
+    };
+    cfg.rx[0] = RxConfig {
+        enabled:      true,
+        frequency_hz: freq_hz,
         mode,
-        volume:        0.25,
-        audio_device:  std::env::var("AUDIO_DEVICE").ok(),
-        prime_wisdom:  true,
-    })?;
+        volume:       0.25,
+    };
+    let radio = Radio::start(cfg)?;
 
     // ---- Ctrl+C handler -----------------------------------------------
     let keep_going = Arc::new(AtomicBool::new(true));

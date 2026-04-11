@@ -73,24 +73,25 @@ fn main() -> Result<()> {
     let start    = Instant::now();
     let deadline = start + DURATION;
     while Instant::now() < deadline {
-        // Push as many samples as fit in the ring right now, then yield.
+        // Push as many stereo frames as fit in the ring right now,
+        // then yield. Probe is mono so L == R.
         let free = sink.free_capacity();
         if free == 0 {
             std::thread::sleep(Duration::from_millis(2));
             continue;
         }
-        let mut batch = Vec::with_capacity(free);
+        let mut batch: Vec<[f32; 2]> = Vec::with_capacity(free);
         for _ in 0..free {
-            batch.push(AMPLITUDE * phase.sin());
+            let s = AMPLITUDE * phase.sin();
+            batch.push([s, s]);
             phase += phase_step;
             if phase > TAU {
                 phase -= TAU;
             }
         }
-        let pushed = sink.push_slice(&batch);
+        let pushed = sink.push_stereo_slice(&batch);
         if pushed < batch.len() {
-            // Shouldn't happen — `free` should always equal what the ring accepts.
-            eprintln!("warning: only pushed {pushed} of {} samples", batch.len());
+            eprintln!("warning: only pushed {pushed} of {} frames", batch.len());
         }
     }
 

@@ -108,10 +108,9 @@ impl Default for AudioConfig {
 /// they can be read from any thread without locking.
 #[derive(Debug, Default)]
 pub struct AudioStats {
-    /// Total mono samples the callback has consumed from the ring (i.e.
-    /// how much DSP audio has actually reached the speakers). Counts
-    /// mono samples *before* the L/R fan-out, so 48 kHz of playback
-    /// increments this by 48 000 per second.
+    /// Total stereo **frames** the callback has consumed from the ring
+    /// (a frame is one `(L, R)` pair). So 48 kHz of playback increments
+    /// this by 48 000 per second.
     pub samples_played: AtomicU64,
 
     /// Number of callback invocations that ran out of data and had to
@@ -121,27 +120,33 @@ pub struct AudioStats {
     pub underruns: AtomicU64,
 }
 
+/// One stereo frame: `[L, R]`. Multi-RX mixes RX1 into L and RX2 into R
+/// — if there's only one receiver, both channels carry the same mono
+/// sample.
+pub type StereoFrame = [f32; 2];
+
 /// Producer-side handle passed to the DSP thread.
+///
+/// The underlying ring stores [`StereoFrame`]s so each push is atomic
+/// at the frame level — the cpal callback can never see a torn
+/// half-frame.
 pub struct AudioSink {
-    producer: rtrb::Producer<f32>,
+    producer: rtrb::Producer<StereoFrame>,
     stats:    Arc<AudioStats>,
 }
 
 impl AudioSink {
-    /// Push one mono sample. Returns `false` if the ring is full (i.e.
-    /// the audio callback hasn't caught up yet — almost always a sign
-    /// that the DSP is running ahead of real time, which shouldn't
-    /// happen once everything is in sync).
-    pub fn push(&mut self, sample: f32) -> bool {
-        self.producer.push(sample).is_ok()
+    /// Push one stereo frame. Returns `false` if the ring is full.
+    pub fn push_stereo(&mut self, l: f32, r: f32) -> bool {
+        self.producer.push([l, r]).is_ok()
     }
 
-    /// Push as many of `samples` as fit. Returns the number actually
+    /// Push as many stereo frames as fit. Returns the number actually
     /// pushed; any tail that didn't fit is dropped on the floor.
-    pub fn push_slice(&mut self, samples: &[f32]) -> usize {
+    pub fn push_stereo_slice(&mut self, frames: &[StereoFrame]) -> usize {
         let mut n = 0;
-        for s in samples {
-            if self.producer.push(*s).is_err() {
+        for &frame in frames {
+            if self.producer.push(frame).is_err() {
                 break;
             }
             n += 1;
@@ -149,7 +154,14 @@ impl AudioSink {
         n
     }
 
-    /// How many more samples will fit without blocking.
+    /// Back-compat: push a mono sample by duplicating it to both
+    /// channels. Useful for single-RX consumers that don't want to
+    /// think about stereo.
+    pub fn push_mono(&mut self, sample: f32) -> bool {
+        self.push_stereo(sample, sample)
+    }
+
+    /// How many more stereo frames will fit without blocking.
     pub fn free_capacity(&self) -> usize {
         self.producer.slots()
     }
@@ -263,20 +275,18 @@ impl AudioOutput {
 
         // --- Build the pipeline depending on whether we need resampling.
         if need_resampling {
-            // Outer ring: DSP pushes at dsp_rate. Size: 2× the DSP's
-            // normal ring so the resampler thread always has input.
+            // Outer ring: DSP pushes stereo frames at dsp_rate.
             let (outer_producer, outer_consumer) =
-                rtrb::RingBuffer::<f32>::new(config.ring_capacity);
+                rtrb::RingBuffer::<StereoFrame>::new(config.ring_capacity);
 
-            // Inner ring: resampler thread writes at device_rate,
-            // cpal callback reads. Size: match the DSP ring scaled by
-            // the ratio.
+            // Inner ring: resampler thread writes stereo frames at
+            // device_rate, cpal callback reads.
             let inner_capacity = (config.ring_capacity as f64 * device_rate as f64
                                     / dsp_rate as f64)
                 .ceil() as usize
                 + 2048;
             let (inner_producer, mut inner_consumer) =
-                rtrb::RingBuffer::<f32>::new(inner_capacity);
+                rtrb::RingBuffer::<StereoFrame>::new(inner_capacity);
 
             let resampler_shutdown = Arc::new(AtomicBool::new(false));
             let resampler_thread = {
@@ -331,7 +341,7 @@ impl AudioOutput {
         } else {
             // Fast path: direct DSP → cpal ring, no resampler thread.
             let (producer, mut consumer) =
-                rtrb::RingBuffer::<f32>::new(config.ring_capacity);
+                rtrb::RingBuffer::<StereoFrame>::new(config.ring_capacity);
 
             let stats_cb = Arc::clone(&stats);
             let stream = device.build_output_stream(
@@ -420,17 +430,19 @@ fn pick_stream_config(
     ))
 }
 
-/// Resampler bridge thread. Pulls DSP-rate samples out of
-/// `outer_consumer`, runs them through a `rubato::FftFixedIn`, and
-/// pushes the device-rate output into `inner_producer` for the cpal
-/// callback to drain.
+/// Resampler bridge thread. Pulls DSP-rate stereo frames out of
+/// `outer_consumer`, de-interleaves them into separate L and R
+/// buffers, runs them through a single 2-channel
+/// `rubato::FftFixedIn`, re-interleaves the output, and pushes the
+/// device-rate frames into `inner_producer` for the cpal callback to
+/// drain.
 ///
 /// Chunk size: 1024 DSP frames (~21 ms @ 48 kHz), matching the DSP
 /// thread's `fexchange0` buffer. Most of the time the resampler
 /// consumes and produces exactly one chunk per wake-up.
 fn resample_bridge(
-    mut outer_consumer: rtrb::Consumer<f32>,
-    mut inner_producer: rtrb::Producer<f32>,
+    mut outer_consumer: rtrb::Consumer<StereoFrame>,
+    mut inner_producer: rtrb::Producer<StereoFrame>,
     dsp_rate:  u32,
     device_rate: u32,
     shutdown:  Arc<AtomicBool>,
@@ -442,7 +454,7 @@ fn resample_bridge(
         device_rate as usize,
         CHUNK_IN_FRAMES,
         1, // 1 sub-chunk is fine for our latency budget
-        1, // mono
+        2, // stereo: two rubato "channels"
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -451,34 +463,38 @@ fn resample_bridge(
         }
     };
 
-    // Pre-allocated buffers so the loop never touches the allocator.
-    let mut input_chunk:  Vec<f32> = vec![0.0; CHUNK_IN_FRAMES];
-    let mut output_chunk: Vec<Vec<f32>> = resampler.output_buffer_allocate(true);
+    // Pre-allocated de-interleaved buffers so the loop never touches
+    // the allocator.
+    let mut input_l:  Vec<f32> = vec![0.0; CHUNK_IN_FRAMES];
+    let mut input_r:  Vec<f32> = vec![0.0; CHUNK_IN_FRAMES];
+    let mut output_chunks: Vec<Vec<f32>> = resampler.output_buffer_allocate(true);
 
     while !shutdown.load(Ordering::Acquire) {
-        // Gather one full input chunk. If the outer ring is short,
-        // wait briefly and retry; on long stalls (ring empty for
-        // >100 ms) we loop back to check the shutdown flag.
+        // Gather one full input chunk of stereo frames.
         let mut filled = 0;
         while filled < CHUNK_IN_FRAMES {
             if shutdown.load(Ordering::Acquire) {
                 return;
             }
             match outer_consumer.pop() {
-                Ok(s) => {
-                    input_chunk[filled] = s;
+                Ok([l, r]) => {
+                    input_l[filled] = l;
+                    input_r[filled] = r;
                     filled += 1;
                 }
                 Err(_) => thread::sleep(Duration::from_micros(500)),
             }
         }
 
-        // Process one chunk.
-        let input_slices: [&[f32]; 1] = [&input_chunk[..]];
-        let output_slices: [&mut [f32]; 1] = [&mut output_chunk[0][..]];
+        // Process one chunk — rubato takes two separate channel
+        // slices and writes into two separate output slices.
+        let input_slices: [&[f32]; 2] = [&input_l[..], &input_r[..]];
+        let (left_out, right_out) = output_chunks.split_at_mut(1);
+        let mut output_slices: [&mut [f32]; 2] =
+            [&mut left_out[0][..], &mut right_out[0][..]];
         let (_in_frames, out_frames) = match resampler.process_into_buffer(
             &input_slices,
-            &mut output_slices.map(|s| s),
+            &mut output_slices,
             None,
         ) {
             Ok(x) => x,
@@ -488,20 +504,20 @@ fn resample_bridge(
             }
         };
 
-        // Push the resampled output into the inner ring. If the ring
-        // is full we drop the excess — same overflow policy as the
-        // direct path.
-        for &sample in &output_chunk[0][..out_frames] {
-            if inner_producer.push(sample).is_err() {
+        // Re-interleave and push to the inner ring.
+        let out_l = &output_chunks[0];
+        let out_r = &output_chunks[1];
+        for n in 0..out_frames {
+            let frame = [out_l[n], out_r[n]];
+            if inner_producer.push(frame).is_err() {
                 // Inner ring full — cpal callback is behind or the
                 // device hasn't drained yet. Back off briefly and
                 // keep trying so we don't lose data.
                 while !shutdown.load(Ordering::Acquire)
-                    && inner_producer.push(sample).is_err()
+                    && inner_producer.push(frame).is_err()
                 {
                     thread::sleep(Duration::from_micros(500));
                 }
-                break;
             }
         }
     }
@@ -532,14 +548,23 @@ fn find_output_device(host: &cpal::Host, name: &str) -> Result<Device, AudioErro
     Err(AudioError::DeviceNotFound(name.into()))
 }
 
-/// cpal output callback. Pops mono samples from the ring and writes them
-/// to every channel of the interleaved output buffer. When the ring is
-/// empty, fills the remaining frames with silence and bumps the underrun
-/// counter so the DSP thread has a visible signal that it's too slow.
+/// cpal output callback. Pops stereo frames from the ring and writes
+/// them to the device output, handling the full spectrum of channel
+/// counts cpal might hand us:
+///
+/// - `channels == 1` → sum of (L + R) × 0.5 on the lone channel
+/// - `channels == 2` → L on ch0, R on ch1 (the typical stereo case)
+/// - `channels >= 3` → L on ch0, R on ch1, silence on every remaining
+///   channel. We don't try to be clever about surround — phase B keeps
+///   the mapping predictable.
+///
+/// On underrun (ring empty) the rest of the output buffer is filled
+/// with silence and the underrun counter is incremented once per
+/// callback invocation that ran short.
 fn output_callback(
     out:      &mut [f32],
     channels: usize,
-    consumer: &mut rtrb::Consumer<f32>,
+    consumer: &mut rtrb::Consumer<StereoFrame>,
     stats:    &AudioStats,
 ) {
     let mut frame_idx     = 0;
@@ -548,9 +573,22 @@ fn output_callback(
 
     while frame_idx + channels <= out.len() {
         match consumer.pop() {
-            Ok(sample) => {
-                for ch in 0..channels {
-                    out[frame_idx + ch] = sample;
+            Ok([l, r]) => {
+                match channels {
+                    1 => {
+                        out[frame_idx] = (l + r) * 0.5;
+                    }
+                    2 => {
+                        out[frame_idx]     = l;
+                        out[frame_idx + 1] = r;
+                    }
+                    _ => {
+                        out[frame_idx]     = l;
+                        out[frame_idx + 1] = r;
+                        for x in &mut out[frame_idx + 2..frame_idx + channels] {
+                            *x = 0.0;
+                        }
+                    }
                 }
                 frames_played += 1;
             }
@@ -590,17 +628,21 @@ mod tests {
         const DEVICE_RATE: u32 = 44_100;
         const INPUT_FRAMES: usize = 8 * 1024; // 8 chunks = ~170 ms
 
-        // Producer side: one chunk of 1 kHz sine for 170 ms.
+        // Producer side: one chunk of 1 kHz sine for 170 ms, stereo
+        // (RX1 → L, RX2 → R with a 90° phase shift to be
+        // distinguishable from L on decode).
         let (mut outer_producer, outer_consumer) =
-            rtrb::RingBuffer::<f32>::new(INPUT_FRAMES * 2);
+            rtrb::RingBuffer::<StereoFrame>::new(INPUT_FRAMES * 2);
         for n in 0..INPUT_FRAMES {
-            let x = (TAU * 1_000.0 * n as f32 / DSP_RATE as f32).sin() * 0.5;
-            outer_producer.push(x).unwrap();
+            let phase = TAU * 1_000.0 * n as f32 / DSP_RATE as f32;
+            let l = phase.sin()       * 0.5;
+            let r = (phase + 1.57).sin() * 0.25;
+            outer_producer.push([l, r]).unwrap();
         }
 
         let inner_capacity = INPUT_FRAMES * 2;
         let (inner_producer, mut inner_consumer) =
-            rtrb::RingBuffer::<f32>::new(inner_capacity);
+            rtrb::RingBuffer::<StereoFrame>::new(inner_capacity);
 
         let shutdown = Arc::new(AtomicBool::new(false));
         let shutdown_inner = Arc::clone(&shutdown);
@@ -626,12 +668,12 @@ mod tests {
         let minimum = ideal * 7 / 10;
         let deadline =
             std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let mut drained = Vec::with_capacity(ideal);
+        let mut drained: Vec<StereoFrame> = Vec::with_capacity(ideal);
         while drained.len() < ideal
             && std::time::Instant::now() < deadline
         {
-            if let Ok(s) = inner_consumer.pop() {
-                drained.push(s);
+            if let Ok(frame) = inner_consumer.pop() {
+                drained.push(frame);
             } else {
                 std::thread::sleep(std::time::Duration::from_millis(1));
             }
@@ -644,9 +686,10 @@ mod tests {
             "expected at least {minimum} resampled frames (ideal {ideal}), got {}",
             drained.len()
         );
-        for (i, &s) in drained.iter().enumerate() {
-            assert!(s.is_finite(), "frame {i} = {s} (NaN/Inf)");
-            assert!(s.abs() <= 1.0, "frame {i} = {s} out of range");
+        for (i, &[l, r]) in drained.iter().enumerate() {
+            assert!(l.is_finite() && r.is_finite(), "frame {i} = [{l}, {r}] NaN/Inf");
+            assert!(l.abs() <= 1.0 && r.abs() <= 1.0,
+                "frame {i} = [{l}, {r}] out of range");
         }
     }
 
@@ -677,10 +720,10 @@ mod tests {
             Err(e) => panic!("failed to start audio: {e}"),
         };
 
-        // Push 512 samples of silence and wait for the callback to
-        // consume them.
+        // Push 512 stereo frames of silence and wait for the callback
+        // to consume them.
         for _ in 0..512 {
-            sink.push(0.0);
+            sink.push_stereo(0.0, 0.0);
         }
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(250);
         while std::time::Instant::now() < deadline {
