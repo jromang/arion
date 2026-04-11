@@ -32,6 +32,10 @@ use arc_swap::ArcSwap;
 use eframe::egui;
 use egui::{Color32, ColorImage, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 use thetis_core::{Radio, RadioConfig, RxConfig, Telemetry, WdspMode, MAX_RX, SPECTRUM_BINS};
+use thetis_settings::{
+    BandStackEntry as SerdeBandStackEntry, GeneralSettings, Memory, Mode as SerdeMode,
+    RxSettings as SerdeRxSettings, Settings,
+};
 
 /// One-stop entry point for the binary: create and run the app.
 ///
@@ -70,20 +74,6 @@ struct RxView {
     waterfall:    Waterfall,
 }
 
-impl RxView {
-    fn new(freq: u32, mode: WdspMode, enabled: bool) -> Self {
-        RxView {
-            enabled,
-            frequency_hz: freq,
-            mode,
-            volume: 0.25,
-            nr3: false,
-            nr4: false,
-            waterfall: Waterfall::new(),
-        }
-    }
-}
-
 /// Top-level eframe app state.
 pub struct ThetisApp {
     // --- Live radio handle (None = disconnected) --------------------
@@ -104,37 +94,143 @@ pub struct ThetisApp {
     active_rx: usize,
     /// Per-band cache of `(freq, mode)` so jumping away from 40 m
     /// and back returns to the user's last spot on that band.
-    /// Pre-seeded with common digital-mode anchors. B.5 will persist
-    /// this to disk.
     band_stack: BandStack,
+
+    // --- Persistence (B.5) -----------------------------------------
+    /// Memories list (named freq/mode bookmarks). Mirror of
+    /// `Settings::memories` so the UI can mutate freely without
+    /// touching disk on every keystroke.
+    memories: Vec<Memory>,
+    /// Whether the floating memories panel is visible.
+    show_memories: bool,
+    /// Form-field state for the "Add memory" widget.
+    new_memory_name: String,
+    new_memory_tag:  String,
+    /// Last successful save. We debounce auto-saves to one every
+    /// `SAVE_DEBOUNCE` so a lively UI session doesn't pound the
+    /// SSD with TOML writes.
+    last_save: Instant,
+    /// Set whenever a user gesture changes a persisted field. The
+    /// next post-debounce frame consumes the flag and writes.
+    dirty:     bool,
 }
+
+/// Minimum interval between background TOML writes during a live
+/// session. Quitting / disconnecting always saves immediately,
+/// regardless of this debounce.
+const SAVE_DEBOUNCE: Duration = Duration::from_secs(10);
 
 impl ThetisApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         apply_dark_theme(&cc.egui_ctx);
 
-        // Seed the connection form from env vars so a one-liner
-        // `HL2_IP=192.168.1.40 cargo run -p thetis` gets you straight
-        // to a running receiver.
-        let radio_ip = std::env::var("HL2_IP").unwrap_or_else(|_| "192.168.1.40".into());
+        // Load persisted settings. Failures here are non-fatal — fall
+        // back to defaults so a corrupted thetis.toml never bricks
+        // the app. The user can blow away ~/.config/thetis/ if they
+        // really want a clean state.
+        let settings = match Settings::load_default() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load settings, using defaults");
+                let mut s = Settings::default();
+                s.ensure_rx_slots(2);
+                s
+            }
+        };
+
+        // The HL2_IP env var takes precedence over the persisted IP
+        // so a one-liner `HL2_IP=… cargo run` keeps working even
+        // when the user has saved a different IP.
+        let radio_ip = std::env::var("HL2_IP")
+            .unwrap_or_else(|_| settings.general.last_radio_ip.clone());
 
         let mut rxs: Vec<RxView> = Vec::with_capacity(MAX_RX);
-        // Seed two sensible defaults: 40m USB on RX1, 20m USB on RX2.
-        rxs.push(RxView::new( 7_074_000, WdspMode::Usb, true));
-        rxs.push(RxView::new(14_074_000, WdspMode::Usb, false));
-        while rxs.len() < MAX_RX {
-            rxs.push(RxView::new(7_074_000, WdspMode::Usb, false));
+        for r in 0..MAX_RX {
+            let serde_rx = settings.rxs.get(r).cloned().unwrap_or_default();
+            rxs.push(RxView {
+                enabled:      serde_rx.enabled || r == 0, // RX1 always defaults on
+                frequency_hz: serde_rx.frequency_hz,
+                mode:         mode_from_serde(serde_rx.mode),
+                volume:       serde_rx.volume,
+                nr3:          serde_rx.nr3,
+                nr4:          serde_rx.nr4,
+                waterfall:    Waterfall::new(),
+            });
         }
+
+        let band_stack = BandStack::from_settings(&settings.band_stacks);
 
         ThetisApp {
             radio:     None,
             telemetry: None,
             last_error: None,
             radio_ip,
-            num_rx: 1,
+            num_rx:    settings.general.num_rx.clamp(1, MAX_RX as u8),
             rxs,
-            active_rx: 0,
-            band_stack: BandStack::default(),
+            active_rx: settings.general.active_rx.clamp(0, MAX_RX as u8 - 1) as usize,
+            band_stack,
+            memories:        settings.memories,
+            show_memories:   false,
+            new_memory_name: String::new(),
+            new_memory_tag:  String::new(),
+            last_save:       Instant::now(),
+            dirty:           false,
+        }
+    }
+
+    /// Build a `Settings` snapshot from the current UI state. Used
+    /// by both the debounced auto-save and the explicit save on
+    /// connect / disconnect / quit.
+    fn to_settings(&self) -> Settings {
+        let mut s = Settings::default();
+        s.ensure_rx_slots(MAX_RX);
+        s.general = GeneralSettings {
+            last_radio_ip: self.radio_ip.clone(),
+            audio_device:  String::new(), // populated when B.5 audio picker lands
+            active_rx:     self.active_rx as u8,
+            num_rx:        self.num_rx,
+        };
+        for (i, view) in self.rxs.iter().enumerate().take(MAX_RX) {
+            s.rxs[i] = SerdeRxSettings {
+                enabled:      view.enabled,
+                frequency_hz: view.frequency_hz,
+                mode:         mode_to_serde(view.mode),
+                volume:       view.volume,
+                nr3:          view.nr3,
+                nr4:          view.nr4,
+            };
+        }
+        s.band_stacks = self.band_stack.to_settings();
+        s.memories    = self.memories.clone();
+        s
+    }
+
+    /// Mark the in-memory settings dirty so the next debounce tick
+    /// (or the next disconnect / quit) writes them to disk.
+    fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Persist the current state to disk **right now**, regardless
+    /// of the debounce. Used at connect / disconnect / app shutdown
+    /// where we don't want to risk losing the most recent state.
+    fn save_now(&mut self) {
+        match self.to_settings().save_default() {
+            Ok(()) => {
+                self.dirty = false;
+                self.last_save = Instant::now();
+                tracing::debug!("settings saved");
+            }
+            Err(e) => tracing::warn!(error = %e, "settings save failed"),
+        }
+    }
+
+    /// Auto-save path: only writes when something changed AND the
+    /// debounce window has elapsed. Called once per UI frame from
+    /// `App::ui`.
+    fn maybe_autosave(&mut self) {
+        if self.dirty && self.last_save.elapsed() >= SAVE_DEBOUNCE {
+            self.save_now();
         }
     }
 
@@ -168,6 +264,7 @@ impl ThetisApp {
             let _ = r.set_rx_frequency(rx as u8, entry.frequency_hz);
             let _ = r.set_rx_mode(rx as u8, entry.mode);
         }
+        self.mark_dirty();
     }
 
     fn connect(&mut self) {
@@ -201,6 +298,10 @@ impl ThetisApp {
                 self.telemetry = Some(r.telemetry());
                 self.radio     = Some(r);
                 self.last_error = None;
+                // Connect snapshots the form fields the user just
+                // committed (IP, num_rx, RX state) so a crash mid-
+                // session keeps the most recent intent on disk.
+                self.save_now();
             }
             Err(e) => {
                 self.last_error = Some(format!("{e:#}"));
@@ -213,6 +314,9 @@ impl ThetisApp {
             let _ = r.stop();
         }
         self.telemetry = None;
+        // Disconnect always saves so the next launch lands on the
+        // same band / freq / mode the user left.
+        self.save_now();
     }
 }
 
@@ -221,6 +325,11 @@ impl eframe::App for ThetisApp {
         // Keep the UI animated even when the user isn't interacting —
         // the spectrum needs fresh draws at the DSP update rate (~23 Hz).
         ui.ctx().request_repaint_after(Duration::from_millis(40));
+
+        // Debounced auto-save: only writes when something changed
+        // and the SAVE_DEBOUNCE window has elapsed since the last
+        // write. Cheap when there's nothing to do.
+        self.maybe_autosave();
 
         // eframe 0.34 changed `App::update(&Context)` to
         // `App::ui(&mut Ui)`, marked `Panel::show` deprecated in
@@ -239,6 +348,24 @@ impl eframe::App for ThetisApp {
         egui::CentralPanel::default().show_inside(ui, |ui| {
             self.draw_main(ui, &ctx);
         });
+
+        // Floating memories window. Drawn last so it overlays the
+        // central panel; the user toggles it via the "Memories"
+        // button in the top bar.
+        if self.show_memories {
+            self.draw_memories_window(&ctx);
+        }
+    }
+
+    /// Final flush on window close. eframe calls this exactly once
+    /// after the user closes the viewport, so it's the right place
+    /// to disconnect the radio cleanly and persist the last state.
+    fn on_exit(&mut self) {
+        if self.radio.is_some() {
+            self.disconnect();
+        } else {
+            self.save_now();
+        }
     }
 }
 
@@ -258,18 +385,28 @@ impl ThetisApp {
 
             ui.separator();
             ui.label("IP:");
-            ui.add_enabled(
+            let ip_resp = ui.add_enabled(
                 self.radio.is_none(),
                 egui::TextEdit::singleline(&mut self.radio_ip).desired_width(120.0),
             );
+            if ip_resp.changed() {
+                self.mark_dirty();
+            }
 
             ui.separator();
             ui.label("RX:");
             // num_rx can only change while disconnected.
+            let prev_num_rx = self.num_rx;
             ui.add_enabled_ui(self.radio.is_none(), |ui| {
                 ui.radio_value(&mut self.num_rx, 1u8, "1");
                 ui.radio_value(&mut self.num_rx, 2u8, "2");
             });
+            if self.num_rx != prev_num_rx {
+                self.mark_dirty();
+            }
+
+            ui.separator();
+            ui.toggle_value(&mut self.show_memories, "Memories");
 
             ui.separator();
             self.draw_connection_status(ui);
@@ -287,6 +424,140 @@ impl ThetisApp {
         if let Some(e) = &self.last_error {
             ui.colored_label(Color32::LIGHT_RED, format!("error: {e}"));
         }
+    }
+
+    /// Floating "Memories" panel: scrollable list of named freq/mode
+    /// bookmarks. Double-click a row to load it into the active RX,
+    /// "Add" to capture the active RX's current state, "X" to delete.
+    fn draw_memories_window(&mut self, ctx: &egui::Context) {
+        let mut open = self.show_memories;
+        let mut load_idx: Option<usize> = None;
+        let mut delete_idx: Option<usize> = None;
+        let mut add_clicked = false;
+
+        egui::Window::new("Memories")
+            .open(&mut open)
+            .default_width(360.0)
+            .default_height(380.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "{} memorie{}",
+                    self.memories.len(),
+                    if self.memories.len() == 1 { "" } else { "s" }
+                ));
+                ui.separator();
+
+                // Capture form for new memory.
+                ui.horizontal(|ui| {
+                    ui.label("Name:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.new_memory_name)
+                            .desired_width(110.0),
+                    );
+                    ui.label("Tag:");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.new_memory_tag)
+                            .desired_width(110.0),
+                    );
+                    if ui.button("Add").clicked() {
+                        add_clicked = true;
+                    }
+                });
+
+                ui.separator();
+
+                // Scrollable list of existing memories.
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for (i, mem) in self.memories.iter().enumerate() {
+                        ui.horizontal(|ui| {
+                            // Double-click anywhere on the label loads
+                            // the memory into the active RX.
+                            let label = format!(
+                                "{:<20} {:>10.3} MHz  {:?}",
+                                mem.name,
+                                mem.freq_hz as f64 / 1.0e6,
+                                mem.mode,
+                            );
+                            let resp = ui.add(
+                                egui::Label::new(egui::RichText::new(label).monospace())
+                                    .sense(Sense::click()),
+                            );
+                            if resp.double_clicked() {
+                                load_idx = Some(i);
+                            }
+                            if !mem.tag.is_empty() {
+                                ui.weak(format!("({})", mem.tag));
+                            }
+                            // Push delete to the right edge.
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("✕").on_hover_text("Delete").clicked() {
+                                        delete_idx = Some(i);
+                                    }
+                                },
+                            );
+                        });
+                    }
+                });
+            });
+
+        self.show_memories = open;
+
+        if add_clicked {
+            self.add_current_as_memory();
+        }
+        if let Some(i) = load_idx {
+            self.load_memory(i);
+        }
+        if let Some(i) = delete_idx {
+            self.memories.remove(i);
+            self.mark_dirty();
+        }
+    }
+
+    /// Capture the active RX's current frequency + mode as a new memory.
+    /// Uses the form-field name/tag, falling back to a "{freq:.3} MHz"
+    /// auto-name when the user left the name blank.
+    fn add_current_as_memory(&mut self) {
+        let rx = self.active_rx;
+        if rx >= self.rxs.len() {
+            return;
+        }
+        let view = &self.rxs[rx];
+        let name = if self.new_memory_name.trim().is_empty() {
+            format!("{:.3} MHz", view.frequency_hz as f64 / 1.0e6)
+        } else {
+            self.new_memory_name.trim().to_string()
+        };
+        self.memories.push(Memory {
+            name,
+            freq_hz: view.frequency_hz,
+            mode:    mode_to_serde(view.mode),
+            tag:     self.new_memory_tag.trim().to_string(),
+        });
+        self.new_memory_name.clear();
+        self.new_memory_tag.clear();
+        self.mark_dirty();
+    }
+
+    /// Apply memory `i` to the active RX (frequency + mode), pushing
+    /// to the live radio if connected.
+    fn load_memory(&mut self, i: usize) {
+        let Some(mem) = self.memories.get(i).cloned() else { return };
+        let rx = self.active_rx;
+        if rx >= self.rxs.len() {
+            return;
+        }
+        let mode = mode_from_serde(mem.mode);
+        self.rxs[rx].frequency_hz = mem.freq_hz;
+        self.rxs[rx].mode         = mode;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_frequency(rx as u8, mem.freq_hz);
+            let _ = r.set_rx_mode(rx as u8, mode);
+        }
+        self.mark_dirty();
     }
 
     /// Horizontal row of amateur-band buttons. Pressing one routes
@@ -331,6 +602,7 @@ impl ThetisApp {
                 if let Some(r) = &self.radio {
                     let _ = r.set_rx_enabled(rx_u8, enabled);
                 }
+                self.mark_dirty();
             }
 
             ui.separator();
@@ -349,6 +621,7 @@ impl ThetisApp {
                 if let Some(r) = &self.radio {
                     let _ = r.set_rx_frequency(rx_u8, self.rxs[rx].frequency_hz);
                 }
+                self.mark_dirty();
             }
             ui.label(format!("({:.3} MHz)", self.rxs[rx].frequency_hz as f64 / 1.0e6));
 
@@ -370,6 +643,7 @@ impl ThetisApp {
                 if let Some(r) = &self.radio {
                     let _ = r.set_rx_mode(rx_u8, self.rxs[rx].mode);
                 }
+                self.mark_dirty();
             }
 
             ui.separator();
@@ -380,6 +654,7 @@ impl ThetisApp {
                 if let Some(r) = &self.radio {
                     let _ = r.set_rx_volume(rx_u8, self.rxs[rx].volume);
                 }
+                self.mark_dirty();
             }
 
             ui.separator();
@@ -389,6 +664,7 @@ impl ThetisApp {
                 if let Some(r) = &self.radio {
                     let _ = r.set_rx_nr3(rx_u8, self.rxs[rx].nr3);
                 }
+                self.mark_dirty();
             }
             let prev_nr4 = self.rxs[rx].nr4;
             ui.checkbox(&mut self.rxs[rx].nr4, "NR4");
@@ -396,6 +672,7 @@ impl ThetisApp {
                 if let Some(r) = &self.radio {
                     let _ = r.set_rx_nr4(rx_u8, self.rxs[rx].nr4);
                 }
+                self.mark_dirty();
             }
         });
     }
@@ -541,6 +818,7 @@ impl ThetisApp {
 
         // Apply tune commands after the draw closure to satisfy the
         // borrow checker (snapshot above is still alive inside ui.vertical).
+        let any_change = !pending_tunes.is_empty();
         for (rx, new_freq) in pending_tunes {
             self.rxs[rx].frequency_hz = new_freq;
             if let Some(r) = &self.radio {
@@ -548,7 +826,13 @@ impl ThetisApp {
             }
         }
         if let Some(rx) = newly_active {
-            self.active_rx = rx;
+            if self.active_rx != rx {
+                self.active_rx = rx;
+                self.mark_dirty();
+            }
+        }
+        if any_change {
+            self.mark_dirty();
         }
     }
 
@@ -651,6 +935,45 @@ fn draw_s_meter_scaled(ui: &mut egui::Ui, rx: usize, dbfs: f32) {
         };
         ui.monospace(format!("{:<7}{:>6.1} dBm", readout, dbm));
     });
+}
+
+// --- Settings <-> UI conversion -----------------------------------------
+
+/// Round-trip helper: turn `wdsp::Mode` into the serde-friendly mirror
+/// in `thetis-settings`. Variants line up 1:1 so the match is total
+/// without a fallback.
+fn mode_to_serde(m: WdspMode) -> SerdeMode {
+    match m {
+        WdspMode::Lsb  => SerdeMode::Lsb,
+        WdspMode::Usb  => SerdeMode::Usb,
+        WdspMode::Dsb  => SerdeMode::Dsb,
+        WdspMode::CwL  => SerdeMode::CwL,
+        WdspMode::CwU  => SerdeMode::CwU,
+        WdspMode::Fm   => SerdeMode::Fm,
+        WdspMode::Am   => SerdeMode::Am,
+        WdspMode::DigU => SerdeMode::DigU,
+        WdspMode::Spec => SerdeMode::Spec,
+        WdspMode::DigL => SerdeMode::DigL,
+        WdspMode::Sam  => SerdeMode::Sam,
+        WdspMode::Drm  => SerdeMode::Drm,
+    }
+}
+
+fn mode_from_serde(m: SerdeMode) -> WdspMode {
+    match m {
+        SerdeMode::Lsb  => WdspMode::Lsb,
+        SerdeMode::Usb  => WdspMode::Usb,
+        SerdeMode::Dsb  => WdspMode::Dsb,
+        SerdeMode::CwL  => WdspMode::CwL,
+        SerdeMode::CwU  => WdspMode::CwU,
+        SerdeMode::Fm   => WdspMode::Fm,
+        SerdeMode::Am   => WdspMode::Am,
+        SerdeMode::DigU => WdspMode::DigU,
+        SerdeMode::Spec => WdspMode::Spec,
+        SerdeMode::DigL => WdspMode::DigL,
+        SerdeMode::Sam  => WdspMode::Sam,
+        SerdeMode::Drm  => WdspMode::Drm,
+    }
 }
 
 // --- Theme ---------------------------------------------------------------
@@ -808,6 +1131,39 @@ impl BandStack {
     pub fn set(&mut self, band: Band, entry: BandStackEntry) {
         let idx = Band::ALL.iter().position(|b| *b == band).unwrap();
         self.entries[idx] = entry;
+    }
+
+    /// Reconstruct a `BandStack` from a `[band_stacks]` table loaded
+    /// from `thetis.toml`. Missing entries fall back to the band's
+    /// hard-coded default (FT8 anchors / classic phone spots).
+    pub fn from_settings(map: &std::collections::BTreeMap<String, SerdeBandStackEntry>) -> Self {
+        let mut stack = BandStack::default();
+        for band in Band::ALL {
+            if let Some(entry) = map.get(band.label()) {
+                stack.set(band, BandStackEntry {
+                    frequency_hz: entry.frequency_hz,
+                    mode:         mode_from_serde(entry.mode),
+                });
+            }
+        }
+        stack
+    }
+
+    /// Serialise to the on-disk `BTreeMap` representation. Sorted
+    /// keys keep diffs stable across saves.
+    pub fn to_settings(&self) -> std::collections::BTreeMap<String, SerdeBandStackEntry> {
+        let mut out = std::collections::BTreeMap::new();
+        for band in Band::ALL {
+            let entry = self.get(band);
+            out.insert(
+                band.label().to_string(),
+                SerdeBandStackEntry {
+                    frequency_hz: entry.frequency_hz,
+                    mode:         mode_to_serde(entry.mode),
+                },
+            );
+        }
+        out
     }
 }
 

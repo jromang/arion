@@ -3290,9 +3290,11 @@ dependencies = [
 name = "thetis-settings"
 version = "0.0.1"
 dependencies = [
+ "directories",
  "serde",
  "thiserror 2.0.18",
  "toml",
+ "tracing",
 ]
 
 [[package]]
@@ -3304,6 +3306,7 @@ dependencies = [
  "eframe",
  "egui",
  "thetis-core",
+ "thetis-settings",
  "tracing",
  "wgpu",
 ]
