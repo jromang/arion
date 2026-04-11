@@ -98,10 +98,21 @@ pub struct ThetisApp {
     /// disconnect/reconnect cycle.
     num_rx:   u8,
     rxs:      Vec<RxView>,
+    /// Index of the RX that band-button presses affect. The user
+    /// implicitly switches it by clicking inside that RX's spectrum
+    /// or VFO controls. Defaults to RX0 on startup.
+    active_rx: usize,
+    /// Per-band cache of `(freq, mode)` so jumping away from 40 m
+    /// and back returns to the user's last spot on that band.
+    /// Pre-seeded with common digital-mode anchors. B.5 will persist
+    /// this to disk.
+    band_stack: BandStack,
 }
 
 impl ThetisApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        apply_dark_theme(&cc.egui_ctx);
+
         // Seed the connection form from env vars so a one-liner
         // `HL2_IP=192.168.1.40 cargo run -p thetis` gets you straight
         // to a running receiver.
@@ -122,6 +133,40 @@ impl ThetisApp {
             radio_ip,
             num_rx: 1,
             rxs,
+            active_rx: 0,
+            band_stack: BandStack::default(),
+        }
+    }
+
+    /// Apply the stored entry for `band` to the active RX. Saves the
+    /// active RX's current freq/mode back to its current band first
+    /// so the user gets a true band-stack toggle (jump-away → jump-back
+    /// preserves where you were).
+    fn jump_to_band(&mut self, band: Band) {
+        let rx = self.active_rx;
+        if rx >= self.rxs.len() {
+            return;
+        }
+
+        // 1. Snapshot current state into the matching band slot.
+        let current_freq = self.rxs[rx].frequency_hz;
+        let current_mode = self.rxs[rx].mode;
+        if let Some(prev_band) = Band::for_freq(current_freq) {
+            self.band_stack.set(prev_band, BandStackEntry {
+                frequency_hz: current_freq,
+                mode:         current_mode,
+            });
+        }
+
+        // 2. Pull the destination band's last freq/mode (or its default).
+        let entry = self.band_stack.get(band);
+        self.rxs[rx].frequency_hz = entry.frequency_hz;
+        self.rxs[rx].mode         = entry.mode;
+
+        // 3. Push to the live radio if connected.
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_frequency(rx as u8, entry.frequency_hz);
+            let _ = r.set_rx_mode(rx as u8, entry.mode);
         }
     }
 
@@ -236,9 +281,40 @@ impl ThetisApp {
             self.draw_rx_row(ui, rx);
         }
 
+        ui.separator();
+        self.draw_band_buttons(ui);
+
         if let Some(e) = &self.last_error {
             ui.colored_label(Color32::LIGHT_RED, format!("error: {e}"));
         }
+    }
+
+    /// Horizontal row of amateur-band buttons. Pressing one routes
+    /// through `jump_to_band(band)` which snapshots the active RX's
+    /// current freq/mode into the matching band slot, then loads
+    /// the new band's entry. The currently-tuned band is highlighted.
+    fn draw_band_buttons(&mut self, ui: &mut egui::Ui) {
+        let active_freq = self
+            .rxs
+            .get(self.active_rx)
+            .map(|v| v.frequency_hz)
+            .unwrap_or(0);
+        let current_band = Band::for_freq(active_freq);
+
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Band:").strong());
+            ui.label(format!("(RX{})", self.active_rx + 1));
+            for band in Band::ALL {
+                let is_current = current_band == Some(band);
+                let mut text = egui::RichText::new(band.label()).monospace();
+                if is_current {
+                    text = text.color(Color32::BLACK).background_color(Color32::LIGHT_GREEN);
+                }
+                if ui.button(text).clicked() {
+                    self.jump_to_band(band);
+                }
+            }
+        });
     }
 
     fn draw_rx_row(&mut self, ui: &mut egui::Ui, rx: usize) {
@@ -375,6 +451,14 @@ impl ThetisApp {
         let avail = ui.available_size();
         let band_h = (avail.y / num_rx as f32).max(240.0);
 
+        // Pending tune commands collected during the draw pass; applied
+        // after the immutable telemetry borrow is released so we can
+        // mutably touch self.radio / self.rxs.
+        let mut pending_tunes: Vec<(usize, u32)> = Vec::new();
+        // RX whose spectrum/waterfall received the most recent click;
+        // promoted to `active_rx` after the draw closure.
+        let mut newly_active: Option<usize> = None;
+
         ui.vertical(|ui| {
             for r in 0..num_rx {
                 if r > 0 {
@@ -397,6 +481,16 @@ impl ThetisApp {
                 );
 
                 draw_spectrum(ui, spec_rect, &snapshot.rx[r].spectrum_bins_db);
+                // Passband overlay — translucent rectangle showing
+                // where the demod filter passes audio. Drawn on top
+                // of the spectrum line so the bins under the filter
+                // remain visible.
+                let (lo, hi) = snapshot.rx[r].mode.default_passband_hz();
+                draw_passband_overlay(
+                    ui, spec_rect,
+                    snapshot.rx[r].span_hz,
+                    lo as f32, hi as f32,
+                );
                 // RX label in the corner of the spectrum rect
                 ui.painter_at(spec_rect).text(
                     spec_rect.min + Vec2::new(6.0, 4.0),
@@ -414,8 +508,48 @@ impl ThetisApp {
                 );
 
                 self.rxs[r].waterfall.draw(ui, ctx, water_rect);
+
+                // VFO marker — vertical line at rect center on both
+                // panels. The DDC is always centered on the VFO so the
+                // marker is anchored to the geometric middle and the
+                // spectrum scrolls under it when the user tunes.
+                draw_vfo_marker(ui, spec_rect);
+                draw_vfo_marker(ui, water_rect);
+
+                // Click-to-tune + wheel-tune. Catch the same input on
+                // both rects so the user can interact with whichever
+                // one is closer to the cursor.
+                let center_hz = snapshot.rx[r].center_freq_hz;
+                let span_hz   = snapshot.rx[r].span_hz;
+                let (new_freq, clicked) = handle_tune_input(
+                    ui, spec_rect,
+                    egui::Id::new(("spec-tune", r)),
+                    center_hz, span_hz,
+                );
+                if let Some(f) = new_freq { pending_tunes.push((r, f)); }
+                if clicked { newly_active = Some(r); }
+
+                let (new_freq, clicked) = handle_tune_input(
+                    ui, water_rect,
+                    egui::Id::new(("water-tune", r)),
+                    center_hz, span_hz,
+                );
+                if let Some(f) = new_freq { pending_tunes.push((r, f)); }
+                if clicked { newly_active = Some(r); }
             }
         });
+
+        // Apply tune commands after the draw closure to satisfy the
+        // borrow checker (snapshot above is still alive inside ui.vertical).
+        for (rx, new_freq) in pending_tunes {
+            self.rxs[rx].frequency_hz = new_freq;
+            if let Some(r) = &self.radio {
+                let _ = r.set_rx_frequency(rx as u8, new_freq);
+            }
+        }
+        if let Some(rx) = newly_active {
+            self.active_rx = rx;
+        }
     }
 
     fn draw_s_meter(&self, ui: &mut egui::Ui) {
@@ -430,52 +564,395 @@ impl ThetisApp {
 
         ui.vertical(|ui| {
             for r in 0..num_rx {
-                ui.horizontal(|ui| {
-                    ui.monospace(format!("RX{}", r + 1));
-                    let db = snapshot.rx[r].s_meter_db;
-                    // Map -100..0 dBFS to 0..1 fill.
-                    let norm = ((db + 100.0) / 100.0).clamp(0.0, 1.0);
-
-                    let bar_width = (ui.available_width() - 120.0).max(120.0);
-                    let (rect, _) = ui.allocate_exact_size(
-                        Vec2::new(bar_width, 14.0),
-                        Sense::hover(),
-                    );
-                    let painter = ui.painter();
-                    painter.rect_filled(rect, 2.0, Color32::from_gray(40));
-                    let filled = Rect::from_min_size(
-                        rect.min,
-                        Vec2::new(rect.width() * norm, rect.height()),
-                    );
-                    painter.rect_filled(filled, 2.0, level_color(db));
-
-                    ui.monospace(format!("{:>6.1} dBFS", db));
-                });
+                draw_s_meter_scaled(ui, r, snapshot.rx[r].s_meter_db);
             }
         });
     }
+}
+
+/// Convert a dBFS reading from the DSP to dBm at the antenna,
+/// assuming a 50 Ω termination and the standard SDR calibration of
+/// `S9 = -73 dBm`. The actual hardware offset is band- and gain-
+/// dependent; this constant is the phase B placeholder until B.5
+/// adds a per-band calibration table.
+const SMETER_DBFS_TO_DBM_OFFSET: f32 = 73.0;
+
+/// Map a dBm reading to its IARU S-unit number on HF.
+/// 6 dB per S-unit between S1 and S9, then over-S9 in 10 dB steps
+/// (S9+10, +20, +40, +60). Returns a fractional value so the needle
+/// moves smoothly between integer units.
+fn dbm_to_s_units(dbm: f32) -> f32 {
+    // S9 = -73 dBm; S1 = -127 dBm.
+    if dbm <= -73.0 {
+        ((dbm + 127.0) / 6.0).clamp(0.0, 9.0)
+    } else {
+        9.0 + (dbm + 73.0) / 10.0
+    }
+}
+
+fn draw_s_meter_scaled(ui: &mut egui::Ui, rx: usize, dbfs: f32) {
+    let dbm = dbfs - SMETER_DBFS_TO_DBM_OFFSET;
+    let s = dbm_to_s_units(dbm);
+
+    ui.horizontal(|ui| {
+        ui.monospace(format!("RX{}", rx + 1));
+
+        let bar_width = (ui.available_width() - 200.0).max(180.0);
+        let (rect, _) = ui.allocate_exact_size(
+            Vec2::new(bar_width, 18.0),
+            Sense::hover(),
+        );
+        let painter = ui.painter();
+        painter.rect_filled(rect, 2.0, Color32::from_gray(28));
+
+        // S1..S9 occupies the left 60% of the bar; +10..+60 the
+        // remaining 40%. Same proportions as a typical analog
+        // S-meter scale, so the needle position matches a user's
+        // muscle memory from a hardware rig.
+        let s9_split = 0.6_f32;
+        let s_norm = if s <= 9.0 {
+            (s / 9.0) * s9_split
+        } else {
+            s9_split + ((s - 9.0) / 6.0).clamp(0.0, 1.0) * (1.0 - s9_split)
+        };
+
+        // Filled portion.
+        let filled = Rect::from_min_size(
+            rect.min,
+            Vec2::new(rect.width() * s_norm, rect.height()),
+        );
+        painter.rect_filled(filled, 2.0, level_color(dbfs));
+
+        // Tick marks: S1..S9 (every unit) + +10/+20/+40/+60.
+        let tick_color = Color32::from_gray(120);
+        for i in 1..=9 {
+            let t = (i as f32 / 9.0) * s9_split;
+            let x = rect.min.x + t * rect.width();
+            painter.line_segment(
+                [Pos2::new(x, rect.max.y - 5.0), Pos2::new(x, rect.max.y)],
+                Stroke::new(1.0, tick_color),
+            );
+        }
+        for (i, _label) in [10, 20, 40, 60].iter().enumerate() {
+            let frac = (i + 1) as f32 / 4.0;
+            let t = s9_split + frac * (1.0 - s9_split);
+            let x = rect.min.x + t * rect.width();
+            painter.line_segment(
+                [Pos2::new(x, rect.max.y - 5.0), Pos2::new(x, rect.max.y)],
+                Stroke::new(1.0, Color32::from_rgb(180, 100, 80)),
+            );
+        }
+
+        // Numeric readout: integer S-unit if ≤ S9, otherwise S9+xx dB.
+        let readout = if s <= 9.0 {
+            format!("S{:.0}", s.round())
+        } else {
+            format!("S9+{:.0}", (dbm + 73.0).max(0.0))
+        };
+        ui.monospace(format!("{:<7}{:>6.1} dBm", readout, dbm));
+    });
+}
+
+// --- Theme ---------------------------------------------------------------
+
+/// Tweak egui's stock dark visuals to give the radio more contrast
+/// without shipping a custom font (which would mean adding ~2 MB of
+/// .ttf to the repo). The defaults are fine for general apps but a
+/// little washed-out next to a colourful spectrum/waterfall.
+fn apply_dark_theme(ctx: &egui::Context) {
+    // egui 0.34 split per-context and global styles. We want a
+    // process-wide tweak applied at startup, so use the global API
+    // (`global_style` + `set_global_style`) rather than the
+    // per-context `style()` which is now reserved for transient
+    // overrides inside a `ui.with_style(...)` scope.
+    let mut style = (*ctx.global_style()).clone();
+    style.visuals = egui::Visuals::dark();
+
+    // Bigger monospace so the VFO bar is readable from across the
+    // room — same idea as the giant 7-segment digits on a hardware
+    // rig. Heading also pumped up for the "Not connected" splash.
+    use egui::{FontFamily, FontId, TextStyle};
+    style.text_styles.insert(TextStyle::Monospace, FontId::new(15.0, FontFamily::Monospace));
+    style.text_styles.insert(TextStyle::Button,    FontId::new(13.5, FontFamily::Proportional));
+    style.text_styles.insert(TextStyle::Body,      FontId::new(13.5, FontFamily::Proportional));
+    style.text_styles.insert(TextStyle::Heading,   FontId::new(20.0, FontFamily::Proportional));
+
+    // Darker overall background, brighter accent for selected /
+    // active widgets so the connect/disconnect state is obvious at
+    // a glance.
+    style.visuals.window_fill        = Color32::from_rgb(18, 20, 24);
+    style.visuals.panel_fill         = Color32::from_rgb(22, 24, 28);
+    style.visuals.extreme_bg_color   = Color32::from_rgb(10, 12, 14);
+    style.visuals.widgets.noninteractive.bg_stroke =
+        Stroke::new(1.0, Color32::from_gray(60));
+    style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(40, 44, 50);
+    style.visuals.widgets.hovered.bg_fill  = Color32::from_rgb(60, 80, 100);
+    style.visuals.widgets.active.bg_fill   = Color32::from_rgb(80, 140, 180);
+    style.visuals.selection.bg_fill        = Color32::from_rgb(40, 100, 160);
+    style.visuals.hyperlink_color          = Color32::from_rgb(120, 200, 255);
+
+    // Tighter spacing — radio control panels are dense, the egui
+    // defaults waste vertical space.
+    style.spacing.item_spacing       = Vec2::new(6.0, 4.0);
+    style.spacing.button_padding     = Vec2::new(8.0, 3.0);
+    style.spacing.interact_size      = Vec2::new(20.0, 22.0);
+
+    ctx.set_global_style(style);
+}
+
+// --- Amateur bands -------------------------------------------------------
+
+/// HF + 6 m amateur bands recognised by the band-button row.
+///
+/// Order matches the conventional band-stack layout in commercial
+/// SDR control software (low → high frequency, left → right).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Band {
+    M160, M80, M60, M40, M30, M20, M17, M15, M12, M10, M6,
+}
+
+impl Band {
+    pub const ALL: [Band; 11] = [
+        Band::M160, Band::M80, Band::M60, Band::M40, Band::M30,
+        Band::M20,  Band::M17, Band::M15, Band::M12, Band::M10, Band::M6,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Band::M160 => "160", Band::M80 => "80", Band::M60 => "60",
+            Band::M40  => "40",  Band::M30 => "30", Band::M20 => "20",
+            Band::M17  => "17",  Band::M15 => "15", Band::M12 => "12",
+            Band::M10  => "10",  Band::M6  => "6",
+        }
+    }
+
+    /// Inclusive frequency range covered by the band, in Hz. Used to
+    /// match the active VFO back to a band when the user moves between
+    /// bands so the band-stack snapshot lands in the right slot.
+    pub fn range_hz(self) -> (u32, u32) {
+        match self {
+            Band::M160 => ( 1_800_000,  2_000_000),
+            Band::M80  => ( 3_500_000,  4_000_000),
+            Band::M60  => ( 5_330_000,  5_410_000), // US 60m channels
+            Band::M40  => ( 7_000_000,  7_300_000),
+            Band::M30  => (10_100_000, 10_150_000),
+            Band::M20  => (14_000_000, 14_350_000),
+            Band::M17  => (18_068_000, 18_168_000),
+            Band::M15  => (21_000_000, 21_450_000),
+            Band::M12  => (24_890_000, 24_990_000),
+            Band::M10  => (28_000_000, 29_700_000),
+            Band::M6   => (50_000_000, 54_000_000),
+        }
+    }
+
+    pub fn for_freq(freq_hz: u32) -> Option<Band> {
+        Band::ALL.iter().copied().find(|b| {
+            let (lo, hi) = b.range_hz();
+            (lo..=hi).contains(&freq_hz)
+        })
+    }
+
+    /// Default frequency + mode used when the user presses a band
+    /// button for the first time. Anchored on FT8 frequencies for HF
+    /// bands (where activity is highest in 2026), 60m and 160m on
+    /// classic phone spots.
+    fn default_entry(self) -> BandStackEntry {
+        let (freq, mode) = match self {
+            Band::M160 => ( 1_840_000, WdspMode::Lsb),
+            Band::M80  => ( 3_573_000, WdspMode::Usb), // FT8
+            Band::M60  => ( 5_357_000, WdspMode::Usb),
+            Band::M40  => ( 7_074_000, WdspMode::Usb), // FT8
+            Band::M30  => (10_136_000, WdspMode::Usb), // FT8
+            Band::M20  => (14_074_000, WdspMode::Usb), // FT8
+            Band::M17  => (18_100_000, WdspMode::Usb),
+            Band::M15  => (21_074_000, WdspMode::Usb), // FT8
+            Band::M12  => (24_915_000, WdspMode::Usb), // FT8
+            Band::M10  => (28_074_000, WdspMode::Usb), // FT8
+            Band::M6   => (50_313_000, WdspMode::Usb), // FT8
+        };
+        BandStackEntry { frequency_hz: freq, mode }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BandStackEntry {
+    pub frequency_hz: u32,
+    pub mode:         WdspMode,
+}
+
+/// One slot per [`Band`] holding the user's last freq/mode on that
+/// band. Storage is a fixed-length array so lookup is O(1) and the
+/// type stays serialisable for B.5.
+#[derive(Debug, Clone)]
+pub struct BandStack {
+    entries: [BandStackEntry; Band::ALL.len()],
+}
+
+impl Default for BandStack {
+    fn default() -> Self {
+        let mut entries = [BandStackEntry {
+            frequency_hz: 0,
+            mode:         WdspMode::Usb,
+        }; Band::ALL.len()];
+        for (i, b) in Band::ALL.iter().enumerate() {
+            entries[i] = b.default_entry();
+        }
+        BandStack { entries }
+    }
+}
+
+impl BandStack {
+    pub fn get(&self, band: Band) -> BandStackEntry {
+        self.entries[Band::ALL.iter().position(|b| *b == band).unwrap()]
+    }
+    pub fn set(&mut self, band: Band, entry: BandStackEntry) {
+        let idx = Band::ALL.iter().position(|b| *b == band).unwrap();
+        self.entries[idx] = entry;
+    }
+}
+
+// --- Tuning interaction --------------------------------------------------
+
+/// Draw a thin vertical line at the horizontal center of `rect` to
+/// mark the current VFO position. The DDC is always tuned to the
+/// spectrum's center, so the marker is purely geometric.
+fn draw_vfo_marker(ui: &egui::Ui, rect: Rect) {
+    let x = rect.center().x;
+    ui.painter_at(rect).line_segment(
+        [Pos2::new(x, rect.min.y), Pos2::new(x, rect.max.y)],
+        Stroke::new(1.0, Color32::from_rgba_premultiplied(255, 255, 255, 160)),
+    );
+}
+
+/// Handle click-to-tune + wheel-tune over a spectrum or waterfall
+/// rect. Returns `(new_freq, clicked)`:
+/// - `new_freq`: `Some(hz)` when the user issues a tuning gesture,
+/// - `clicked`:  `true` when the rect was clicked at all (used by the
+///   caller to promote this RX to the "active" one for band buttons).
+///
+/// Gestures:
+/// - Left click / drag → jump VFO so the clicked frequency becomes
+///   the new center.
+/// - Mouse wheel       → ±10 Hz per notch (fine tune)
+/// - Shift + wheel     → ±100 Hz per notch
+/// - Ctrl + wheel      → ±1 kHz per notch (fast scan)
+fn handle_tune_input(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    id: egui::Id,
+    center_hz: u32,
+    span_hz: u32,
+) -> (Option<u32>, bool) {
+    let response = ui.interact(rect, id, Sense::click_and_drag());
+
+    let mut new_freq: Option<u32> = None;
+    let clicked = response.clicked() || response.dragged();
+
+    // Click / drag → frequency under cursor becomes the new center.
+    if clicked {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let dx_norm = (pos.x - rect.center().x) / rect.width(); // -0.5..+0.5
+            let delta_hz = (dx_norm * span_hz as f32).round() as i64;
+            let next = (center_hz as i64 + delta_hz).max(0) as u32;
+            if next != center_hz {
+                new_freq = Some(next);
+            }
+        }
+    }
+
+    // Wheel tuning when hovering. Each tick of the wheel maps to a
+    // fixed frequency step (10 / 100 / 1000 Hz depending on modifiers)
+    // rather than scaling with the panel size, so it's predictable.
+    if response.hovered() {
+        let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll_y.abs() > 0.5 {
+            let modifiers = ui.input(|i| i.modifiers);
+            let step_hz: i64 = if modifiers.ctrl {
+                1000
+            } else if modifiers.shift {
+                100
+            } else {
+                10
+            };
+            // egui reports +Y for "scrolled up" → tune up.
+            let ticks = (scroll_y / 50.0).round() as i64;
+            let ticks = if ticks == 0 {
+                if scroll_y > 0.0 { 1 } else { -1 }
+            } else {
+                ticks
+            };
+            let base = new_freq.unwrap_or(center_hz) as i64;
+            let next = (base + ticks * step_hz).max(0) as u32;
+            if next as i64 != base {
+                new_freq = Some(next);
+            }
+        }
+    }
+
+    (new_freq, clicked)
+}
+
+// --- Passband overlay ----------------------------------------------------
+
+/// Tint the portion of the spectrum that the demod filter passes
+/// audio through. Coordinates `f_lo` / `f_hi` are baseband Hz
+/// (i.e. relative to the VFO/center, with USB positive and LSB
+/// negative); we map them onto the rect's x-axis using the same
+/// `[center - span/2 .. center + span/2]` mapping the click-tune
+/// helper uses.
+fn draw_passband_overlay(ui: &egui::Ui, rect: Rect, span_hz: u32, f_lo: f32, f_hi: f32) {
+    if span_hz == 0 || f_hi <= f_lo {
+        return;
+    }
+    let span = span_hz as f32;
+    let to_x = |hz: f32| -> f32 {
+        let t = (hz / span) + 0.5; // 0..1
+        rect.min.x + t.clamp(0.0, 1.0) * rect.width()
+    };
+    let x0 = to_x(f_lo);
+    let x1 = to_x(f_hi);
+    if (x1 - x0).abs() < 1.0 {
+        return;
+    }
+    let band = Rect::from_min_max(
+        Pos2::new(x0, rect.min.y),
+        Pos2::new(x1, rect.max.y),
+    );
+    ui.painter_at(rect).rect_filled(
+        band,
+        0.0,
+        Color32::from_rgba_premultiplied(80, 200, 255, 30),
+    );
 }
 
 // --- Spectrum (immediate-mode line draw) --------------------------------
 
 fn draw_spectrum(ui: &mut egui::Ui, rect: Rect, bins_db: &[f32]) {
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 0.0, Color32::from_gray(12));
+    painter.rect_filled(rect, 0.0, Color32::from_rgb(8, 10, 14));
 
     if bins_db.is_empty() {
         return;
     }
 
-    // Draw horizontal grid every 20 dB between -120 and 0.
+    // Draw horizontal grid every 20 dB between -120 and 0, with a
+    // brighter band at -60 dB to help eyeball "loud signal" / "S9".
     for db in (-120..=0).step_by(20) {
         let y = db_to_y(db as f32, rect);
+        let color = if db == -60 {
+            Color32::from_rgb(60, 80, 60)
+        } else {
+            Color32::from_gray(48)
+        };
         painter.line_segment(
             [Pos2::new(rect.min.x, y), Pos2::new(rect.max.x, y)],
-            Stroke::new(1.0, Color32::from_gray(40)),
+            Stroke::new(1.0, color),
         );
     }
 
     // Map FFT bins horizontally across the rect and plot as a polyline.
+    // Brighter green than `LIGHT_GREEN` so the trace pops on the dark
+    // background even with the passband overlay drawn over it.
     let n = bins_db.len();
     let mut points = Vec::with_capacity(n);
     for (i, &db) in bins_db.iter().enumerate() {
@@ -483,7 +960,10 @@ fn draw_spectrum(ui: &mut egui::Ui, rect: Rect, bins_db: &[f32]) {
         let y = db_to_y(db, rect);
         points.push(Pos2::new(x, y));
     }
-    painter.add(egui::Shape::line(points, Stroke::new(1.5, Color32::LIGHT_GREEN)));
+    painter.add(egui::Shape::line(
+        points,
+        Stroke::new(1.6, Color32::from_rgb(140, 255, 160)),
+    ));
 }
 
 /// Map a dBFS value to a y-coordinate inside `rect`. -120 dB is at the
