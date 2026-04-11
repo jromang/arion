@@ -150,6 +150,20 @@ unsafe extern "C" {
     /// `0` = raw VAD-weighted output, `1` = auto-gain. The factory
     /// default in upstream Thetis is `1`.
     pub fn SetRXARNNRUseDefaultGain(channel: c_int, use_default_gain: c_int);
+
+    // --- NR4 (libspecbleach) -------------------------------------------
+    //
+    // Like the NR3 calls above, these are silent no-ops when `wdsp-sys`
+    // is built without `libspecbleach`.
+
+    pub fn SetRXASBNRRun(channel: c_int, run: c_int);
+    pub fn SetRXASBNRPosition(channel: c_int, position: c_int);
+    pub fn SetRXASBNRreductionAmount(channel: c_int, amount: c_float);
+    pub fn SetRXASBNRsmoothingFactor(channel: c_int, factor: c_float);
+    pub fn SetRXASBNRwhiteningFactor(channel: c_int, factor: c_float);
+    pub fn SetRXASBNRnoiseRescale(channel: c_int, factor: c_float);
+    pub fn SetRXASBNRpostFilterThreshold(channel: c_int, threshold: c_float);
+    pub fn SetRXASBNRnoiseScalingType(channel: c_int, scaling_type: c_int);
 }
 
 // --- Analyzer (spectrum display) API, subset from analyzer.h ----------

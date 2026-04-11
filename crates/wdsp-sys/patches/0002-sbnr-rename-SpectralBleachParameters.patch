@@ -1,0 +1,38 @@
+Rename SpectralBleachParameters to SpectralBleachAdaptiveParameters in sbnr.c
+
+Upstream WDSP was written against an older libspecbleach that
+exported a type named `SpectralBleachParameters`. In libspecbleach
+v0.2.0 that type was renamed to `SpectralBleachAdaptiveParameters`
+(the library also grew a second 2D denoiser API with its own
+parameter struct). Upstream Thetis compiles against an old bundled
+copy of libspecbleach so the old name still works for them, but on
+any Linux distro package this is a hard build break.
+
+The fix is a pure type rename at the single call site in `xsbnr()`.
+We also initialise the new `noise_estimation_method` field to `0`
+(Louizou minimum-statistics — the library's default method), which
+reproduces the behaviour of the older API.
+
+--- a/sbnr.c
++++ b/sbnr.c
+@@ -98,8 +98,9 @@ void xsbnr (SBNR a, int pos)
+ {
+     if (a->run && pos == a->position)
+     {
+-        SpectralBleachParameters parameters =
+-              (SpectralBleachParameters){.residual_listen = false,
++        SpectralBleachAdaptiveParameters parameters =
++              (SpectralBleachAdaptiveParameters){
++                                 .residual_listen = false,
+                                  .reduction_amount = a->reduction_amount,
+                                  .smoothing_factor = a->smoothing_factor,
+                                  .whitening_factor = a->whitening_factor,
+@@ -107,6 +108,8 @@ void xsbnr (SBNR a, int pos)
+                                  .noise_rescale = a->noise_rescale,
+                                  .post_filter_threshold = a->post_filter_threshold};
+
++        parameters.noise_estimation_method = 0;
++
+         specbleach_adaptive_load_parameters(a->st, parameters);
+
+         double*  in = a->in;

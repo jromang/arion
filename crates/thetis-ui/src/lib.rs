@@ -66,6 +66,7 @@ struct RxView {
     mode:         WdspMode,
     volume:       f32,
     nr3:          bool,
+    nr4:          bool,
     waterfall:    Waterfall,
 }
 
@@ -77,6 +78,7 @@ impl RxView {
             mode,
             volume: 0.25,
             nr3: false,
+            nr4: false,
             waterfall: Waterfall::new(),
         }
     }
@@ -304,6 +306,13 @@ impl ThetisApp {
             if self.rxs[rx].nr3 != prev_nr3 {
                 if let Some(r) = &self.radio {
                     let _ = r.set_rx_nr3(rx_u8, self.rxs[rx].nr3);
+                }
+            }
+            let prev_nr4 = self.rxs[rx].nr4;
+            ui.checkbox(&mut self.rxs[rx].nr4, "NR4");
+            if self.rxs[rx].nr4 != prev_nr4 {
+                if let Some(r) = &self.radio {
+                    let _ = r.set_rx_nr4(rx_u8, self.rxs[rx].nr4);
                 }
             }
         });

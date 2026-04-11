@@ -211,6 +211,7 @@ enum DspCommand {
     SetRxVolume { rx: u8, volume: f32 },
     SetRxEnabled { rx: u8, enabled: bool },
     SetRxNr3 { rx: u8, enabled: bool },
+    SetRxNr4 { rx: u8, enabled: bool },
 }
 
 /// A running end-to-end receive session.
@@ -434,6 +435,14 @@ impl Radio {
         Ok(())
     }
 
+    /// Enable / disable the libspecbleach (NR4) adaptive denoiser on a
+    /// receiver. Same build-time best-effort semantics as
+    /// [`Self::set_rx_nr3`].
+    pub fn set_rx_nr4(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxNr4 { rx, enabled })?;
+        Ok(())
+    }
+
     pub fn status(&self) -> RadioStatus {
         let session = self
             .session
@@ -588,6 +597,13 @@ fn dsp_loop(
                     if r < num_rx {
                         tracing::info!(rx, enabled, "DSP: NR3 toggle");
                         channels[r].set_nr3_enabled(enabled);
+                    }
+                }
+                DspCommand::SetRxNr4 { rx, enabled } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        tracing::info!(rx, enabled, "DSP: NR4 toggle");
+                        channels[r].set_nr4_enabled(enabled);
                     }
                 }
             }

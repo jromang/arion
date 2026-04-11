@@ -282,6 +282,17 @@ impl Channel {
         unsafe { sys::SetRXARNNRRun(self.id, if enabled { 1 } else { 0 }); }
     }
 
+    /// Enable or disable the libspecbleach (NR4) adaptive denoiser.
+    /// Same best-effort semantics as [`Self::set_nr3_enabled`].
+    pub fn set_nr4_enabled(&mut self, enabled: bool) {
+        unsafe { sys::SetRXASBNRRun(self.id, if enabled { 1 } else { 0 }); }
+    }
+
+    /// NR4 reduction strength in dB (0..=40, upstream default 10).
+    pub fn set_nr4_reduction_db(&mut self, db: f32) {
+        unsafe { sys::SetRXASBNRreductionAmount(self.id, db); }
+    }
+
     pub fn panel_gain(&self) -> f64 { self.panel_gain }
 
     /// Push one input buffer of interleaved complex IQ samples and pull

@@ -94,7 +94,13 @@ fn main() {
     //      lib is absent, the stubs provide every symbol the rest of
     //      WDSP links against.
     let rnnoise = pkg_config::Config::new().probe("rnnoise").ok();
-    let specbleach = pkg_config::Config::new().probe("specbleach").ok();
+    // Arch / Debian package names their .pc file `libspecbleach.pc`
+    // (rather than the bare `specbleach.pc` mentioned in the upstream
+    // README). Probe both so neither distro convention surprises us.
+    let specbleach = pkg_config::Config::new()
+        .probe("libspecbleach")
+        .or_else(|_| pkg_config::Config::new().probe("specbleach"))
+        .ok();
 
     // --- Stage a fresh copy of upstream sources into OUT_DIR ------------
     let staged_dir = out_dir.join("wdsp");
