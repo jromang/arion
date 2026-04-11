@@ -8,7 +8,8 @@ members = [
     "crates/thetis-audio",
     "crates/thetis-core",
     "crates/thetis-settings",
-    "crates/thetis-ui",
+    "crates/thetis-app",
+    "crates/thetis-egui",
     "apps/thetis",
 ]
 
@@ -34,8 +35,8 @@ cpal = "0.16"
 # carrying a second backend we don't use.
 #
 # IMPORTANT: eframe's "wgpu" feature pulls wgpu in with only the `wgsl`
-# cargo feature, which compiles *no* native backend. `thetis-ui` adds a
-# direct `wgpu = "29"` dep with default features to enable vulkan /
+# cargo feature, which compiles *no* native backend. `thetis-egui` adds
+# a direct `wgpu = "29"` dep with default features to enable vulkan /
 # metal / dx12 / gles per platform — Cargo unifies the feature sets so
 # eframe ends up using a properly-configured wgpu.
 #
@@ -63,7 +64,8 @@ hpsdr-net = { path = "crates/hpsdr-net" }
 thetis-audio = { path = "crates/thetis-audio" }
 thetis-core = { path = "crates/thetis-core" }
 thetis-settings = { path = "crates/thetis-settings" }
-thetis-ui = { path = "crates/thetis-ui" }
+thetis-app = { path = "crates/thetis-app" }
+thetis-egui = { path = "crates/thetis-egui" }
 
 [profile.release]
 lto = "thin"

@@ -9,5 +9,5 @@ fn main() -> eframe::Result<()> {
         .init();
 
     tracing::info!("starting thetis-rs UI");
-    thetis_ui::run()
+    thetis_egui::run()
 }

@@ -1,0 +1,764 @@
+//! Headless view-model layer for Thetis.
+//!
+//! This crate is the application's **view-model** in our MVVM split.
+//! It owns every piece of state that survives across frames — the
+//! optional [`Radio`] handle, the per-RX form fields, the band stack,
+//! the memories list, the dirty/save bookkeeping, the active-RX
+//! cursor — and exposes a small read/write API that the frontends
+//! ([`thetis-egui`] desktop, [`thetis-tui`] console, soon also the
+//! Rhai scripting layer in phase D.12) consume.
+//!
+//! **Hard rule**: zero dependency on any UI framework. No `egui`,
+//! `eframe`, `ratatui`, `crossterm`, `wgpu`. The crate must compile
+//! and unit-test on a headless server with `cargo test -p thetis-app`.
+//!
+//! The frontends are *humble views*: they read from `App` immutable
+//! getters, dispatch user actions through `App::set_*` / `App::toggle_*`,
+//! and otherwise render whatever's in scope. The single-source-of-truth
+//! for "what should the screen look like" lives here.
+
+use std::path::PathBuf;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use arc_swap::ArcSwap;
+use thetis_core::{Radio, RadioConfig, RxConfig, Telemetry, WdspMode, MAX_RX};
+use thetis_settings::{
+    BandStackEntry as SerdeBandStackEntry, GeneralSettings, Memory, Mode as SerdeMode,
+    RxSettings as SerdeRxSettings, Settings,
+};
+
+// --------------------------------------------------------------------
+// Constants
+// --------------------------------------------------------------------
+
+/// Minimum interval between background TOML writes during a live
+/// session. Quitting / disconnecting always saves immediately,
+/// regardless of this debounce.
+pub const SAVE_DEBOUNCE: Duration = Duration::from_secs(10);
+
+/// dBFS → dBm calibration assuming `S9 = -73 dBm` at 50 Ω. Phase B
+/// placeholder; phase D.10 replaces it with a per-band table stored
+/// in `thetis-settings::Calibration`.
+pub const SMETER_DBFS_TO_DBM_OFFSET: f32 = 73.0;
+
+// --------------------------------------------------------------------
+// Window enum (frontend-agnostic)
+// --------------------------------------------------------------------
+
+/// One identifier per floating window the frontend may show. Lives in
+/// the view-model so the show/hide state is shared between egui and
+/// TUI (a script that opens "Memories" works in both frontends).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum WindowKind {
+    Memories,
+    BandStack,
+    Multimeter,
+    Setup,
+    Repl,
+    Eq,
+}
+
+// --------------------------------------------------------------------
+// Per-RX state (no view-tied fields like waterfall textures)
+// --------------------------------------------------------------------
+
+/// Per-RX state owned by [`App`]. The frontend's per-RX waterfall
+/// texture cache (egui `TextureHandle`) lives in the frontend struct
+/// alongside `App`, NOT here.
+#[derive(Debug, Clone)]
+pub struct RxState {
+    pub enabled:      bool,
+    pub frequency_hz: u32,
+    pub mode:         WdspMode,
+    pub volume:       f32,
+    pub nr3:          bool,
+    pub nr4:          bool,
+}
+
+impl Default for RxState {
+    fn default() -> Self {
+        RxState {
+            enabled:      false,
+            frequency_hz: 7_074_000,
+            mode:         WdspMode::Usb,
+            volume:       0.25,
+            nr3:          false,
+            nr4:          false,
+        }
+    }
+}
+
+// --------------------------------------------------------------------
+// Mode <-> SerdeMode adapters (centralized so the conversion isn't
+// scattered across frontends + future scripting layer)
+// --------------------------------------------------------------------
+
+pub fn mode_to_serde(m: WdspMode) -> SerdeMode {
+    match m {
+        WdspMode::Lsb  => SerdeMode::Lsb,
+        WdspMode::Usb  => SerdeMode::Usb,
+        WdspMode::Dsb  => SerdeMode::Dsb,
+        WdspMode::CwL  => SerdeMode::CwL,
+        WdspMode::CwU  => SerdeMode::CwU,
+        WdspMode::Fm   => SerdeMode::Fm,
+        WdspMode::Am   => SerdeMode::Am,
+        WdspMode::DigU => SerdeMode::DigU,
+        WdspMode::Spec => SerdeMode::Spec,
+        WdspMode::DigL => SerdeMode::DigL,
+        WdspMode::Sam  => SerdeMode::Sam,
+        WdspMode::Drm  => SerdeMode::Drm,
+    }
+}
+
+pub fn mode_from_serde(m: SerdeMode) -> WdspMode {
+    match m {
+        SerdeMode::Lsb  => WdspMode::Lsb,
+        SerdeMode::Usb  => WdspMode::Usb,
+        SerdeMode::Dsb  => WdspMode::Dsb,
+        SerdeMode::CwL  => WdspMode::CwL,
+        SerdeMode::CwU  => WdspMode::CwU,
+        SerdeMode::Fm   => WdspMode::Fm,
+        SerdeMode::Am   => WdspMode::Am,
+        SerdeMode::DigU => WdspMode::DigU,
+        SerdeMode::Spec => WdspMode::Spec,
+        SerdeMode::DigL => WdspMode::DigL,
+        SerdeMode::Sam  => WdspMode::Sam,
+        SerdeMode::Drm  => WdspMode::Drm,
+    }
+}
+
+// --------------------------------------------------------------------
+// Amateur bands (HF + 6m) — used by Band buttons + band stack
+// --------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Band {
+    M160, M80, M60, M40, M30, M20, M17, M15, M12, M10, M6,
+}
+
+impl Band {
+    pub const ALL: [Band; 11] = [
+        Band::M160, Band::M80, Band::M60, Band::M40, Band::M30,
+        Band::M20,  Band::M17, Band::M15, Band::M12, Band::M10, Band::M6,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Band::M160 => "160", Band::M80 => "80", Band::M60 => "60",
+            Band::M40  => "40",  Band::M30 => "30", Band::M20 => "20",
+            Band::M17  => "17",  Band::M15 => "15", Band::M12 => "12",
+            Band::M10  => "10",  Band::M6  => "6",
+        }
+    }
+
+    /// Inclusive frequency range covered by the band, in Hz. Used to
+    /// match the active VFO back to a band when the user moves between
+    /// bands so the band-stack snapshot lands in the right slot.
+    pub fn range_hz(self) -> (u32, u32) {
+        match self {
+            Band::M160 => ( 1_800_000,  2_000_000),
+            Band::M80  => ( 3_500_000,  4_000_000),
+            Band::M60  => ( 5_330_000,  5_410_000),
+            Band::M40  => ( 7_000_000,  7_300_000),
+            Band::M30  => (10_100_000, 10_150_000),
+            Band::M20  => (14_000_000, 14_350_000),
+            Band::M17  => (18_068_000, 18_168_000),
+            Band::M15  => (21_000_000, 21_450_000),
+            Band::M12  => (24_890_000, 24_990_000),
+            Band::M10  => (28_000_000, 29_700_000),
+            Band::M6   => (50_000_000, 54_000_000),
+        }
+    }
+
+    pub fn for_freq(freq_hz: u32) -> Option<Band> {
+        Band::ALL.iter().copied().find(|b| {
+            let (lo, hi) = b.range_hz();
+            (lo..=hi).contains(&freq_hz)
+        })
+    }
+
+    /// Default frequency + mode used when the user presses a band
+    /// button for the first time. Anchored on FT8 frequencies for HF
+    /// bands (where activity is highest in 2026), 60m and 160m on
+    /// classic phone spots.
+    pub fn default_entry(self) -> BandStackEntry {
+        let (freq, mode) = match self {
+            Band::M160 => ( 1_840_000, WdspMode::Lsb),
+            Band::M80  => ( 3_573_000, WdspMode::Usb),
+            Band::M60  => ( 5_357_000, WdspMode::Usb),
+            Band::M40  => ( 7_074_000, WdspMode::Usb),
+            Band::M30  => (10_136_000, WdspMode::Usb),
+            Band::M20  => (14_074_000, WdspMode::Usb),
+            Band::M17  => (18_100_000, WdspMode::Usb),
+            Band::M15  => (21_074_000, WdspMode::Usb),
+            Band::M12  => (24_915_000, WdspMode::Usb),
+            Band::M10  => (28_074_000, WdspMode::Usb),
+            Band::M6   => (50_313_000, WdspMode::Usb),
+        };
+        BandStackEntry { frequency_hz: freq, mode }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct BandStackEntry {
+    pub frequency_hz: u32,
+    pub mode:         WdspMode,
+}
+
+/// One slot per [`Band`] holding the user's last freq/mode on that
+/// band. Storage is a fixed-length array so lookup is O(1) and the
+/// type stays serialisable.
+#[derive(Debug, Clone)]
+pub struct BandStack {
+    entries: [BandStackEntry; Band::ALL.len()],
+}
+
+impl Default for BandStack {
+    fn default() -> Self {
+        let mut entries = [BandStackEntry {
+            frequency_hz: 0,
+            mode:         WdspMode::Usb,
+        }; Band::ALL.len()];
+        for (i, b) in Band::ALL.iter().enumerate() {
+            entries[i] = b.default_entry();
+        }
+        BandStack { entries }
+    }
+}
+
+impl BandStack {
+    pub fn get(&self, band: Band) -> BandStackEntry {
+        self.entries[Band::ALL.iter().position(|b| *b == band).unwrap()]
+    }
+    pub fn set(&mut self, band: Band, entry: BandStackEntry) {
+        let idx = Band::ALL.iter().position(|b| *b == band).unwrap();
+        self.entries[idx] = entry;
+    }
+
+    /// Reconstruct a `BandStack` from a `[band_stacks]` table loaded
+    /// from `thetis.toml`. Missing entries fall back to the band's
+    /// hard-coded default (FT8 anchors / classic phone spots).
+    pub fn from_settings(map: &std::collections::BTreeMap<String, SerdeBandStackEntry>) -> Self {
+        let mut stack = BandStack::default();
+        for band in Band::ALL {
+            if let Some(entry) = map.get(band.label()) {
+                stack.set(band, BandStackEntry {
+                    frequency_hz: entry.frequency_hz,
+                    mode:         mode_from_serde(entry.mode),
+                });
+            }
+        }
+        stack
+    }
+
+    /// Serialise to the on-disk `BTreeMap` representation. Sorted
+    /// keys keep diffs stable across saves.
+    pub fn to_settings(&self) -> std::collections::BTreeMap<String, SerdeBandStackEntry> {
+        let mut out = std::collections::BTreeMap::new();
+        for band in Band::ALL {
+            let entry = self.get(band);
+            out.insert(
+                band.label().to_string(),
+                SerdeBandStackEntry {
+                    frequency_hz: entry.frequency_hz,
+                    mode:         mode_to_serde(entry.mode),
+                },
+            );
+        }
+        out
+    }
+}
+
+// --------------------------------------------------------------------
+// S-meter math (frontend-agnostic)
+// --------------------------------------------------------------------
+
+/// Convert a dBm reading to its IARU S-unit number on HF.
+/// 6 dB per S-unit between S1 and S9, then over-S9 in 10 dB steps
+/// (S9+10, +20, +40, +60). Returns a fractional value so the needle
+/// moves smoothly between integer units.
+pub fn dbm_to_s_units(dbm: f32) -> f32 {
+    if dbm <= -73.0 {
+        ((dbm + 127.0) / 6.0).clamp(0.0, 9.0)
+    } else {
+        9.0 + (dbm + 73.0) / 10.0
+    }
+}
+
+// --------------------------------------------------------------------
+// AppOptions: how the frontend wants the App to start
+// --------------------------------------------------------------------
+
+#[derive(Debug, Clone, Default)]
+pub struct AppOptions {
+    /// Override the persisted radio IP. Used by the `HL2_IP=…` env var
+    /// path so a one-liner debug session keeps working without erasing
+    /// the user's saved IP.
+    pub radio_ip_override: Option<String>,
+}
+
+// --------------------------------------------------------------------
+// App: the view-model itself
+// --------------------------------------------------------------------
+
+/// View-model owned by every frontend. Holds all the persisted UI
+/// state, the optional live `Radio` handle, and the dirty/save
+/// bookkeeping. Frontends call read methods to render and write
+/// methods to dispatch user actions.
+pub struct App {
+    // --- Live radio handle (None = disconnected) --------------------
+    radio:      Option<Radio>,
+    telemetry:  Option<Arc<ArcSwap<Telemetry>>>,
+    last_error: Option<String>,
+
+    // --- UI state / form fields ------------------------------------
+    radio_ip: String,
+    /// How many receivers to request on the next `Connect`. Fixed
+    /// for the lifetime of a session; changing it requires a
+    /// disconnect/reconnect cycle.
+    num_rx:    u8,
+    rxs:       Vec<RxState>,
+    /// Index of the RX that band-button presses + scripts target.
+    active_rx: usize,
+    band_stack: BandStack,
+
+    // --- Persistence (B.5) -----------------------------------------
+    memories:  Vec<Memory>,
+    /// Window visibility flags, keyed by [`WindowKind`]. Frontends
+    /// honor these — egui shows/hides floating windows, TUI shows/
+    /// hides bottom panes.
+    open_windows: std::collections::HashMap<WindowKind, bool>,
+    last_save:    Instant,
+    dirty:        bool,
+}
+
+impl App {
+    /// Build a new `App`, loading persisted settings from the default
+    /// platform config dir. Failures during load are non-fatal — the
+    /// app falls back to defaults so a corrupted thetis.toml never
+    /// bricks the user.
+    pub fn new(opts: AppOptions) -> Self {
+        let settings = match Settings::load_default() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!(error = %e, "failed to load settings, using defaults");
+                let mut s = Settings::default();
+                s.ensure_rx_slots(2);
+                s
+            }
+        };
+
+        let radio_ip = opts
+            .radio_ip_override
+            .unwrap_or_else(|| settings.general.last_radio_ip.clone());
+
+        let mut rxs: Vec<RxState> = Vec::with_capacity(MAX_RX);
+        for r in 0..MAX_RX {
+            let serde_rx = settings.rxs.get(r).cloned().unwrap_or_default();
+            rxs.push(RxState {
+                enabled:      serde_rx.enabled || r == 0, // RX1 always defaults on
+                frequency_hz: serde_rx.frequency_hz,
+                mode:         mode_from_serde(serde_rx.mode),
+                volume:       serde_rx.volume,
+                nr3:          serde_rx.nr3,
+                nr4:          serde_rx.nr4,
+            });
+        }
+
+        let band_stack = BandStack::from_settings(&settings.band_stacks);
+
+        App {
+            radio:        None,
+            telemetry:    None,
+            last_error:   None,
+            radio_ip,
+            num_rx:       settings.general.num_rx.clamp(1, MAX_RX as u8),
+            rxs,
+            active_rx:    settings.general.active_rx.clamp(0, MAX_RX as u8 - 1) as usize,
+            band_stack,
+            memories:     settings.memories,
+            open_windows: std::collections::HashMap::new(),
+            last_save:    Instant::now(),
+            dirty:        false,
+        }
+    }
+
+    // --- Read API (immuable, called by frontends to render) ---------
+
+    pub fn radio_ip(&self) -> &str { &self.radio_ip }
+    pub fn num_rx(&self) -> u8 { self.num_rx }
+    pub fn rxs(&self) -> &[RxState] { &self.rxs }
+    pub fn rx(&self, rx: usize) -> Option<&RxState> { self.rxs.get(rx) }
+    pub fn active_rx(&self) -> usize { self.active_rx }
+    pub fn band_stack(&self) -> &BandStack { &self.band_stack }
+    pub fn memories(&self) -> &[Memory] { &self.memories }
+    pub fn last_error(&self) -> Option<&str> { self.last_error.as_deref() }
+    pub fn is_connected(&self) -> bool { self.radio.is_some() }
+    pub fn radio(&self) -> Option<&Radio> { self.radio.as_ref() }
+    pub fn telemetry(&self) -> Option<&Arc<ArcSwap<Telemetry>>> { self.telemetry.as_ref() }
+    pub fn telemetry_snapshot(&self) -> Option<Arc<Telemetry>> {
+        self.telemetry.as_ref().map(|t| t.load_full())
+    }
+
+    /// Whether the named floating window should be shown.
+    pub fn window_open(&self, w: WindowKind) -> bool {
+        self.open_windows.get(&w).copied().unwrap_or(false)
+    }
+
+    pub fn settings_path(&self) -> Option<PathBuf> {
+        Settings::default_path()
+    }
+
+    // --- Write API (mut self, dispatched from frontends) ------------
+
+    /// Edit the radio IP from a text input. Marks dirty if changed.
+    pub fn set_radio_ip(&mut self, ip: String) {
+        if self.radio_ip != ip {
+            self.radio_ip = ip;
+            self.mark_dirty();
+        }
+    }
+
+    /// Set the number of receivers requested on the next Connect.
+    /// Only effective while disconnected.
+    pub fn set_num_rx(&mut self, num: u8) {
+        let n = num.clamp(1, MAX_RX as u8);
+        if self.num_rx != n && self.radio.is_none() {
+            self.num_rx = n;
+            self.mark_dirty();
+        }
+    }
+
+    pub fn set_rx_enabled(&mut self, rx: u8, enabled: bool) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        if view.enabled == enabled {
+            return;
+        }
+        view.enabled = enabled;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_enabled(rx, enabled);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_frequency(&mut self, rx: u8, hz: u32) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        if view.frequency_hz == hz {
+            return;
+        }
+        view.frequency_hz = hz;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_frequency(rx, hz);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_mode(&mut self, rx: u8, mode: WdspMode) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        if view.mode == mode {
+            return;
+        }
+        view.mode = mode;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_mode(rx, mode);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_volume(&mut self, rx: u8, volume: f32) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        if (view.volume - volume).abs() < f32::EPSILON {
+            return;
+        }
+        view.volume = volume;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_volume(rx, volume);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_nr3(&mut self, rx: u8, on: bool) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        if view.nr3 == on {
+            return;
+        }
+        view.nr3 = on;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_nr3(rx, on);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_nr4(&mut self, rx: u8, on: bool) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        if view.nr4 == on {
+            return;
+        }
+        view.nr4 = on;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_nr4(rx, on);
+        }
+        self.mark_dirty();
+    }
+
+    /// Promote `rx` to the active RX (target of band buttons,
+    /// scripted commands, keyboard shortcuts).
+    pub fn set_active_rx(&mut self, rx: usize) {
+        if rx < self.rxs.len() && self.active_rx != rx {
+            self.active_rx = rx;
+            self.mark_dirty();
+        }
+    }
+
+    /// Apply the stored entry for `band` to the active RX. Saves the
+    /// active RX's current freq/mode back to its current band first
+    /// so jump-away → jump-back preserves where you were.
+    pub fn jump_to_band(&mut self, band: Band) {
+        let rx = self.active_rx;
+        if rx >= self.rxs.len() {
+            return;
+        }
+
+        let current_freq = self.rxs[rx].frequency_hz;
+        let current_mode = self.rxs[rx].mode;
+        if let Some(prev_band) = Band::for_freq(current_freq) {
+            self.band_stack.set(prev_band, BandStackEntry {
+                frequency_hz: current_freq,
+                mode:         current_mode,
+            });
+        }
+
+        let entry = self.band_stack.get(band);
+        self.rxs[rx].frequency_hz = entry.frequency_hz;
+        self.rxs[rx].mode         = entry.mode;
+
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_frequency(rx as u8, entry.frequency_hz);
+            let _ = r.set_rx_mode(rx as u8, entry.mode);
+        }
+        self.mark_dirty();
+    }
+
+    // --- Memories ---------------------------------------------------
+
+    pub fn add_memory(&mut self, memory: Memory) {
+        self.memories.push(memory);
+        self.mark_dirty();
+    }
+
+    pub fn delete_memory(&mut self, idx: usize) {
+        if idx < self.memories.len() {
+            self.memories.remove(idx);
+            self.mark_dirty();
+        }
+    }
+
+    /// Apply memory at index `idx` to the active RX (frequency + mode).
+    pub fn load_memory(&mut self, idx: usize) {
+        let Some(mem) = self.memories.get(idx).cloned() else { return };
+        let rx = self.active_rx;
+        if rx >= self.rxs.len() {
+            return;
+        }
+        let mode = mode_from_serde(mem.mode);
+        self.rxs[rx].frequency_hz = mem.freq_hz;
+        self.rxs[rx].mode         = mode;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_frequency(rx as u8, mem.freq_hz);
+            let _ = r.set_rx_mode(rx as u8, mode);
+        }
+        self.mark_dirty();
+    }
+
+    // --- Window toggles --------------------------------------------
+
+    pub fn toggle_window(&mut self, w: WindowKind) {
+        let entry = self.open_windows.entry(w).or_insert(false);
+        *entry = !*entry;
+    }
+
+    pub fn set_window_open(&mut self, w: WindowKind, open: bool) {
+        self.open_windows.insert(w, open);
+    }
+
+    // --- Connect / disconnect --------------------------------------
+
+    /// Try to connect to the radio at `radio_ip`. Stores any error
+    /// in `last_error` so frontends can render it inline.
+    pub fn connect(&mut self) {
+        let addr_str = format!("{}:1024", self.radio_ip);
+        let addr = match addr_str.parse() {
+            Ok(a) => a,
+            Err(e) => {
+                self.last_error = Some(format!("invalid IP: {e}"));
+                return;
+            }
+        };
+
+        let mut config = RadioConfig {
+            radio_addr:    addr,
+            num_rx:        self.num_rx,
+            audio_device:  None,
+            prime_wisdom:  true,
+            ..RadioConfig::default()
+        };
+        for (r, view) in self.rxs.iter().enumerate().take(self.num_rx as usize) {
+            config.rx[r] = RxConfig {
+                enabled:      view.enabled,
+                frequency_hz: view.frequency_hz,
+                mode:         view.mode,
+                volume:       view.volume,
+            };
+        }
+
+        match Radio::start(config) {
+            Ok(r) => {
+                self.telemetry  = Some(r.telemetry());
+                self.radio      = Some(r);
+                self.last_error = None;
+                // Connect snapshots the form fields the user just
+                // committed so a crash mid-session keeps the most
+                // recent intent on disk.
+                self.save_now();
+            }
+            Err(e) => {
+                self.last_error = Some(format!("{e:#}"));
+            }
+        }
+    }
+
+    /// Stop the live radio (if any) and force-save.
+    pub fn disconnect(&mut self) {
+        if let Some(r) = self.radio.take() {
+            let _ = r.stop();
+        }
+        self.telemetry = None;
+        self.save_now();
+    }
+
+    // --- Lifecycle / persistence ------------------------------------
+
+    /// Once-per-frame tick from the frontend. Currently does only the
+    /// debounced auto-save; phase D.12 will also drain the script
+    /// scheduler queue and the event bus from here.
+    pub fn tick(&mut self, _now: Instant) {
+        self.maybe_autosave();
+    }
+
+    /// Called by the frontend when the application is about to exit.
+    /// Cleanly disconnects the radio and forces a final save.
+    pub fn shutdown(&mut self) {
+        if self.radio.is_some() {
+            self.disconnect();
+        } else {
+            self.save_now();
+        }
+    }
+
+    /// Mark the in-memory settings dirty so the next debounce tick
+    /// (or the next disconnect / quit) writes them to disk.
+    pub fn mark_dirty(&mut self) {
+        self.dirty = true;
+    }
+
+    /// Persist the current state to disk **right now**, regardless
+    /// of the debounce.
+    pub fn save_now(&mut self) {
+        match self.to_settings().save_default() {
+            Ok(()) => {
+                self.dirty = false;
+                self.last_save = Instant::now();
+                tracing::debug!("settings saved");
+            }
+            Err(e) => tracing::warn!(error = %e, "settings save failed"),
+        }
+    }
+
+    fn maybe_autosave(&mut self) {
+        if self.dirty && self.last_save.elapsed() >= SAVE_DEBOUNCE {
+            self.save_now();
+        }
+    }
+
+    /// Build a `Settings` snapshot from the current view-model state.
+    fn to_settings(&self) -> Settings {
+        let mut s = Settings::default();
+        s.ensure_rx_slots(MAX_RX);
+        s.general = GeneralSettings {
+            last_radio_ip: self.radio_ip.clone(),
+            audio_device:  String::new(),
+            active_rx:     self.active_rx as u8,
+            num_rx:        self.num_rx,
+        };
+        for (i, view) in self.rxs.iter().enumerate().take(MAX_RX) {
+            s.rxs[i] = SerdeRxSettings {
+                enabled:      view.enabled,
+                frequency_hz: view.frequency_hz,
+                mode:         mode_to_serde(view.mode),
+                volume:       view.volume,
+                nr3:          view.nr3,
+                nr4:          view.nr4,
+            };
+        }
+        s.band_stacks = self.band_stack.to_settings();
+        s.memories    = self.memories.clone();
+        s
+    }
+}
+
+// --------------------------------------------------------------------
+// Tests
+// --------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn dbm_to_s_units_known_points() {
+        // S1 = -127 dBm, S9 = -73 dBm, S9+10 = -63 dBm.
+        assert!((dbm_to_s_units(-127.0) - 0.0).abs() < 0.01);
+        assert!((dbm_to_s_units( -73.0) - 9.0).abs() < 0.01);
+        assert!((dbm_to_s_units( -63.0) - 10.0).abs() < 0.01);
+        assert!((dbm_to_s_units( -53.0) - 11.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn band_for_freq_round_trip() {
+        for b in Band::ALL {
+            let entry = b.default_entry();
+            assert_eq!(Band::for_freq(entry.frequency_hz), Some(b));
+        }
+    }
+
+    #[test]
+    fn band_stack_default_seeded() {
+        let bs = BandStack::default();
+        // 40m default should be the FT8 anchor.
+        assert_eq!(bs.get(Band::M40).frequency_hz, 7_074_000);
+        assert_eq!(bs.get(Band::M40).mode, WdspMode::Usb);
+    }
+
+    #[test]
+    fn band_stack_settings_round_trip() {
+        let bs = BandStack::default();
+        let map = bs.to_settings();
+        let bs2 = BandStack::from_settings(&map);
+        for b in Band::ALL {
+            assert_eq!(bs.get(b).frequency_hz, bs2.get(b).frequency_hz);
+            assert_eq!(bs.get(b).mode,         bs2.get(b).mode);
+        }
+    }
+
+    #[test]
+    fn mode_adapter_round_trip() {
+        for m in [
+            WdspMode::Lsb, WdspMode::Usb, WdspMode::Dsb, WdspMode::CwL,
+            WdspMode::CwU, WdspMode::Fm, WdspMode::Am, WdspMode::DigU,
+            WdspMode::Spec, WdspMode::DigL, WdspMode::Sam, WdspMode::Drm,
+        ] {
+            assert_eq!(mode_from_serde(mode_to_serde(m)), m);
+        }
+    }
+}

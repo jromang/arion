@@ -10,7 +10,7 @@ name = "thetis"
 path = "src/main.rs"
 
 [dependencies]
-thetis-ui.workspace = true
+thetis-egui.workspace = true
 thetis-core.workspace = true
 eframe.workspace = true
 anyhow.workspace = true

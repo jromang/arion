@@ -1,18 +1,18 @@
 [package]
-name = "thetis-ui"
+name = "thetis-egui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "egui + wgpu application shell for Thetis"
+description = "egui + wgpu desktop frontend for Thetis (consumes thetis-app)"
 
 [dependencies]
+thetis-app.workspace = true
 thetis-core.workspace = true
 thetis-settings.workspace = true
 eframe.workspace = true
 egui.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
-arc-swap.workspace = true
 
 # Pulled in with default features so the native backends (vulkan /
 # metal / dx12 / gles) get compiled. eframe only enables the `wgsl`
