@@ -76,6 +76,26 @@ fn main() {
         .probe("fftw3")
         .expect("fftw3 (libfftw3-dev) is required to build wdsp-sys");
 
+    // --- Optional NR libraries -----------------------------------------
+    //
+    // `rnnoise` (NR3) and `libspecbleach` (NR4) are built by their
+    // upstream distros as standard shared libraries; we use them via
+    // `pkg-config` when they're present and fall back to the
+    // `shim/wdsp_nr_stubs.c` no-ops when they aren't. This keeps
+    // phase A's zero-dependency build still working while letting
+    // phase B users with `rnnoise` / `libspecbleach` installed get
+    // the real feature.
+    //
+    // Flipping a lib on/off controls two things simultaneously:
+    //   1. `WDSP_NO_RNNOISE` / `WDSP_NO_SPECBLEACH` defines — WDSP's
+    //      own `rnnr.c` / `sbnr.c` and the stubs in `wdsp_nr_stubs.c`
+    //      are both gated on them.
+    //   2. Whether `rnnr.c` / `sbnr.c` are compiled at all. When the
+    //      lib is absent, the stubs provide every symbol the rest of
+    //      WDSP links against.
+    let rnnoise = pkg_config::Config::new().probe("rnnoise").ok();
+    let specbleach = pkg_config::Config::new().probe("specbleach").ok();
+
     // --- Stage a fresh copy of upstream sources into OUT_DIR ------------
     let staged_dir = out_dir.join("wdsp");
     stage_upstream(&upstream_wdsp, &staged_dir);
@@ -90,9 +110,42 @@ fn main() {
     println!("cargo:rerun-if-changed={}", upstream_wdsp.display());
 
     // --- Compile --------------------------------------------------------
+    //
+    // Include-path ordering matters:
+    //   1. Optional NR include dirs first, so real `rnnoise.h` /
+    //      `specbleach_adenoiser.h` win over the fallback stubs in
+    //      `shim/`.
+    //   2. `shim/` second, to intercept `<Windows.h>` / `<process.h>`
+    //      / `<intrin.h>` / `<avrt.h>` (the host toolchain has none
+    //      of those, so this is a safe fall-through).
+    //   3. The staged WDSP source dir last.
     let mut build = cc::Build::new();
+    if let Some(info) = &rnnoise {
+        for inc in &info.include_paths {
+            build.include(inc);
+        }
+    }
+    if let Some(info) = &specbleach {
+        for inc in &info.include_paths {
+            build.include(inc);
+        }
+    }
+    // NR fallback headers live in `shim/nr-stub/<lib>/` — one sub-dir
+    // per optional lib. We add a sub-dir to the `-I` chain *only* when
+    // the matching lib is missing from pkg-config, so the real header
+    // (typically under `/usr/include`) wins everywhere else. Keeping
+    // each stub in its own directory avoids the "one missing lib drags
+    // in everyone's stub" trap: if `rnnoise` is installed but
+    // `libspecbleach` isn't, we add only the specbleach stub path, so
+    // the real `rnnoise.h` stays visible.
+    if rnnoise.is_none() {
+        build.include(shim_dir.join("nr-stub").join("rnnoise"));
+    }
+    if specbleach.is_none() {
+        build.include(shim_dir.join("nr-stub").join("specbleach"));
+    }
     build
-        .include(&shim_dir)        // intercept <Windows.h> etc.
+        .include(&shim_dir)
         .include(&staged_dir)
         .flag_if_supported("-std=c11")
         .flag_if_supported("-fvisibility=default")
@@ -108,11 +161,16 @@ fn main() {
         .flag_if_supported("-Wno-maybe-uninitialized")
         .flag_if_supported("-Wno-misleading-indentation")
         .flag_if_supported("-Wno-sign-compare")
-        .define("WDSP_NO_RNNOISE",   None)
-        .define("WDSP_NO_SPECBLEACH", None)
         // Expose POSIX.1-2008 / GNU extensions (PTHREAD_MUTEX_RECURSIVE,
         // CLOCK_REALTIME, sem_timedwait) required by the shim.
         .define("_GNU_SOURCE", None);
+
+    if rnnoise.is_none() {
+        build.define("WDSP_NO_RNNOISE", None);
+    }
+    if specbleach.is_none() {
+        build.define("WDSP_NO_SPECBLEACH", None);
+    }
 
     for inc in &fftw3f.include_paths {
         build.include(inc);
@@ -121,8 +179,19 @@ fn main() {
     for src in WDSP_C_SOURCES {
         build.file(staged_dir.join(src));
     }
+    // Re-enable `rnnr.c` / `sbnr.c` when the matching NR lib is available.
+    if rnnoise.is_some() {
+        build.file(staged_dir.join("rnnr.c"));
+        tracing_emit("rnnoise detected: NR3 enabled");
+    }
+    if specbleach.is_some() {
+        build.file(staged_dir.join("sbnr.c"));
+        tracing_emit("libspecbleach detected: NR4 enabled");
+    }
 
-    // Phase A: replace rnnr.c / sbnr.c with NR stubs.
+    // NR stubs — each half is guarded internally by `WDSP_NO_RNNOISE`
+    // / `WDSP_NO_SPECBLEACH`, so a partial build (one lib present, one
+    // missing) gets exactly the right set of fallback symbols.
     build.file(shim_dir.join("wdsp_nr_stubs.c"));
 
     // POSIX glue — only on non-Windows.
@@ -133,12 +202,19 @@ fn main() {
 
     build.compile("wdsp");
 
-    // pkg-config already emits `cargo:rustc-link-lib=fftw3f` / `fftw3`.
+    // pkg-config already emits `cargo:rustc-link-lib=fftw3f` / `fftw3`
+    // / `rnnoise` / `specbleach` for the probes that succeeded — we
+    // don't need to re-emit them here.
     #[cfg(target_os = "linux")]
     {
         println!("cargo:rustc-link-lib=pthread");
         println!("cargo:rustc-link-lib=m");
     }
+}
+
+/// Log a build-script message that shows up in `cargo build -vv`.
+fn tracing_emit(msg: &str) {
+    println!("cargo:warning={}", msg);
 }
 
 /// Copy every `.c` and `.h` file from upstream into `dest`, creating `dest`

@@ -270,6 +270,18 @@ impl Channel {
         self.panel_gain = gain;
     }
 
+    /// Enable or disable the RNNoise (NR3) denoiser on this channel.
+    ///
+    /// Requires `wdsp-sys` to have been built against a real `rnnoise`
+    /// system library; otherwise the call is a no-op (handled inside
+    /// the stub implementation). No way to query the build-time
+    /// availability at runtime — the caller should treat this as
+    /// best-effort.
+    pub fn set_nr3_enabled(&mut self, enabled: bool) {
+        // SAFETY: valid channel id, WDSP serialises with its own csDSP.
+        unsafe { sys::SetRXARNNRRun(self.id, if enabled { 1 } else { 0 }); }
+    }
+
     pub fn panel_gain(&self) -> f64 { self.panel_gain }
 
     /// Push one input buffer of interleaved complex IQ samples and pull

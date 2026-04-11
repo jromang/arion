@@ -127,6 +127,29 @@ unsafe extern "C" {
     /// to both channels, `1` = independent L/R (used only by CW binaural
     /// or multi-RX modes).
     pub fn SetRXAPanelBinaural(channel: c_int, binaural: c_int);
+
+    // --- NR3 (RNNoise) --------------------------------------------------
+    //
+    // These are only meaningful when `wdsp-sys` was built against a
+    // real `rnnoise` system library (see `build.rs` pkg-config probe).
+    // When the lib is missing, the stub implementations in
+    // `shim/wdsp_nr_stubs.c` make the setters silent no-ops — they
+    // still link so downstream Rust code can call them unconditionally.
+
+    /// Turn the RNNoise denoiser on (`1`) or off (`0`) for the given
+    /// RX channel.
+    pub fn SetRXARNNRRun(channel: c_int, run: c_int);
+
+    /// Where the denoiser sits in the RXA signal chain. Accepted
+    /// values mirror upstream's `SetRXARNNRPosition`:
+    /// `0` = post-filter, `1` = pre-filter. Most users want the
+    /// default (0).
+    pub fn SetRXARNNRPosition(channel: c_int, position: c_int);
+
+    /// Whether to use RNNoise's built-in auto-gain output stage.
+    /// `0` = raw VAD-weighted output, `1` = auto-gain. The factory
+    /// default in upstream Thetis is `1`.
+    pub fn SetRXARNNRUseDefaultGain(channel: c_int, use_default_gain: c_int);
 }
 
 // --- Analyzer (spectrum display) API, subset from analyzer.h ----------

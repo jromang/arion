@@ -65,6 +65,7 @@ struct RxView {
     frequency_hz: u32,
     mode:         WdspMode,
     volume:       f32,
+    nr3:          bool,
     waterfall:    Waterfall,
 }
 
@@ -75,6 +76,7 @@ impl RxView {
             frequency_hz: freq,
             mode,
             volume: 0.25,
+            nr3: false,
             waterfall: Waterfall::new(),
         }
     }
@@ -293,6 +295,15 @@ impl ThetisApp {
             if (self.rxs[rx].volume - prev_vol).abs() > f32::EPSILON {
                 if let Some(r) = &self.radio {
                     let _ = r.set_rx_volume(rx_u8, self.rxs[rx].volume);
+                }
+            }
+
+            ui.separator();
+            let prev_nr3 = self.rxs[rx].nr3;
+            ui.checkbox(&mut self.rxs[rx].nr3, "NR3");
+            if self.rxs[rx].nr3 != prev_nr3 {
+                if let Some(r) = &self.radio {
+                    let _ = r.set_rx_nr3(rx_u8, self.rxs[rx].nr3);
                 }
             }
         });
