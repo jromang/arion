@@ -159,7 +159,12 @@ impl eframe::App for EguiView {
         // │  StatusBar: pkts/dsp/audio/underruns              │
         // └─────────────────────────────────────────────────┘
 
-        // 1. Top bar: connect, VFO rows, band buttons
+        // 1a. Menu bar (File / View / Help)
+        egui::Panel::top("menu-bar").show_inside(ui, |ui| {
+            self.draw_menu_bar(ui);
+        });
+
+        // 1b. Toolbar + VFO rows
         egui::Panel::top("top-bar").show_inside(ui, |ui| {
             self.draw_top_bar(ui);
         });
@@ -471,8 +476,35 @@ impl EguiView {
         });
     }
 
+    /// Menu bar matching Thetis upstream: File / View / Help.
+    fn draw_menu_bar(&mut self, ui: &mut egui::Ui) {
+        egui::MenuBar::new().ui(ui, |ui| {
+            ui.menu_button("File", |ui| {
+                if ui.button("Quit").clicked() {
+                    self.app.shutdown();
+                    ui.ctx().send_viewport_cmd(egui::ViewportCommand::Close);
+                    ui.close();
+                }
+            });
+            ui.menu_button("View", |ui| {
+                if ui.button("Memories").clicked() {
+                    self.app.toggle_window(WindowKind::Memories);
+                    ui.close();
+                }
+                if ui.button("Setup").clicked() {
+                    self.app.toggle_window(WindowKind::Setup);
+                    ui.close();
+                }
+            });
+            ui.menu_button("Help", |ui| {
+                ui.label("Thetis-rs — Phase D");
+                ui.hyperlink_to("Source", "https://github.com/jeff/thetis-rust");
+            });
+        });
+    }
+
     fn draw_top_bar(&mut self, ui: &mut egui::Ui) {
-        // Row 1: global session controls (Connect / Memories / IP / num_rx / status)
+        // Row 1: global session controls (Connect / IP / num_rx)
         ui.horizontal(|ui| {
             if self.app.is_connected() {
                 if ui.button("Disconnect").clicked() {
@@ -480,20 +512,6 @@ impl EguiView {
                 }
             } else if ui.button("Connect").clicked() {
                 self.app.connect();
-            }
-
-            ui.separator();
-            // Memories toggle, promoted to a prominent left-side spot
-            // so it doesn't get visually drowned by the connection
-            // status counters on the right.
-            let memories_open = self.app.window_open(WindowKind::Memories);
-            let mem_label = if memories_open { "Memories ▼" } else { "Memories ▶" };
-            if ui
-                .selectable_label(memories_open, mem_label)
-                .on_hover_text("Toggle the memories window (named freq/mode bookmarks)")
-                .clicked()
-            {
-                self.app.toggle_window(WindowKind::Memories);
             }
 
             ui.separator();
