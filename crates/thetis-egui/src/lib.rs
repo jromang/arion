@@ -59,11 +59,44 @@ pub fn run() -> eframe::Result<()> {
 /// texture caches (egui-specific resources that can't live in `App`)
 /// and a couple of transient form-field strings for the Memories
 /// window's "Add" form.
+/// Per-RX spectrum overlay state (peak hold + averaging).
+/// Lives in EguiView because it's frontend-specific rendering state.
+struct SpectrumOverlay {
+    peak_bins:    Vec<f32>,
+    avg_bins:     Vec<f32>,
+    show_peak:    bool,
+    show_avg:     bool,
+}
+
+impl SpectrumOverlay {
+    fn new() -> Self {
+        SpectrumOverlay {
+            peak_bins: vec![-140.0; SPECTRUM_BINS],
+            avg_bins:  vec![-140.0; SPECTRUM_BINS],
+            show_peak: false,
+            show_avg:  false,
+        }
+    }
+
+    fn update(&mut self, bins_db: &[f32]) {
+        let n = bins_db.len().min(self.peak_bins.len());
+        for (i, &db) in bins_db.iter().enumerate().take(n) {
+            if db > self.peak_bins[i] {
+                self.peak_bins[i] = db;
+            } else {
+                self.peak_bins[i] -= 0.3;
+            }
+            self.avg_bins[i] = self.avg_bins[i] * 0.85 + db * 0.15;
+        }
+    }
+}
+
 pub struct EguiView {
     app: App,
-    /// Per-RX waterfall texture cache. Indexed 0..MAX_RX. Resized at
-    /// startup; only the first `app.num_rx()` are actually drawn.
+    /// Per-RX waterfall texture cache. Indexed 0..MAX_RX.
     waterfalls: Vec<Waterfall>,
+    /// Per-RX spectrum overlay (peak hold + averaging). Indexed 0..MAX_RX.
+    overlays: Vec<SpectrumOverlay>,
     /// Transient form-field state for the "Add memory" widget. Lives
     /// here (not in `App`) because it's tied to the egui form
     /// lifecycle and would be re-created from scratch by another
@@ -85,10 +118,12 @@ impl EguiView {
         let app = App::new(opts);
 
         let waterfalls = (0..MAX_RX).map(|_| Waterfall::new()).collect();
+        let overlays   = (0..MAX_RX).map(|_| SpectrumOverlay::new()).collect();
 
         EguiView {
             app,
             waterfalls,
+            overlays,
             new_memory_name: String::new(),
             new_memory_tag:  String::new(),
         }
@@ -830,6 +865,7 @@ impl EguiView {
         // is a frontend resource, owned by EguiView (not App).
         for r in 0..num_rx {
             self.waterfalls[r].push_row(&snapshot.rx[r].spectrum_bins_db);
+            self.overlays[r].update(&snapshot.rx[r].spectrum_bins_db);
         }
 
         // Divide the central area into `num_rx` horizontal bands.
@@ -864,9 +900,19 @@ impl EguiView {
                 );
 
                 draw_spectrum(ui, spec_rect, &snapshot.rx[r].spectrum_bins_db);
-                // Use the actual filter bounds from App rather than
-                // the mode defaults, so the overlay follows preset /
-                // variable filter changes in real time.
+
+                // Peak hold trace (white, 1px)
+                if self.overlays[r].show_peak {
+                    draw_trace(ui, spec_rect, &self.overlays[r].peak_bins,
+                        Color32::from_rgba_premultiplied(255, 255, 200, 180));
+                }
+                // Average trace (cyan, 1px)
+                if self.overlays[r].show_avg {
+                    draw_trace(ui, spec_rect, &self.overlays[r].avg_bins,
+                        Color32::from_rgba_premultiplied(100, 200, 255, 160));
+                }
+
+                // Passband overlay
                 let rx_state = self.app.rx(r).cloned().unwrap_or_default();
                 draw_passband_overlay(
                     ui, spec_rect,
@@ -874,6 +920,8 @@ impl EguiView {
                     rx_state.filter_lo as f32,
                     rx_state.filter_hi as f32,
                 );
+
+                // RX label
                 let is_active = r == self.app.active_rx();
                 let prefix = if is_active && num_rx > 1 { "▶ " } else { "" };
                 ui.painter_at(spec_rect).text(
@@ -899,10 +947,20 @@ impl EguiView {
 
                 let center_hz = snapshot.rx[r].center_freq_hz;
                 let span_hz   = snapshot.rx[r].span_hz;
-                let (new_freq, clicked) = handle_tune_input(
-                    ui, spec_rect,
+
+                // Single interact per rect — handles left-click tune
+                // AND right-click context menu on the same Response.
+                let spec_resp = ui.interact(
+                    spec_rect,
                     egui::Id::new(("spec-tune", r)),
-                    center_hz, span_hz,
+                    Sense::click_and_drag(),
+                );
+                spec_resp.context_menu(|ui| {
+                    ui.checkbox(&mut self.overlays[r].show_peak, "Peak hold");
+                    ui.checkbox(&mut self.overlays[r].show_avg,  "Average");
+                });
+                let (new_freq, clicked) = tune_from_response(
+                    &spec_resp, ui, spec_rect, center_hz, span_hz,
                 );
                 if let Some(f) = new_freq { pending_tunes.push((r, f)); }
                 if clicked { newly_active = Some(r); }
@@ -1038,6 +1096,76 @@ fn handle_tune_input(
     }
 
     (new_freq, clicked)
+}
+
+/// Extract tune intent from an already-obtained Response (used when
+/// the spectrum rect also needs a context_menu on the same Response).
+fn tune_from_response(
+    response: &egui::Response,
+    ui: &egui::Ui,
+    rect: Rect,
+    center_hz: u32,
+    span_hz: u32,
+) -> (Option<u32>, bool) {
+    let mut new_freq: Option<u32> = None;
+    let clicked = response.clicked() || response.dragged();
+
+    if clicked {
+        if let Some(pos) = response.interact_pointer_pos() {
+            let dx_norm = (pos.x - rect.center().x) / rect.width();
+            let delta_hz = (dx_norm * span_hz as f32).round() as i64;
+            let next = (center_hz as i64 + delta_hz).max(0) as u32;
+            if next != center_hz {
+                new_freq = Some(next);
+            }
+        }
+    }
+
+    if response.hovered() {
+        let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll_y.abs() > 0.5 {
+            let modifiers = ui.input(|i| i.modifiers);
+            let step_hz: i64 = if modifiers.ctrl {
+                1000
+            } else if modifiers.shift {
+                100
+            } else {
+                10
+            };
+            let ticks = (scroll_y / 50.0).round() as i64;
+            let ticks = if ticks == 0 {
+                if scroll_y > 0.0 { 1 } else { -1 }
+            } else {
+                ticks
+            };
+            let base = new_freq.unwrap_or(center_hz) as i64;
+            let next = (base + ticks * step_hz).max(0) as u32;
+            if next as i64 != base {
+                new_freq = Some(next);
+            }
+        }
+    }
+
+    (new_freq, clicked)
+}
+
+// --- Trace overlay (peak hold / average) ---------------------------------
+
+fn draw_trace(ui: &egui::Ui, rect: Rect, bins: &[f32], color: Color32) {
+    if bins.is_empty() {
+        return;
+    }
+    let n = bins.len();
+    let mut points = Vec::with_capacity(n);
+    for (i, &db) in bins.iter().enumerate() {
+        let x = rect.min.x + (i as f32 / (n - 1) as f32) * rect.width();
+        let y = db_to_y(db, rect);
+        points.push(Pos2::new(x, y));
+    }
+    ui.painter_at(rect).add(egui::Shape::line(
+        points,
+        Stroke::new(1.0, color),
+    ));
 }
 
 // --- Passband overlay ----------------------------------------------------
