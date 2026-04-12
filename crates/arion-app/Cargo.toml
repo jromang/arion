@@ -1,0 +1,22 @@
+[package]
+name = "arion-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Headless view-model for Arion (frontend-agnostic)"
+
+# This crate is the application's view-model layer in our MVVM split.
+# It MUST NOT depend on any UI framework (egui, eframe, ratatui,
+# crossterm, wgpu, …) so the same App struct can power both the
+# desktop egui frontend and the ratatui TUI frontend, plus be used
+# headless from tests and the Rhai scripting layer (phase D.12).
+
+[dependencies]
+arion-core.workspace = true
+arion-settings.workspace = true
+arc-swap.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+
+[lib]
+doctest = false

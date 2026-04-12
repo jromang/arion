@@ -1,0 +1,27 @@
+[package]
+name = "arion-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Radio state machine wiring net, DSP and audio together"
+
+[dependencies]
+hpsdr-protocol.workspace = true
+hpsdr-net.workspace = true
+arion-audio.workspace = true
+wdsp.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+arc-swap.workspace = true
+rtrb.workspace = true
+rustfft = "6"
+thread-priority = "3"
+
+[dev-dependencies]
+tracing-subscriber = { workspace = true }
+ctrlc = "3"
+
+[[example]]
+name = "rx_listen"
+path = "examples/rx_listen.rs"

@@ -1,0 +1,13 @@
+[package]
+name = "arion-settings"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Persistent user settings (TOML) for Arion"
+
+[dependencies]
+serde.workspace = true
+toml.workspace = true
+thiserror.workspace = true
+directories.workspace = true
+tracing.workspace = true

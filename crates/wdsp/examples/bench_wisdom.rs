@@ -1,7 +1,7 @@
 //! Benchmark `prime_wisdom_with_embedded_default` end-to-end.
 //!
 //! Usage:
-//!   rm -rf ~/.cache/thetis/wdspWisdom00
+//!   rm -rf ~/.cache/arion/wdspWisdom00
 //!   cargo run -p wdsp --example bench_wisdom --release
 //!
 //! Expected: < 1 s on a fresh cache (embedded blob is written, then

@@ -1,7 +1,7 @@
 //! Raw FFI bindings to the vendored WDSP C library.
 //!
 //! Phase A: hand-written declarations for the handful of WDSP entry points
-//! `thetis-core` actually calls (channel lifecycle, mode/rates, `fexchange0`,
+//! `arion-core` actually calls (channel lifecycle, mode/rates, `fexchange0`,
 //! analyzer, a couple of metering functions). When the surface grows in
 //! phase B we'll switch to `bindgen` against `comm.h`, but the hand-rolled
 //! form is clearer for now and avoids pulling bindgen into the build.
@@ -185,7 +185,7 @@ unsafe extern "C" {
 
     /// Whether to use RNNoise's built-in auto-gain output stage.
     /// `0` = raw VAD-weighted output, `1` = auto-gain. The factory
-    /// default in upstream Thetis is `1`.
+    /// default in upstream Arion is `1`.
     pub fn SetRXARNNRUseDefaultGain(channel: c_int, use_default_gain: c_int);
 
     // --- NR4 (libspecbleach) -------------------------------------------

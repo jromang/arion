@@ -5,15 +5,15 @@ members = [
     "crates/wdsp",
     "crates/hpsdr-protocol",
     "crates/hpsdr-net",
-    "crates/thetis-audio",
-    "crates/thetis-core",
-    "crates/thetis-settings",
-    "crates/thetis-app",
-    "crates/thetis-script",
-    "crates/thetis-egui",
-    "crates/thetis-tui",
-    "apps/thetis",
-    "apps/thetis-tui",
+    "crates/arion-audio",
+    "crates/arion-core",
+    "crates/arion-settings",
+    "crates/arion-app",
+    "crates/arion-script",
+    "crates/arion-egui",
+    "crates/arion-tui",
+    "apps/arion",
+    "apps/arion-tui",
 ]
 
 [workspace.package]
@@ -21,7 +21,7 @@ version = "0.0.1"
 edition = "2021"
 rust-version = "1.82"
 license = "GPL-2.0-or-later"
-repository = "https://github.com/jeff/thetis-rust"
+repository = "https://github.com/jeff/arion"
 
 [workspace.dependencies]
 anyhow = "1"
@@ -38,7 +38,7 @@ cpal = "0.16"
 # carrying a second backend we don't use.
 #
 # IMPORTANT: eframe's "wgpu" feature pulls wgpu in with only the `wgsl`
-# cargo feature, which compiles *no* native backend. `thetis-egui` adds
+# cargo feature, which compiles *no* native backend. `arion-egui` adds
 # a direct `wgpu = "29"` dep with default features to enable vulkan /
 # metal / dx12 / gles per platform — Cargo unifies the feature sets so
 # eframe ends up using a properly-configured wgpu.
@@ -68,13 +68,13 @@ wdsp-sys = { path = "crates/wdsp-sys" }
 wdsp = { path = "crates/wdsp" }
 hpsdr-protocol = { path = "crates/hpsdr-protocol" }
 hpsdr-net = { path = "crates/hpsdr-net" }
-thetis-audio = { path = "crates/thetis-audio" }
-thetis-core = { path = "crates/thetis-core" }
-thetis-settings = { path = "crates/thetis-settings" }
-thetis-app = { path = "crates/thetis-app" }
-thetis-script = { path = "crates/thetis-script" }
-thetis-egui = { path = "crates/thetis-egui" }
-thetis-tui = { path = "crates/thetis-tui" }
+arion-audio = { path = "crates/arion-audio" }
+arion-core = { path = "crates/arion-core" }
+arion-settings = { path = "crates/arion-settings" }
+arion-app = { path = "crates/arion-app" }
+arion-script = { path = "crates/arion-script" }
+arion-egui = { path = "crates/arion-egui" }
+arion-tui = { path = "crates/arion-tui" }
 
 [profile.release]
 lto = "thin"

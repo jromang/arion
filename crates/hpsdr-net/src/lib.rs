@@ -10,7 +10,7 @@
 //!   lets the caller push frequency / sample-rate updates to the radio.
 //! - [`MockHl2`] — an in-process fake HermesLite 2 that answers discovery
 //!   and streams synthetic data frames, used by this crate's integration
-//!   tests and by `thetis-core`'s smoke tests. Handy for CI since it
+//!   tests and by `arion-core`'s smoke tests. Handy for CI since it
 //!   doesn't need any real hardware.
 //!
 //! Phase A scope: RX only, one receiver, 48 kHz, no TX audio path yet.

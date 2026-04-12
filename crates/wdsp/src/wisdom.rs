@@ -13,7 +13,7 @@
 //! entry point that either imports an existing `<dir>wdspWisdom00` or
 //! rebuilds the full plan table.
 //!
-//! We stash the file under `$XDG_CACHE_HOME/thetis/` (platform-appropriate
+//! We stash the file under `$XDG_CACHE_HOME/arion/` (platform-appropriate
 //! equivalent on macOS / Windows via the `directories` crate). Subsequent
 //! runs are instantaneous thanks to that cache.
 //!
@@ -59,13 +59,13 @@ pub enum WisdomError {
 }
 
 /// Return the default wisdom cache directory,
-/// `$XDG_CACHE_HOME/thetis/` on Linux, `~/Library/Caches/thetis/` on
-/// macOS, `%LOCALAPPDATA%\thetis\cache\` on Windows.
+/// `$XDG_CACHE_HOME/arion/` on Linux, `~/Library/Caches/arion/` on
+/// macOS, `%LOCALAPPDATA%\arion\cache\` on Windows.
 ///
 /// Returns `None` only if the OS refuses to hand out a home-dir —
 /// typical on headless CI containers where `HOME` is unset.
 pub fn default_cache_dir() -> Option<PathBuf> {
-    ProjectDirs::from("rs", "thetis", "thetis").map(|p| p.cache_dir().to_path_buf())
+    ProjectDirs::from("rs", "arion", "arion").map(|p| p.cache_dir().to_path_buf())
 }
 
 /// Prime FFTW's wisdom cache. Call this **once**, before opening any
@@ -93,7 +93,7 @@ pub fn prime<P: AsRef<Path>>(dir: P) -> Result<WisdomStatus, WisdomError> {
     //     strcpy(wisdom_file, directory);
     //     strcat(wisdom_file, "wdspWisdom00");
     // so we MUST hand it a directory that ends in a path separator,
-    // otherwise it would try to open `/cache/thetiswdspWisdom00`.
+    // otherwise it would try to open `/cache/arionwdspWisdom00`.
     let mut with_sep = dir_buf.clone().into_os_string();
     with_sep.push(std::path::MAIN_SEPARATOR.to_string());
 
@@ -181,7 +181,7 @@ pub fn seed_cache_with_embedded<P: AsRef<Path>>(dir: P) -> std::io::Result<bool>
 
 /// One-shot startup helper: seed from the embedded blob if needed,
 /// then prime FFTW from the resulting cache file. This is the function
-/// `thetis-core` calls during `Radio::start`.
+/// `arion-core` calls during `Radio::start`.
 ///
 /// Returns `Ok(None)` on platforms with no cache dir (headless CI),
 /// matching `prime_default`. Errors from the seed step are logged

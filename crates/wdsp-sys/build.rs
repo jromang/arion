@@ -52,7 +52,7 @@ fn main() {
     // invoked via exec without a shell so no quoting is required.
     let upstream_wdsp = manifest_dir
         .parent().unwrap()          // crates/
-        .parent().unwrap()          // thetis-rust/
+        .parent().unwrap()          // arion/
         .join("thetis-upstream")
         .join("Project Files")
         .join("Source")
@@ -164,7 +164,7 @@ fn main() {
     for src in WDSP_C_SOURCES {
         build.file(staged_dir.join(src));
     }
-    // Upstream Thetis' `rnnr.c` / `sbnr.c` are compiled when the
+    // Upstream Arion' `rnnr.c` / `sbnr.c` are compiled when the
     // matching vendored lib was built. When the `nr` feature is off,
     // the stubs in `wdsp_nr_stubs.c` take over — gated internally
     // by `WDSP_NO_RNNOISE` / `WDSP_NO_SPECBLEACH`.

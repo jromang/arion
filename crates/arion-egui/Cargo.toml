@@ -1,0 +1,26 @@
+[package]
+name = "arion-egui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "egui + wgpu desktop frontend for Arion (consumes arion-app)"
+
+[dependencies]
+arion-app.workspace = true
+arion-core.workspace = true
+arion-audio.workspace = true
+arion-script.workspace = true
+arion-settings.workspace = true
+egui_code_editor.workspace = true
+eframe.workspace = true
+egui.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+
+# Pulled in with default features so the native backends (vulkan /
+# metal / dx12 / gles) get compiled. eframe only enables the `wgsl`
+# feature on wgpu, which by itself leaves every backend out and
+# produces the "no wgpu backend feature" panic at Instance creation.
+# Cargo unifies our feature set with eframe's, so the resulting build
+# is a single wgpu crate with wgsl + the native backends.
+wgpu = "29"

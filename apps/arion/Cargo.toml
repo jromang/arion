@@ -1,0 +1,18 @@
+[package]
+name = "arion"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Arion — cross-platform SDR control application"
+
+[[bin]]
+name = "arion"
+path = "src/main.rs"
+
+[dependencies]
+arion-egui.workspace = true
+arion-core.workspace = true
+eframe.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

@@ -1,6 +1,6 @@
 //! Safe Rust wrapper around [`wdsp-sys`].
 //!
-//! Scope for phase A: just what `thetis-core` needs to open an RX channel,
+//! Scope for phase A: just what `arion-core` needs to open an RX channel,
 //! pump interleaved I/Q in, pull demodulated audio out, and tweak the
 //! mode / passband / AGC / gain. Phase B will grow this to cover TX and
 //! the analyzer.
@@ -14,10 +14,10 @@
 //! - Every [`Channel`] must be assigned a unique integer `id` in
 //!   `0..wdsp_sys::MAX_CHANNELS`. This wrapper takes that ID as an
 //!   explicit argument rather than managing it centrally, because
-//!   `thetis-core` assigns channels deterministically (RX1 = 0, RX2 = 1,
+//!   `arion-core` assigns channels deterministically (RX1 = 0, RX2 = 1,
 //!   TX1 = 2 in phase B) and doesn't benefit from a hidden allocator.
 //! - Opening more than one channel concurrently from different threads
-//!   can race inside FFTW. In phase A `thetis-core` only ever opens a
+//!   can race inside FFTW. In phase A `arion-core` only ever opens a
 //!   single RX channel during startup, so we don't need a mutex here;
 //!   phase B adds a global plan-creation mutex when the TX channel and
 //!   the analyzer start getting opened in parallel.
@@ -26,7 +26,7 @@
 // raw call into the WDSP C library. We minimise the unsafe surface: each
 // `unsafe { ... }` block is small, commented, and justified on either
 // "the channel id was validated at open_rx time" or "buffer lengths were
-// checked by the caller". Downstream crates (`thetis-core`, the UI app)
+// checked by the caller". Downstream crates (`arion-core`, the UI app)
 // never need `unsafe` themselves.
 
 pub mod wisdom;
@@ -86,7 +86,7 @@ impl Mode {
 
     /// Default passband (low, high) in Hz, relative to baseband, used by
     /// the built-in filter presets. These match the out-of-the-box values
-    /// Thetis uses when a new profile is created.
+    /// Arion uses when a new profile is created.
     pub fn default_passband_hz(self) -> (f64, f64) {
         match self {
             Mode::Usb | Mode::DigU => ( 200.0,  3_000.0),

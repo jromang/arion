@@ -1,6 +1,6 @@
-# thetis-rust
+# arion
 
-Portage multi-plateforme en Rust de [Thetis](https://github.com/ramdor/Thetis), le logiciel
+Portage multi-plateforme en Rust de [Arion](https://github.com/ramdor/Arion), le logiciel
 de contrôle pour les SDR Apache Labs (ANAN, Saturn, HermesLite 2). Le projet amont a été
 archivé le 5 avril 2026 ; ce port vise Linux, macOS et Windows.
 
@@ -17,13 +17,13 @@ crates/
   wdsp/             Wrapper Rust sûr
   hpsdr-protocol/   Types de paquets HPSDR Protocol 1
   hpsdr-net/        Transport UDP, découverte, session radio
-  thetis-audio/     Sortie audio cpal + ring buffers
-  thetis-core/      State machine radio, orchestration I/O ↔ DSP
-  thetis-settings/  Persistance TOML
-  thetis-ui/        UI egui + wgpu
+  arion-audio/     Sortie audio cpal + ring buffers
+  arion-core/      State machine radio, orchestration I/O ↔ DSP
+  arion-settings/  Persistance TOML
+  arion-egui/        UI egui + wgpu
 apps/
-  thetis/           Binaire final
-thetis-upstream/    Submodule : code source Thetis d'origine (référence)
+  arion/           Binaire final
+thetis-upstream/    Submodule : code source Arion d'origine (référence)
 ```
 
 ## Dépendances système
@@ -40,14 +40,14 @@ externe n'est nécessaire — `pkg-config` n'est plus requis.
 ## Build
 
 ```sh
-git clone --recurse-submodules <url> thetis-rust
-cd thetis-rust
+git clone --recurse-submodules <url> arion
+cd arion
 cargo build --workspace
 ```
 
 ### Cross-compile Linux → Windows
 
-Depuis une machine Linux, on peut produire un `thetis.exe` natif
+Depuis une machine Linux, on peut produire un `arion.exe` natif
 x86_64 (PE32+) sans toucher à Windows :
 
 ```sh
@@ -61,7 +61,7 @@ PATH="$HOME/.cargo/bin:$PATH" \
   cargo build --target x86_64-pc-windows-gnu --release -p thetis
 ```
 
-L'artefact final est `target/x86_64-pc-windows-gnu/release/thetis.exe`.
+L'artefact final est `target/x86_64-pc-windows-gnu/release/arion.exe`.
 `wdsp-sys/build.rs` détecte le target et :
 - construit FFTW 3.3.10 avec `WITH_OUR_MALLOC` (mingw n'a ni `posix_memalign`
   ni `memalign`),
@@ -73,4 +73,4 @@ L'artefact final est `target/x86_64-pc-windows-gnu/release/thetis.exe`.
 
 ## Licence
 
-GPL-2.0-or-later, aligné sur Thetis amont.
+GPL-2.0-or-later, aligné sur Arion amont.

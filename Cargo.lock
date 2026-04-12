@@ -222,6 +222,125 @@ dependencies = [
 ]
 
 [[package]]
+name = "arion"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "arion-core",
+ "arion-egui",
+ "eframe",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "arion-app"
+version = "0.0.1"
+dependencies = [
+ "arc-swap",
+ "arion-core",
+ "arion-settings",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "arion-audio"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "cpal",
+ "rtrb",
+ "rubato",
+ "thiserror 2.0.18",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
+name = "arion-core"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "arion-audio",
+ "ctrlc",
+ "hpsdr-net",
+ "hpsdr-protocol",
+ "rtrb",
+ "rustfft",
+ "thiserror 2.0.18",
+ "thread-priority",
+ "tracing",
+ "tracing-subscriber",
+ "wdsp",
+]
+
+[[package]]
+name = "arion-egui"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "arion-app",
+ "arion-audio",
+ "arion-core",
+ "arion-script",
+ "arion-settings",
+ "eframe",
+ "egui",
+ "egui_code_editor",
+ "tracing",
+ "wgpu",
+]
+
+[[package]]
+name = "arion-script"
+version = "0.0.1"
+dependencies = [
+ "arion-app",
+ "arion-core",
+ "arion-settings",
+ "rhai",
+ "tracing",
+]
+
+[[package]]
+name = "arion-settings"
+version = "0.0.1"
+dependencies = [
+ "directories",
+ "serde",
+ "thiserror 2.0.18",
+ "toml",
+ "tracing",
+]
+
+[[package]]
+name = "arion-tui"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "arion-app",
+ "arion-core",
+ "arion-script",
+ "crossterm",
+ "ratatui",
+ "tracing",
+]
+
+[[package]]
+name = "arion-tui-bin"
+version = "0.0.1"
+dependencies = [
+ "anyhow",
+ "arion-app",
+ "arion-tui",
+ "directories",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "arrayvec"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3560,125 +3679,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
 dependencies = [
  "winapi-util",
-]
-
-[[package]]
-name = "thetis"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "eframe",
- "thetis-core",
- "thetis-egui",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "thetis-app"
-version = "0.0.1"
-dependencies = [
- "arc-swap",
- "thetis-core",
- "thetis-settings",
- "thiserror 2.0.18",
- "tracing",
-]
-
-[[package]]
-name = "thetis-audio"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "cpal",
- "rtrb",
- "rubato",
- "thiserror 2.0.18",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "thetis-core"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "arc-swap",
- "ctrlc",
- "hpsdr-net",
- "hpsdr-protocol",
- "rtrb",
- "rustfft",
- "thetis-audio",
- "thiserror 2.0.18",
- "thread-priority",
- "tracing",
- "tracing-subscriber",
- "wdsp",
-]
-
-[[package]]
-name = "thetis-egui"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "eframe",
- "egui",
- "egui_code_editor",
- "thetis-app",
- "thetis-audio",
- "thetis-core",
- "thetis-script",
- "thetis-settings",
- "tracing",
- "wgpu",
-]
-
-[[package]]
-name = "thetis-script"
-version = "0.0.1"
-dependencies = [
- "rhai",
- "thetis-app",
- "thetis-core",
- "thetis-settings",
- "tracing",
-]
-
-[[package]]
-name = "thetis-settings"
-version = "0.0.1"
-dependencies = [
- "directories",
- "serde",
- "thiserror 2.0.18",
- "toml",
- "tracing",
-]
-
-[[package]]
-name = "thetis-tui"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "crossterm",
- "ratatui",
- "thetis-app",
- "thetis-core",
- "thetis-script",
- "tracing",
-]
-
-[[package]]
-name = "thetis-tui-bin"
-version = "0.0.1"
-dependencies = [
- "anyhow",
- "directories",
- "thetis-app",
- "thetis-tui",
- "tracing",
- "tracing-subscriber",
 ]
 
 [[package]]

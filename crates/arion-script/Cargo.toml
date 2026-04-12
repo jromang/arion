@@ -1,0 +1,16 @@
+[package]
+name = "arion-script"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Rhai scripting engine + bindings for Arion"
+
+[dependencies]
+arion-app.workspace = true
+arion-core.workspace = true
+arion-settings.workspace = true
+rhai.workspace = true
+tracing.workspace = true
+
+[lib]
+doctest = false
