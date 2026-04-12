@@ -12,6 +12,7 @@ arion-audio.workspace = true
 arion-script.workspace = true
 arion-settings.workspace = true
 egui_code_editor.workspace = true
+rfd.workspace = true
 eframe.workspace = true
 egui.workspace = true
 anyhow.workspace = true

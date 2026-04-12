@@ -16,6 +16,7 @@
 
 #![forbid(unsafe_code)]
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -108,8 +109,49 @@ pub struct EguiView {
     setup_tab: usize,
     /// Rhai scripting engine + REPL state.
     script_engine: ScriptEngine,
-    /// REPL input field.
-    repl_input: String,
+    /// Script editor tabs (one per open file or scratch buffer).
+    script_tabs: Vec<ScriptTab>,
+    /// Currently active script tab index.
+    active_script_tab: usize,
+}
+
+/// One script editor tab: a buffer that may or may not be backed by
+/// a file on disk. `dirty` tracks whether the in-memory content has
+/// diverged from the last saved/loaded state.
+#[derive(Debug, Clone)]
+struct ScriptTab {
+    name: String,
+    path: Option<PathBuf>,
+    content: String,
+    dirty: bool,
+}
+
+impl ScriptTab {
+    fn scratch(n: usize) -> Self {
+        ScriptTab {
+            name: format!("scratch-{n}.rhai"),
+            path: None,
+            content: String::new(),
+            dirty: false,
+        }
+    }
+
+    fn from_path(path: PathBuf, content: String) -> Self {
+        let name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("untitled.rhai")
+            .to_string();
+        ScriptTab { name, path: Some(path), content, dirty: false }
+    }
+
+    /// Short tab label with a • marker when dirty.
+    fn label(&self) -> String {
+        if self.dirty {
+            format!("● {}", self.name)
+        } else {
+            self.name.clone()
+        }
+    }
 }
 
 impl EguiView {
@@ -131,11 +173,12 @@ impl EguiView {
             app,
             waterfalls,
             overlays,
-            new_memory_name: String::new(),
-            new_memory_tag:  String::new(),
-            setup_tab:       0,
-            script_engine:   ScriptEngine::default(),
-            repl_input:      String::new(),
+            new_memory_name:    String::new(),
+            new_memory_tag:     String::new(),
+            setup_tab:          0,
+            script_engine:      ScriptEngine::default(),
+            script_tabs:        vec![ScriptTab::scratch(1)],
+            active_script_tab:  0,
         }
     }
 }
@@ -900,115 +943,296 @@ impl EguiView {
     /// and a scrollable color-coded output buffer.
     fn draw_repl_window(&mut self, ctx: &egui::Context) {
         let mut open = true;
-        egui::Window::new("REPL")
+        egui::Window::new("Script Editor")
             .open(&mut open)
-            .default_width(600.0)
-            .default_height(450.0)
+            .default_width(900.0)
+            .default_height(650.0)
+            .min_width(500.0)
+            .min_height(400.0)
             .resizable(true)
             .show(ctx, |ui| {
-                // Toolbar
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Script:").strong());
-                    if ui.button("▶ Run (Ctrl+Enter)").clicked() {
-                        self.run_repl_script();
+                // --- Top toolbar: file operations + run ---
+                self.draw_script_toolbar(ui);
+                ui.separator();
+
+                // --- Tab bar ---
+                self.draw_script_tab_bar(ui);
+                ui.separator();
+
+                // --- Main split: editor (top ~70%) + output (bottom ~30%) ---
+                let avail = ui.available_height();
+                let output_h = (avail * 0.30).clamp(80.0, 400.0);
+                let editor_h = (avail - output_h - 8.0).max(120.0);
+
+                self.draw_script_editor(ui, editor_h);
+                ui.separator();
+                self.draw_script_output(ui, output_h);
+
+                // Global shortcuts while window has focus
+                ui.input(|i| {
+                    if i.modifiers.ctrl && i.key_pressed(egui::Key::Enter) {
+                        ctx.memory_mut(|m| m.data.insert_temp(
+                            egui::Id::new("run-script-req"), true));
                     }
-                    if ui.button("Clear").clicked() {
-                        self.script_engine.clear_output();
+                    if i.modifiers.ctrl && i.key_pressed(egui::Key::S) {
+                        ctx.memory_mut(|m| m.data.insert_temp(
+                            egui::Id::new("save-script-req"), true));
+                    }
+                    if i.modifiers.ctrl && i.key_pressed(egui::Key::N) {
+                        ctx.memory_mut(|m| m.data.insert_temp(
+                            egui::Id::new("new-script-req"), true));
                     }
                 });
-
-                ui.separator();
-
-                // Split the remaining space: output on top, editor
-                // on bottom. Both are independently scrollable and
-                // follow the window resize.
-                let avail = ui.available_height();
-                let output_h = (avail * 0.45).max(60.0);
-                let editor_h = (avail - output_h - 8.0).max(60.0);
-
-                // --- Output buffer ---
-                egui::Frame::new()
-                    .fill(Color32::from_rgb(10, 12, 16))
-                    .inner_margin(egui::Margin::symmetric(4, 2))
-                    .show(ui, |ui| {
-                        egui::ScrollArea::vertical()
-                            .id_salt("repl-output")
-                            .max_height(output_h)
-                            .stick_to_bottom(true)
-                            .show(ui, |ui| {
-                                if self.script_engine.output().is_empty() {
-                                    ui.weak("Type Rhai code below, then Ctrl+Enter to run.");
-                                    ui.weak("Example: freq(0, 14074000)");
-                                }
-                                for line in self.script_engine.output() {
-                                    let color = match line.kind {
-                                        ReplLineKind::Input  => Color32::from_gray(140),
-                                        ReplLineKind::Result => Color32::from_rgb(100, 255, 120),
-                                        ReplLineKind::Error  => Color32::from_rgb(255, 100, 100),
-                                        ReplLineKind::Print  => Color32::from_rgb(100, 200, 255),
-                                    };
-                                    ui.monospace(egui::RichText::new(&line.text).color(color));
-                                }
-                            });
-                    });
-
-                ui.separator();
-
-                // --- Code editor ---
-                use egui_code_editor::{CodeEditor, ColorTheme, Syntax};
-
-                let syntax = Syntax::new("rhai")
-                    .with_comment("//")
-                    .with_comment_multiline(["/*", "*/"])
-                    .with_keywords([
-                        "let", "const", "fn", "if", "else", "while",
-                        "for", "in", "loop", "break", "continue",
-                        "return", "true", "false", "nil",
-                    ])
-                    .with_types([
-                        "int", "float", "bool", "string", "char",
-                        "Array", "Map",
-                    ])
-                    .with_special([
-                        "freq", "mode", "volume", "nr3", "nr4",
-                        "band", "do_connect", "do_disconnect",
-                        "print", "rx0_freq", "rx0_mode",
-                        "rx1_freq", "rx1_mode", "rx0_smeter",
-                        "rx1_smeter", "active_rx", "connected",
-                        "num_rx",
-                    ]);
-
-                egui::ScrollArea::vertical()
-                    .id_salt("repl-editor-scroll")
-                    .max_height(editor_h)
-                    .show(ui, |ui| {
-                        CodeEditor::default()
-                            .id_source("repl-editor")
-                            .with_rows(12)
-                            .with_fontsize(14.0)
-                            .with_theme(ColorTheme::GRUVBOX_DARK)
-                            .with_syntax(syntax)
-                            .with_numlines(true)
-                            .show(ui, &mut self.repl_input);
-                    });
-
-                // Ctrl+Enter shortcut
-                if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Enter)) {
-                    self.run_repl_script();
-                }
             });
+
+        // Consume any keyboard shortcut requests raised above
+        if ctx.memory(|m| m.data.get_temp::<bool>(egui::Id::new("run-script-req")).unwrap_or(false)) {
+            ctx.memory_mut(|m| m.data.remove::<bool>(egui::Id::new("run-script-req")));
+            self.run_current_script();
+        }
+        if ctx.memory(|m| m.data.get_temp::<bool>(egui::Id::new("save-script-req")).unwrap_or(false)) {
+            ctx.memory_mut(|m| m.data.remove::<bool>(egui::Id::new("save-script-req")));
+            self.save_current_tab();
+        }
+        if ctx.memory(|m| m.data.get_temp::<bool>(egui::Id::new("new-script-req")).unwrap_or(false)) {
+            ctx.memory_mut(|m| m.data.remove::<bool>(egui::Id::new("new-script-req")));
+            self.new_tab();
+        }
+
         if !open {
             self.app.set_window_open(WindowKind::Repl, false);
         }
     }
 
-    fn run_repl_script(&mut self) {
-        let code = self.repl_input.clone();
+    fn draw_script_toolbar(&mut self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            if ui.button("📄 New").on_hover_text("New tab (Ctrl+N)").clicked() {
+                self.new_tab();
+            }
+            if ui.button("📂 Open…").on_hover_text("Open file").clicked() {
+                self.open_file_dialog();
+            }
+            if ui.button("💾 Save").on_hover_text("Save (Ctrl+S)").clicked() {
+                self.save_current_tab();
+            }
+            if ui.button("💾 Save As…").on_hover_text("Save As…").clicked() {
+                self.save_as_current_tab();
+            }
+            ui.separator();
+            if ui.button(egui::RichText::new("▶ Run").strong().color(Color32::LIGHT_GREEN))
+                .on_hover_text("Run current script (Ctrl+Enter)")
+                .clicked()
+            {
+                self.run_current_script();
+            }
+            if ui.button("Clear Output").clicked() {
+                self.script_engine.clear_output();
+            }
+            // Right-aligned status
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if let Some(tab) = self.script_tabs.get(self.active_script_tab) {
+                    if let Some(path) = &tab.path {
+                        ui.weak(format!("{}", path.display()));
+                    } else {
+                        ui.weak("(unsaved)");
+                    }
+                }
+            });
+        });
+    }
+
+    fn draw_script_tab_bar(&mut self, ui: &mut egui::Ui) {
+        let mut close_idx: Option<usize> = None;
+        egui::ScrollArea::horizontal()
+            .id_salt("script-tab-bar")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    for (i, tab) in self.script_tabs.iter().enumerate() {
+                        let selected = i == self.active_script_tab;
+                        let text = egui::RichText::new(tab.label())
+                            .color(if selected { Color32::WHITE } else { Color32::from_gray(160) });
+                        if ui.selectable_label(selected, text).clicked() {
+                            self.active_script_tab = i;
+                        }
+                        // Small close button per tab
+                        if self.script_tabs.len() > 1
+                            && ui.small_button("✕").on_hover_text("Close tab").clicked()
+                        {
+                            close_idx = Some(i);
+                        }
+                        ui.separator();
+                    }
+                });
+            });
+        if let Some(i) = close_idx {
+            self.close_tab(i);
+        }
+    }
+
+    fn draw_script_editor(&mut self, ui: &mut egui::Ui, height: f32) {
+        use egui_code_editor::{CodeEditor, ColorTheme, Syntax};
+
+        let syntax = Syntax::new("rhai")
+            .with_comment("//")
+            .with_comment_multiline(["/*", "*/"])
+            .with_keywords([
+                "let", "const", "fn", "if", "else", "while",
+                "for", "in", "loop", "break", "continue",
+                "return", "true", "false", "nil",
+            ])
+            .with_types([
+                "int", "float", "bool", "string", "char",
+                "Array", "Map",
+            ])
+            .with_special([
+                "freq", "mode", "volume", "nr3", "nr4",
+                "band", "do_connect", "do_disconnect",
+                "print", "rx0_freq", "rx0_mode",
+                "rx1_freq", "rx1_mode", "rx0_smeter",
+                "rx1_smeter", "active_rx", "connected",
+                "num_rx",
+            ]);
+
+        let Some(tab) = self.script_tabs.get_mut(self.active_script_tab) else {
+            return;
+        };
+        let before = tab.content.clone();
+
+        egui::ScrollArea::vertical()
+            .id_salt("script-editor-scroll")
+            .max_height(height)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.set_min_height(height);
+                CodeEditor::default()
+                    .id_source("script-editor")
+                    .with_rows(30)
+                    .with_fontsize(14.0)
+                    .with_theme(ColorTheme::GRUVBOX_DARK)
+                    .with_syntax(syntax)
+                    .with_numlines(true)
+                    .show(ui, &mut tab.content);
+            });
+
+        if tab.content != before {
+            tab.dirty = true;
+        }
+    }
+
+    fn draw_script_output(&mut self, ui: &mut egui::Ui, height: f32) {
+        ui.label(egui::RichText::new("Output").strong());
+        egui::Frame::new()
+            .fill(Color32::from_rgb(10, 12, 16))
+            .inner_margin(egui::Margin::symmetric(4, 2))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .id_salt("script-output")
+                    .max_height(height - 22.0)
+                    .stick_to_bottom(true)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| {
+                        ui.set_min_height(height - 22.0);
+                        if self.script_engine.output().is_empty() {
+                            ui.weak("Run a script with ▶ Run or Ctrl+Enter.");
+                            ui.weak("Example: freq(0, 14074000)  //  tune RX0 to 14.074 MHz");
+                        }
+                        for line in self.script_engine.output() {
+                            let color = match line.kind {
+                                ReplLineKind::Input  => Color32::from_gray(140),
+                                ReplLineKind::Result => Color32::from_rgb(100, 255, 120),
+                                ReplLineKind::Error  => Color32::from_rgb(255, 100, 100),
+                                ReplLineKind::Print  => Color32::from_rgb(100, 200, 255),
+                            };
+                            ui.monospace(egui::RichText::new(&line.text).color(color));
+                        }
+                    });
+            });
+    }
+
+    fn run_current_script(&mut self) {
+        let code = self.script_tabs.get(self.active_script_tab)
+            .map(|t| t.content.clone())
+            .unwrap_or_default();
         if code.trim().is_empty() {
             return;
         }
         self.script_engine.run_line(&code, &mut self.app);
         self.script_engine.apply_pending_commands(&mut self.app);
+    }
+
+    fn new_tab(&mut self) {
+        let n = self.script_tabs.len() + 1;
+        self.script_tabs.push(ScriptTab::scratch(n));
+        self.active_script_tab = self.script_tabs.len() - 1;
+    }
+
+    fn close_tab(&mut self, idx: usize) {
+        if self.script_tabs.len() <= 1 || idx >= self.script_tabs.len() {
+            return;
+        }
+        self.script_tabs.remove(idx);
+        if self.active_script_tab >= self.script_tabs.len() {
+            self.active_script_tab = self.script_tabs.len() - 1;
+        }
+    }
+
+    fn open_file_dialog(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Rhai scripts", &["rhai"])
+            .add_filter("All files", &["*"])
+            .pick_file()
+        {
+            match std::fs::read_to_string(&path) {
+                Ok(content) => {
+                    self.script_tabs.push(ScriptTab::from_path(path, content));
+                    self.active_script_tab = self.script_tabs.len() - 1;
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "failed to read script file");
+                }
+            }
+        }
+    }
+
+    fn save_current_tab(&mut self) {
+        let Some(tab) = self.script_tabs.get(self.active_script_tab) else { return };
+        match tab.path.clone() {
+            Some(path) => {
+                let content = tab.content.clone();
+                match std::fs::write(&path, content) {
+                    Ok(()) => {
+                        if let Some(t) = self.script_tabs.get_mut(self.active_script_tab) {
+                            t.dirty = false;
+                        }
+                    }
+                    Err(e) => tracing::warn!(error = %e, "failed to save script"),
+                }
+            }
+            None => self.save_as_current_tab(),
+        }
+    }
+
+    fn save_as_current_tab(&mut self) {
+        let Some(tab) = self.script_tabs.get(self.active_script_tab).cloned() else { return };
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Rhai scripts", &["rhai"])
+            .set_file_name(&tab.name)
+            .save_file()
+        {
+            match std::fs::write(&path, &tab.content) {
+                Ok(()) => {
+                    if let Some(t) = self.script_tabs.get_mut(self.active_script_tab) {
+                        t.path = Some(path.clone());
+                        t.name = path.file_name()
+                            .and_then(|n| n.to_str())
+                            .unwrap_or("untitled.rhai")
+                            .to_string();
+                        t.dirty = false;
+                    }
+                }
+                Err(e) => tracing::warn!(error = %e, "failed to save script"),
+            }
+        }
     }
 
     /// Floating Setup window with 5 tabs.
