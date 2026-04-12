@@ -446,57 +446,107 @@ impl EguiView {
 
     fn draw_rx_row(&mut self, ui: &mut egui::Ui, rx: usize) {
         let rx_u8 = rx as u8;
-        // Snapshot the read-only fields once so we don't keep `self.app`
-        // borrowed across mutable `self.app.set_*` calls.
         let Some(state) = self.app.rx(rx).cloned() else { return };
 
+        // --- Row 1: RX label + LED frequency + mode tag ---
         ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(format!("RX{}:", rx + 1)).strong());
-
-            // Enable toggle
+            // RX label with enable toggle
             let mut enabled = state.enabled;
-            if ui.checkbox(&mut enabled, "on").changed() {
+            if ui.checkbox(&mut enabled, format!("RX{}", rx + 1)).changed() {
                 self.app.set_rx_enabled(rx_u8, enabled);
             }
 
             ui.separator();
-            ui.label("VFO:");
-            let mut freq = state.frequency_hz as f64;
-            let changed = ui
-                .add(
-                    egui::DragValue::new(&mut freq)
-                        .range(0.0..=60_000_000.0)
-                        .speed(10.0)
-                        .suffix(" Hz"),
-                )
-                .changed();
-            if changed {
-                self.app.set_rx_frequency(rx_u8, freq.max(0.0) as u32);
-            }
-            ui.label(format!("({:.3} MHz)", state.frequency_hz as f64 / 1.0e6));
+
+            // LED-style frequency display: large monospace lime-on-black.
+            // Format: "14.074.500" with dot separators for readability.
+            let freq = state.frequency_hz;
+            let led_bg = Color32::from_rgb(8, 12, 8);
+
+            egui::Frame::new()
+                .fill(led_bg)
+                .inner_margin(egui::Margin::symmetric(8, 2))
+                .corner_radius(3.0)
+                .show(ui, |ui| {
+                    // The DragValue gives us click-to-edit + drag tuning
+                    // in a single widget. We render the custom LED text
+                    // over it by using a monospace font override.
+                    let mut freq_f = freq as f64;
+                    let resp = ui.add(
+                        egui::DragValue::new(&mut freq_f)
+                            .range(0.0..=60_000_000.0)
+                            .speed(10.0)
+                            .custom_formatter(|v, _| {
+                                let f = v as u32;
+                                format!("{:>2}.{:03}.{:03}",
+                                    f / 1_000_000,
+                                    (f % 1_000_000) / 1_000,
+                                    f % 1_000)
+                            })
+                            .custom_parser(|s| {
+                                let clean: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+                                clean.parse::<f64>().ok()
+                            }),
+                    );
+                    if resp.changed() {
+                        self.app.set_rx_frequency(rx_u8, freq_f.max(0.0) as u32);
+                    }
+                });
 
             ui.separator();
-            ui.monospace(format!("{:?}", state.mode));
 
-            ui.separator();
-            ui.label("Vol:");
+            // Mode + band tag line
+            let band_label = Band::for_freq(freq)
+                .map(|b| b.label())
+                .unwrap_or("GEN");
+            ui.monospace(
+                egui::RichText::new(format!("{}  {:?}", band_label, state.mode))
+                    .color(Color32::from_rgb(220, 180, 60)),
+            );
+        });
+
+        // --- Row 2: compact controls (volume + NR + status tags) ---
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+
+            ui.label("AF");
             let mut vol_buf = state.volume;
-            ui.add(egui::Slider::new(&mut vol_buf, 0.0..=2.0).show_value(true));
-            if (vol_buf - state.volume).abs() > f32::EPSILON {
+            let vol_resp = ui.add(
+                egui::Slider::new(&mut vol_buf, 0.0..=2.0)
+                    .show_value(false),
+            );
+            if vol_resp.changed() {
                 self.app.set_rx_volume(rx_u8, vol_buf);
             }
 
             ui.separator();
+
+            // NR toggles as compact colored labels
             let mut nr3_buf = state.nr3;
-            ui.checkbox(&mut nr3_buf, "NR3");
-            if nr3_buf != state.nr3 {
+            let nr3_text = if nr3_buf {
+                egui::RichText::new("NR3").color(Color32::BLACK).background_color(Color32::LIGHT_GREEN)
+            } else {
+                egui::RichText::new("NR3").color(Color32::GRAY)
+            };
+            if ui.selectable_label(nr3_buf, nr3_text).clicked() {
+                nr3_buf = !nr3_buf;
                 self.app.set_rx_nr3(rx_u8, nr3_buf);
             }
+
             let mut nr4_buf = state.nr4;
-            ui.checkbox(&mut nr4_buf, "NR4");
-            if nr4_buf != state.nr4 {
+            let nr4_text = if nr4_buf {
+                egui::RichText::new("NR4").color(Color32::BLACK).background_color(Color32::LIGHT_GREEN)
+            } else {
+                egui::RichText::new("NR4").color(Color32::GRAY)
+            };
+            if ui.selectable_label(nr4_buf, nr4_text).clicked() {
+                nr4_buf = !nr4_buf;
                 self.app.set_rx_nr4(rx_u8, nr4_buf);
             }
+
+            // Status tags (read-only indicators)
+            ui.separator();
+            ui.weak("AGC-MED");
         });
     }
 
