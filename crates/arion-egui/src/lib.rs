@@ -1485,7 +1485,7 @@ impl EguiView {
                     &snapshot.rx[r].spectrum_bins_db,
                     ds.spectrum_min_db,
                     ds.spectrum_max_db,
-                    true, // fill under curve
+                    false, // fill disabled — convex_polygon glitches on non-convex shapes
                 );
 
                 // Peak hold trace (white, 1px)
