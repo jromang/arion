@@ -773,7 +773,12 @@ impl EguiView {
                 let num_rx = snapshot.num_rx.min(MAX_RX as u8) as usize;
                 for r in 0..num_rx {
                     let dbfs = snapshot.rx[r].s_meter_db;
-                    let dbm  = dbfs - SMETER_DBFS_TO_DBM_OFFSET;
+                    let freq = self.app.rx(r).map(|s| s.frequency_hz).unwrap_or(0);
+                    let cal_offset = Band::for_freq(freq)
+                        .and_then(|b| self.app.calibration().smeter_offsets.get(b.label()))
+                        .copied()
+                        .unwrap_or(0.0);
+                    let dbm  = dbfs - SMETER_DBFS_TO_DBM_OFFSET + cal_offset;
                     let s    = dbm_to_s_units(dbm);
 
                     ui.horizontal(|ui| {
@@ -1357,7 +1362,12 @@ impl EguiView {
             if let Some(snapshot) = self.app.telemetry_snapshot() {
                 if rx < snapshot.rx.len() {
                     let dbfs = snapshot.rx[rx].s_meter_db;
-                    let dbm  = dbfs - SMETER_DBFS_TO_DBM_OFFSET;
+                    let freq = self.app.rx(rx).map(|s| s.frequency_hz).unwrap_or(0);
+                    let cal_offset = Band::for_freq(freq)
+                        .and_then(|b| self.app.calibration().smeter_offsets.get(b.label()))
+                        .copied()
+                        .unwrap_or(0.0);
+                    let dbm  = dbfs - SMETER_DBFS_TO_DBM_OFFSET + cal_offset;
                     let s    = dbm_to_s_units(dbm);
 
                     let bar_w = ui.available_width().clamp(60.0, 140.0);
@@ -1469,17 +1479,26 @@ impl EguiView {
                     Vec2::new(band_rect.width(), water_h),
                 );
 
-                draw_spectrum(ui, spec_rect, &snapshot.rx[r].spectrum_bins_db);
+                let ds = self.app.display_settings();
+                draw_spectrum_ex(
+                    ui, spec_rect,
+                    &snapshot.rx[r].spectrum_bins_db,
+                    ds.spectrum_min_db,
+                    ds.spectrum_max_db,
+                    true, // fill under curve
+                );
 
                 // Peak hold trace (white, 1px)
                 if self.overlays[r].show_peak {
-                    draw_trace(ui, spec_rect, &self.overlays[r].peak_bins,
-                        Color32::from_rgba_premultiplied(255, 255, 200, 180));
+                    draw_trace_range(ui, spec_rect, &self.overlays[r].peak_bins,
+                        Color32::from_rgba_premultiplied(255, 255, 200, 180),
+                        ds.spectrum_min_db, ds.spectrum_max_db);
                 }
                 // Average trace (cyan, 1px)
                 if self.overlays[r].show_avg {
-                    draw_trace(ui, spec_rect, &self.overlays[r].avg_bins,
-                        Color32::from_rgba_premultiplied(100, 200, 255, 160));
+                    draw_trace_range(ui, spec_rect, &self.overlays[r].avg_bins,
+                        Color32::from_rgba_premultiplied(100, 200, 255, 160),
+                        ds.spectrum_min_db, ds.spectrum_max_db);
                 }
 
                 // Passband overlay
@@ -1721,7 +1740,7 @@ fn tune_from_response(
 
 // --- Trace overlay (peak hold / average) ---------------------------------
 
-fn draw_trace(ui: &egui::Ui, rect: Rect, bins: &[f32], color: Color32) {
+fn draw_trace_range(ui: &egui::Ui, rect: Rect, bins: &[f32], color: Color32, min_db: f32, max_db: f32) {
     if bins.is_empty() {
         return;
     }
@@ -1729,7 +1748,7 @@ fn draw_trace(ui: &egui::Ui, rect: Rect, bins: &[f32], color: Color32) {
     let mut points = Vec::with_capacity(n);
     for (i, &db) in bins.iter().enumerate() {
         let x = rect.min.x + (i as f32 / (n - 1) as f32) * rect.width();
-        let y = db_to_y(db, rect);
+        let y = db_to_y_range(db, rect, min_db, max_db);
         points.push(Pos2::new(x, y));
     }
     ui.painter_at(rect).add(egui::Shape::line(
@@ -1767,7 +1786,14 @@ fn draw_passband_overlay(ui: &egui::Ui, rect: Rect, span_hz: u32, f_lo: f32, f_h
 
 // --- Spectrum (immediate-mode line draw) --------------------------------
 
-fn draw_spectrum(ui: &mut egui::Ui, rect: Rect, bins_db: &[f32]) {
+fn draw_spectrum_ex(
+    ui: &mut egui::Ui,
+    rect: Rect,
+    bins_db: &[f32],
+    min_db: f32,
+    max_db: f32,
+    fill: bool,
+) {
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 0.0, Color32::from_rgb(8, 10, 14));
 
@@ -1775,35 +1801,58 @@ fn draw_spectrum(ui: &mut egui::Ui, rect: Rect, bins_db: &[f32]) {
         return;
     }
 
-    for db in (-120..=0).step_by(20) {
-        let y = db_to_y(db as f32, rect);
-        let color = if db == -60 {
-            Color32::from_rgb(60, 80, 60)
-        } else {
-            Color32::from_gray(48)
-        };
+    // Grid lines every 20 dB within the visible range
+    let grid_start = ((min_db / 20.0).ceil() as i32) * 20;
+    let grid_end   = ((max_db / 20.0).floor() as i32) * 20;
+    for db in (grid_start..=grid_end).step_by(20) {
+        let y = db_to_y_range(db as f32, rect, min_db, max_db);
+        let color = Color32::from_gray(48);
         painter.line_segment(
             [Pos2::new(rect.min.x, y), Pos2::new(rect.max.x, y)],
             Stroke::new(1.0, color),
         );
+        // dB label on the left edge
+        painter.text(
+            Pos2::new(rect.min.x + 2.0, y - 6.0),
+            egui::Align2::LEFT_TOP,
+            format!("{db}"),
+            egui::FontId::monospace(9.0),
+            Color32::from_gray(80),
+        );
     }
 
+    // Spectrum polyline
     let n = bins_db.len();
     let mut points = Vec::with_capacity(n);
     for (i, &db) in bins_db.iter().enumerate() {
         let x = rect.min.x + (i as f32 / (n - 1) as f32) * rect.width();
-        let y = db_to_y(db, rect);
+        let y = db_to_y_range(db, rect, min_db, max_db);
         points.push(Pos2::new(x, y));
     }
+
+    // Fill under the curve (Thetis PanFill)
+    if fill && points.len() >= 2 {
+        let mut fill_points = points.clone();
+        fill_points.push(Pos2::new(rect.max.x, rect.max.y));
+        fill_points.push(Pos2::new(rect.min.x, rect.max.y));
+        painter.add(egui::Shape::convex_polygon(
+            fill_points,
+            Color32::from_rgba_premultiplied(40, 120, 60, 40),
+            Stroke::NONE,
+        ));
+    }
+
     painter.add(egui::Shape::line(
         points,
         Stroke::new(1.6, Color32::from_rgb(140, 255, 160)),
     ));
 }
 
-fn db_to_y(db: f32, rect: Rect) -> f32 {
-    let clamped = db.clamp(-120.0, 0.0);
-    let t       = (clamped + 120.0) / 120.0;
+fn db_to_y_range(db: f32, rect: Rect, min_db: f32, max_db: f32) -> f32 {
+    let range = max_db - min_db;
+    if range.abs() < 0.001 { return rect.max.y; }
+    let clamped = db.clamp(min_db, max_db);
+    let t = (clamped - min_db) / range;
     rect.max.y - t * rect.height()
 }
 
