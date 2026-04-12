@@ -298,7 +298,7 @@ impl Channel {
 
     // --- TX DSP controls (used when channel is opened as TX) ----------
 
-    /// Enable/disable the TX compandeur fréquentiel (CFCOMP).
+    /// Enable/disable the TX frequency-domain compander (CFCOMP).
     pub fn set_tx_cfcomp_run(&mut self, enabled: bool) {
         unsafe { sys::SetTXACFCOMPRun(self.id, i32::from(enabled)); }
     }

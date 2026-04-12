@@ -130,7 +130,7 @@ unsafe extern "C" {
 
     // --- TX Compressor (CFCOMP) -----------------------------------------
 
-    /// Enable/disable the TX compandeur fréquentiel.
+    /// Enable/disable the TX frequency-domain compander.
     pub fn SetTXACFCOMPRun(channel: c_int, run: c_int);
 
     /// Set the pre-compression gain in dB.
