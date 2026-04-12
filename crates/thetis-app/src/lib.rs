@@ -74,11 +74,17 @@ pub struct RxState {
     pub volume:       f32,
     pub nr3:          bool,
     pub nr4:          bool,
-    /// Current passband low edge (Hz, relative to baseband). Negative
-    /// for LSB/CW-L.
     pub filter_lo:    f64,
-    /// Current passband high edge (Hz, relative to baseband).
     pub filter_hi:    f64,
+    // --- DSP toggles (UI + persist, DSP binding in E) ---
+    pub agc_mode:     AgcPreset,
+    pub muted:        bool,
+    pub locked:       bool,
+    pub nb:           bool,
+    pub nb2:          bool,
+    pub anf:          bool,
+    pub bin:          bool,
+    pub tnf:          bool,
 }
 
 impl Default for RxState {
@@ -93,8 +99,29 @@ impl Default for RxState {
             nr4:          false,
             filter_lo:    lo,
             filter_hi:    hi,
+            agc_mode:     AgcPreset::Med,
+            muted:        false,
+            locked:       false,
+            nb:           false,
+            nb2:          false,
+            anf:          false,
+            bin:          false,
+            tnf:          false,
         }
     }
+}
+
+/// AGC speed presets matching Thetis upstream's combo. Wire-level
+/// binding to `wdsp::AgcMode` happens in phase E; for now this is
+/// UI state only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AgcPreset {
+    Off,
+    Long,
+    Slow,
+    #[default]
+    Med,
+    Fast,
 }
 
 /// Named filter bandwidth presets matching Thetis upstream's 10-button
@@ -439,15 +466,18 @@ impl App {
         let mut rxs: Vec<RxState> = Vec::with_capacity(MAX_RX);
         for r in 0..MAX_RX {
             let serde_rx = settings.rxs.get(r).cloned().unwrap_or_default();
+            let mode = mode_from_serde(serde_rx.mode);
+            let (flo, fhi) = mode.default_passband_hz();
             rxs.push(RxState {
-                enabled:      serde_rx.enabled || r == 0, // RX1 always defaults on
+                enabled:      serde_rx.enabled || r == 0,
                 frequency_hz: serde_rx.frequency_hz,
-                mode:         mode_from_serde(serde_rx.mode),
+                mode,
                 volume:       serde_rx.volume,
                 nr3:          serde_rx.nr3,
                 nr4:          serde_rx.nr4,
-                filter_lo:    mode_from_serde(serde_rx.mode).default_passband_hz().0,
-                filter_hi:    mode_from_serde(serde_rx.mode).default_passband_hz().1,
+                filter_lo:    flo,
+                filter_hi:    fhi,
+                ..RxState::default()
             });
         }
 
@@ -529,7 +559,7 @@ impl App {
 
     pub fn set_rx_frequency(&mut self, rx: u8, hz: u32) {
         let Some(view) = self.rxs.get_mut(rx as usize) else { return };
-        if view.frequency_hz == hz {
+        if view.locked || view.frequency_hz == hz {
             return;
         }
         view.frequency_hz = hz;
@@ -589,6 +619,37 @@ impl App {
         view.nr4 = on;
         if let Some(r) = &self.radio {
             let _ = r.set_rx_nr4(rx, on);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_agc(&mut self, rx: u8, agc: AgcPreset) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.agc_mode = agc;
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_muted(&mut self, rx: u8, muted: bool) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.muted = muted;
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_locked(&mut self, rx: u8, locked: bool) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.locked = locked;
+        self.mark_dirty();
+    }
+
+    pub fn toggle_rx_flag(&mut self, rx: u8, flag: &str) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        match flag {
+            "nb"  => view.nb  = !view.nb,
+            "nb2" => view.nb2 = !view.nb2,
+            "anf" => view.anf = !view.anf,
+            "bin" => view.bin = !view.bin,
+            "tnf" => view.tnf = !view.tnf,
+            _ => return,
         }
         self.mark_dirty();
     }

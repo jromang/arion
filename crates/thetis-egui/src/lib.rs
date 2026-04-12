@@ -135,14 +135,14 @@ impl eframe::App for EguiView {
                 self.draw_status_bar(ui);
             });
 
-        // 3. Bottom controls panel (future: DSP controls in D.5)
+        // 3. Bottom controls panel: VFO ctrls | DSP | Display | Mode-specific
         egui::Panel::bottom("controls")
             .resizable(true)
-            .min_size(24.0)
+            .min_size(50.0)
             .max_size(300.0)
-            .default_size(24.0)
+            .default_size(80.0)
             .show_inside(ui, |ui| {
-                ui.weak("(DSP controls — D.5)");
+                self.draw_bottom_panel(ui);
             });
 
         // 4. Right side panel: Mode + Band + Filter
@@ -297,6 +297,133 @@ impl EguiView {
     fn draw_status_bar(&self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             self.draw_connection_status(ui);
+        });
+    }
+
+    /// Bottom controls panel: 4 columns matching Thetis upstream.
+    fn draw_bottom_panel(&mut self, ui: &mut egui::Ui) {
+        let rx = self.app.active_rx();
+        let rx_u8 = rx as u8;
+        let state = self.app.rx(rx).cloned().unwrap_or_default();
+
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 3.0;
+
+            // --- Column 1: VFO controls ---
+            ui.group(|ui| {
+                ui.set_width(100.0);
+                ui.vertical(|ui| {
+                    // Lock toggle
+                    let mut locked = state.locked;
+                    if ui.selectable_label(locked, if locked { "🔒 Lock" } else { "🔓 Lock" }).clicked() {
+                        locked = !locked;
+                        self.app.set_rx_locked(rx_u8, locked);
+                    }
+                    // Mute toggle
+                    let mut muted = state.muted;
+                    if ui.selectable_label(muted, if muted { "🔇 Mute" } else { "🔊 Mute" }).clicked() {
+                        muted = !muted;
+                        self.app.set_rx_muted(rx_u8, muted);
+                    }
+                });
+            });
+
+            // --- Column 2: DSP toggles ---
+            ui.group(|ui| {
+                ui.set_width(160.0);
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        // AGC mode combo
+                        ui.label("AGC:");
+                        let mut agc = state.agc_mode;
+                        egui::ComboBox::from_id_salt(("agc", rx))
+                            .selected_text(format!("{:?}", agc))
+                            .width(60.0)
+                            .show_ui(ui, |ui| {
+                                use thetis_app::AgcPreset;
+                                for m in [AgcPreset::Off, AgcPreset::Long, AgcPreset::Slow, AgcPreset::Med, AgcPreset::Fast] {
+                                    ui.selectable_value(&mut agc, m, format!("{m:?}"));
+                                }
+                            });
+                        if agc != state.agc_mode {
+                            self.app.set_rx_agc(rx_u8, agc);
+                        }
+                    });
+
+                    ui.horizontal(|ui| {
+                        // DSP toggle buttons — compact row of colored labels
+                        for (flag, label) in [
+                            ("nb",  "NB"),
+                            ("nb2", "NB2"),
+                            ("anf", "ANF"),
+                            ("bin", "BIN"),
+                            ("tnf", "TNF"),
+                        ] {
+                            let on = match flag {
+                                "nb"  => state.nb,
+                                "nb2" => state.nb2,
+                                "anf" => state.anf,
+                                "bin" => state.bin,
+                                "tnf" => state.tnf,
+                                _ => false,
+                            };
+                            let text = if on {
+                                egui::RichText::new(label).color(Color32::BLACK)
+                                    .background_color(Color32::from_rgb(100, 200, 255))
+                            } else {
+                                egui::RichText::new(label).color(Color32::from_gray(120))
+                            };
+                            if ui.selectable_label(on, text)
+                                .on_hover_text(match flag {
+                                    "nb"  => "Noise Blanker",
+                                    "nb2" => "Noise Blanker 2",
+                                    "anf" => "Auto Notch Filter",
+                                    "bin" => "Binaural audio",
+                                    "tnf" => "Tunable Notch Filter",
+                                    _ => "",
+                                })
+                                .clicked()
+                            {
+                                self.app.toggle_rx_flag(rx_u8, flag);
+                            }
+                        }
+                    });
+                });
+            });
+
+            // --- Column 3: Display options ---
+            ui.group(|ui| {
+                ui.set_width(80.0);
+                ui.vertical(|ui| {
+                    ui.weak("Display");
+                    ui.weak("Pan+Wat");
+                    ui.weak("(D.7)");
+                });
+            });
+
+            // --- Column 4: Mode-specific (placeholder labels) ---
+            ui.group(|ui| {
+                ui.vertical(|ui| {
+                    match state.mode {
+                        WdspMode::CwL | WdspMode::CwU => {
+                            ui.label(egui::RichText::new("CW").strong());
+                            ui.weak("Speed / Pitch / APF — phase D.5+");
+                        }
+                        WdspMode::Fm => {
+                            ui.label(egui::RichText::new("FM").strong());
+                            ui.weak("Dev / CTCSS / Offset — phase D.5+");
+                        }
+                        WdspMode::DigL | WdspMode::DigU => {
+                            ui.label(egui::RichText::new("Digital").strong());
+                            ui.weak("VAC routing — phase C");
+                        }
+                        _ => {
+                            ui.label(egui::RichText::new("Phone").strong());
+                            ui.weak("Mic / VOX / CPDR — phase C (TX)");
+                        }
+                    }
+                });
+            });
         });
     }
 
