@@ -134,14 +134,14 @@ impl eframe::App for EguiView {
                 self.draw_status_bar(ui);
             });
 
-        // 3. Bottom controls panel: S-meter + (future: DSP controls)
+        // 3. Bottom controls panel (future: DSP controls in D.5)
         egui::Panel::bottom("controls")
             .resizable(true)
-            .min_size(40.0)
+            .min_size(24.0)
             .max_size(300.0)
-            .default_size(60.0)
+            .default_size(24.0)
             .show_inside(ui, |ui| {
-                self.draw_s_meter(ui);
+                ui.weak("(DSP controls — D.5)");
             });
 
         // 4. Right side panel: Mode + Band + Filter
@@ -573,6 +573,44 @@ impl EguiView {
             // Status tags (read-only indicators)
             ui.separator();
             ui.weak("AGC-MED");
+
+            // Inline S-meter: compact bar + S-unit readout, Thetis-
+            // style multimeter position (right side of VFO row).
+            ui.separator();
+            if let Some(snapshot) = self.app.telemetry_snapshot() {
+                if rx < snapshot.rx.len() {
+                    let dbfs = snapshot.rx[rx].s_meter_db;
+                    let dbm  = dbfs - SMETER_DBFS_TO_DBM_OFFSET;
+                    let s    = dbm_to_s_units(dbm);
+
+                    let bar_w = ui.available_width().clamp(60.0, 140.0);
+                    let (rect, _) = ui.allocate_exact_size(
+                        Vec2::new(bar_w, 14.0),
+                        Sense::hover(),
+                    );
+                    let painter = ui.painter();
+                    painter.rect_filled(rect, 2.0, Color32::from_gray(20));
+
+                    let s9_split = 0.6_f32;
+                    let s_norm = if s <= 9.0 {
+                        (s / 9.0) * s9_split
+                    } else {
+                        s9_split + ((s - 9.0) / 6.0).clamp(0.0, 1.0) * (1.0 - s9_split)
+                    };
+                    let filled = Rect::from_min_size(
+                        rect.min,
+                        Vec2::new(rect.width() * s_norm, rect.height()),
+                    );
+                    painter.rect_filled(filled, 2.0, level_color(dbfs));
+
+                    let readout = if s <= 9.0 {
+                        format!("S{:.0}", s.round())
+                    } else {
+                        format!("S9+{:.0}", (dbm + 73.0).max(0.0))
+                    };
+                    ui.monospace(format!("{} {:+.0}", readout, dbm));
+                }
+            }
         });
     }
 
@@ -713,80 +751,8 @@ impl EguiView {
         }
     }
 
-    fn draw_s_meter(&self, ui: &mut egui::Ui) {
-        let Some(snapshot) = self.app.telemetry_snapshot() else {
-            ui.horizontal(|ui| {
-                ui.monospace("S-meter: --");
-            });
-            return;
-        };
-        let num_rx = snapshot.num_rx.min(MAX_RX as u8) as usize;
-
-        ui.vertical(|ui| {
-            for r in 0..num_rx {
-                draw_s_meter_scaled(ui, r, snapshot.rx[r].s_meter_db);
-            }
-        });
-    }
 }
 
-// --- S-meter widget ------------------------------------------------------
-
-fn draw_s_meter_scaled(ui: &mut egui::Ui, rx: usize, dbfs: f32) {
-    let dbm = dbfs - SMETER_DBFS_TO_DBM_OFFSET;
-    let s = dbm_to_s_units(dbm);
-
-    ui.horizontal(|ui| {
-        ui.monospace(format!("RX{}", rx + 1));
-
-        let bar_width = (ui.available_width() - 200.0).max(180.0);
-        let (rect, _) = ui.allocate_exact_size(
-            Vec2::new(bar_width, 18.0),
-            Sense::hover(),
-        );
-        let painter = ui.painter();
-        painter.rect_filled(rect, 2.0, Color32::from_gray(28));
-
-        let s9_split = 0.6_f32;
-        let s_norm = if s <= 9.0 {
-            (s / 9.0) * s9_split
-        } else {
-            s9_split + ((s - 9.0) / 6.0).clamp(0.0, 1.0) * (1.0 - s9_split)
-        };
-
-        let filled = Rect::from_min_size(
-            rect.min,
-            Vec2::new(rect.width() * s_norm, rect.height()),
-        );
-        painter.rect_filled(filled, 2.0, level_color(dbfs));
-
-        let tick_color = Color32::from_gray(120);
-        for i in 1..=9 {
-            let t = (i as f32 / 9.0) * s9_split;
-            let x = rect.min.x + t * rect.width();
-            painter.line_segment(
-                [Pos2::new(x, rect.max.y - 5.0), Pos2::new(x, rect.max.y)],
-                Stroke::new(1.0, tick_color),
-            );
-        }
-        for (i, _label) in [10, 20, 40, 60].iter().enumerate() {
-            let frac = (i + 1) as f32 / 4.0;
-            let t = s9_split + frac * (1.0 - s9_split);
-            let x = rect.min.x + t * rect.width();
-            painter.line_segment(
-                [Pos2::new(x, rect.max.y - 5.0), Pos2::new(x, rect.max.y)],
-                Stroke::new(1.0, Color32::from_rgb(180, 100, 80)),
-            );
-        }
-
-        let readout = if s <= 9.0 {
-            format!("S{:.0}", s.round())
-        } else {
-            format!("S9+{:.0}", (dbm + 73.0).max(0.0))
-        };
-        ui.monospace(format!("{:<7}{:>6.1} dBm", readout, dbm));
-    });
-}
 
 // --- Theme ---------------------------------------------------------------
 
