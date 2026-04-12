@@ -128,6 +128,16 @@ unsafe extern "C" {
     /// or multi-RX modes).
     pub fn SetRXAPanelBinaural(channel: c_int, binaural: c_int);
 
+    // --- EQ (Graphic Equalizer) -----------------------------------------
+
+    /// Enable/disable the RX graphic equalizer.
+    pub fn SetRXAEQRun(channel: c_int, run: c_int);
+
+    /// Set a 10-band graphic EQ. `rxeq` is a pointer to 11 ints:
+    /// `rxeq[0]` = preamp gain (dB), `rxeq[1..=10]` = band gains
+    /// at 32, 63, 125, 250, 500, 1k, 2k, 4k, 8k, 16k Hz.
+    pub fn SetRXAGrphEQ10(channel: c_int, rxeq: *const c_int);
+
     // --- ANF (Auto Notch Filter) ----------------------------------------
 
     /// Turn the LMS auto-notch filter on (`1`) or off (`0`).

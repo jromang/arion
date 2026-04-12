@@ -213,6 +213,8 @@ enum DspCommand {
     SetRxNr3 { rx: u8, enabled: bool },
     SetRxNr4 { rx: u8, enabled: bool },
     SetRxPassband { rx: u8, lo: f64, hi: f64 },
+    SetRxEqRun { rx: u8, enabled: bool },
+    SetRxEqBands { rx: u8, gains: [i32; 11] },
     SetRxAnf { rx: u8, enabled: bool },
     SetRxSnba { rx: u8, enabled: bool },
     SetRxBinaural { rx: u8, enabled: bool },
@@ -454,6 +456,16 @@ impl Radio {
 
     pub fn set_rx_passband(&self, rx: u8, lo: f64, hi: f64) -> anyhow::Result<()> {
         self.commands.send(DspCommand::SetRxPassband { rx, lo, hi })?;
+        Ok(())
+    }
+
+    pub fn set_rx_eq_run(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxEqRun { rx, enabled })?;
+        Ok(())
+    }
+
+    pub fn set_rx_eq_bands(&self, rx: u8, gains: [i32; 11]) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxEqBands { rx, gains })?;
         Ok(())
     }
 
@@ -729,6 +741,20 @@ fn dsp_loop(
                     if r < num_rx {
                         tracing::info!(rx, lo, hi, "DSP: passband change");
                         channels[r].set_passband_hz(lo, hi);
+                    }
+                }
+                DspCommand::SetRxEqRun { rx, enabled } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        tracing::info!(rx, enabled, "DSP: EQ run");
+                        channels[r].set_eq_enabled(enabled);
+                    }
+                }
+                DspCommand::SetRxEqBands { rx, gains } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        tracing::info!(rx, ?gains, "DSP: EQ bands");
+                        channels[r].set_eq_bands(&gains);
                     }
                 }
                 DspCommand::SetRxAnf { rx, enabled } => {

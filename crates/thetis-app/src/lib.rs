@@ -85,6 +85,11 @@ pub struct RxState {
     pub anf:          bool,
     pub bin:          bool,
     pub tnf:          bool,
+    pub eq_enabled:   bool,
+    /// 10-band graphic EQ gains. Index 0 = preamp, 1..=10 = bands
+    /// at 32, 63, 125, 250, 500, 1k, 2k, 4k, 8k, 16k Hz.
+    /// Values in dB, typically -12..+12.
+    pub eq_gains:     [i32; 11],
 }
 
 impl Default for RxState {
@@ -107,6 +112,8 @@ impl Default for RxState {
             anf:          false,
             bin:          false,
             tnf:          false,
+            eq_enabled:   false,
+            eq_gains:     [0; 11],
         }
     }
 }
@@ -705,6 +712,36 @@ impl App {
             }
         }
         self.mark_dirty();
+    }
+
+    pub fn set_rx_eq_enabled(&mut self, rx: u8, enabled: bool) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.eq_enabled = enabled;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_eq_run(rx, enabled);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_eq_gains(&mut self, rx: u8, gains: [i32; 11]) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.eq_gains = gains;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_eq_bands(rx, gains);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_eq_band(&mut self, rx: u8, band_idx: usize, gain_db: i32) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        if band_idx < 11 {
+            view.eq_gains[band_idx] = gain_db;
+            let gains = view.eq_gains;
+            if let Some(r) = &self.radio {
+                let _ = r.set_rx_eq_bands(rx, gains);
+            }
+            self.mark_dirty();
+        }
     }
 
     /// Set the passband directly (variable filter).

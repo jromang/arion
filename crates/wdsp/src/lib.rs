@@ -296,6 +296,18 @@ impl Channel {
         unsafe { sys::SetRXASBNRreductionAmount(self.id, db); }
     }
 
+    /// Enable or disable the RX graphic equalizer.
+    pub fn set_eq_enabled(&mut self, enabled: bool) {
+        unsafe { sys::SetRXAEQRun(self.id, i32::from(enabled)); }
+    }
+
+    /// Apply a 10-band graphic EQ. `gains` must be exactly 11 values:
+    /// `[0]` = preamp gain (dB), `[1..=10]` = band gains at
+    /// 32, 63, 125, 250, 500, 1k, 2k, 4k, 8k, 16k Hz.
+    pub fn set_eq_bands(&mut self, gains: &[i32; 11]) {
+        unsafe { sys::SetRXAGrphEQ10(self.id, gains.as_ptr()); }
+    }
+
     /// Enable or disable the LMS auto-notch filter (ANF).
     pub fn set_anf_enabled(&mut self, enabled: bool) {
         unsafe { sys::SetRXAANFRun(self.id, i32::from(enabled)); }

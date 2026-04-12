@@ -817,21 +817,66 @@ impl EguiView {
         }
     }
 
-    /// Floating EQ window — placeholder until phase E.
+    /// Floating 10-band graphic EQ window with vertical sliders.
     fn draw_eq_window(&mut self, ctx: &egui::Context) {
         let mut open = true;
-        egui::Window::new("Equalizer")
+        let rx = self.app.active_rx() as u8;
+
+        egui::Window::new("RX Equalizer")
             .open(&mut open)
-            .default_width(300.0)
-            .default_height(200.0)
+            .default_width(480.0)
+            .default_height(280.0)
+            .resizable(true)
             .show(ctx, |ui| {
-                ui.heading("RX Equalizer");
+                let state = self.app.rx(rx as usize).cloned().unwrap_or_default();
+
+                // Enable toggle
+                let mut eq_on = state.eq_enabled;
+                if ui.checkbox(&mut eq_on, "EQ Enabled").changed() {
+                    self.app.set_rx_eq_enabled(rx, eq_on);
+                }
+
                 ui.separator();
-                ui.label("10-band parametric EQ — coming in phase E.");
-                ui.add_space(20.0);
+
+                // Band labels
+                let band_labels = [
+                    "Pre", "32", "63", "125", "250", "500",
+                    "1K", "2K", "4K", "8K", "16K",
+                ];
+
+                // Vertical sliders for each band
                 ui.horizontal(|ui| {
-                    ui.add_enabled(false, egui::Button::new("Flat"));
-                    ui.add_enabled(false, egui::Button::new("Apply Default"));
+                    for (i, &label) in band_labels.iter().enumerate() {
+                        ui.vertical(|ui| {
+                            let mut gain = state.eq_gains[i];
+                            let resp = ui.add(
+                                egui::Slider::new(&mut gain, -12..=12)
+                                    .vertical()
+                                    .show_value(false),
+                            );
+                            if resp.changed() {
+                                self.app.set_rx_eq_band(rx, i, gain);
+                            }
+                            ui.monospace(format!("{gain:+}"));
+                            ui.small(label);
+                        });
+                    }
+                });
+
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button("Flat").clicked() {
+                        self.app.set_rx_eq_gains(rx, [0; 11]);
+                    }
+                    if ui.button("Bass Boost").clicked() {
+                        self.app.set_rx_eq_gains(rx, [0, 8, 6, 4, 2, 0, 0, 0, 0, 0, 0]);
+                    }
+                    if ui.button("Treble Boost").clicked() {
+                        self.app.set_rx_eq_gains(rx, [0, 0, 0, 0, 0, 0, 2, 4, 6, 8, 6]);
+                    }
+                    if ui.button("Voice").clicked() {
+                        self.app.set_rx_eq_gains(rx, [0, -4, -2, 0, 2, 4, 4, 2, 0, -2, -4]);
+                    }
                 });
             });
         if !open {
