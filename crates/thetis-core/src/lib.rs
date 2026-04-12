@@ -212,6 +212,7 @@ enum DspCommand {
     SetRxEnabled { rx: u8, enabled: bool },
     SetRxNr3 { rx: u8, enabled: bool },
     SetRxNr4 { rx: u8, enabled: bool },
+    SetRxPassband { rx: u8, lo: f64, hi: f64 },
 }
 
 /// A running end-to-end receive session.
@@ -445,6 +446,11 @@ impl Radio {
     /// [`Self::set_rx_nr3`].
     pub fn set_rx_nr4(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
         self.commands.send(DspCommand::SetRxNr4 { rx, enabled })?;
+        Ok(())
+    }
+
+    pub fn set_rx_passband(&self, rx: u8, lo: f64, hi: f64) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxPassband { rx, lo, hi })?;
         Ok(())
     }
 
@@ -698,6 +704,13 @@ fn dsp_loop(
                     if r < num_rx {
                         tracing::info!(rx, enabled, "DSP: NR4 toggle");
                         channels[r].set_nr4_enabled(enabled);
+                    }
+                }
+                DspCommand::SetRxPassband { rx, lo, hi } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        tracing::info!(rx, lo, hi, "DSP: passband change");
+                        channels[r].set_passband_hz(lo, hi);
                     }
                 }
             }

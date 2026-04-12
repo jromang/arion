@@ -74,10 +74,16 @@ pub struct RxState {
     pub volume:       f32,
     pub nr3:          bool,
     pub nr4:          bool,
+    /// Current passband low edge (Hz, relative to baseband). Negative
+    /// for LSB/CW-L.
+    pub filter_lo:    f64,
+    /// Current passband high edge (Hz, relative to baseband).
+    pub filter_hi:    f64,
 }
 
 impl Default for RxState {
     fn default() -> Self {
+        let (lo, hi) = WdspMode::Usb.default_passband_hz();
         RxState {
             enabled:      false,
             frequency_hz: 7_074_000,
@@ -85,6 +91,83 @@ impl Default for RxState {
             volume:       0.25,
             nr3:          false,
             nr4:          false,
+            filter_lo:    lo,
+            filter_hi:    hi,
+        }
+    }
+}
+
+/// Named filter bandwidth presets matching Thetis upstream's 10-button
+/// row (Filter1..Filter10). Values are passband width in Hz for
+/// SSB-like modes; the actual low/high depends on mode (USB → positive,
+/// LSB → negative, AM → symmetric).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FilterPreset {
+    F6000,
+    F4000,
+    F2700,
+    F2400,
+    F1800,
+    F1000,
+    F600,
+    F400,
+    F250,
+    F100,
+}
+
+impl FilterPreset {
+    pub const ALL: [FilterPreset; 10] = [
+        Self::F6000, Self::F4000, Self::F2700, Self::F2400, Self::F1800,
+        Self::F1000, Self::F600,  Self::F400,  Self::F250,  Self::F100,
+    ];
+
+    pub fn width_hz(self) -> f64 {
+        match self {
+            Self::F6000 => 6000.0,
+            Self::F4000 => 4000.0,
+            Self::F2700 => 2700.0,
+            Self::F2400 => 2400.0,
+            Self::F1800 => 1800.0,
+            Self::F1000 => 1000.0,
+            Self::F600  =>  600.0,
+            Self::F400  =>  400.0,
+            Self::F250  =>  250.0,
+            Self::F100  =>  100.0,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::F6000 => "6.0K",
+            Self::F4000 => "4.0K",
+            Self::F2700 => "2.7K",
+            Self::F2400 => "2.4K",
+            Self::F1800 => "1.8K",
+            Self::F1000 => "1.0K",
+            Self::F600  => "600",
+            Self::F400  => "400",
+            Self::F250  => "250",
+            Self::F100  => "100",
+        }
+    }
+
+    /// Compute (lo, hi) passband Hz for this preset in the given mode.
+    /// USB/DigU: 200..200+width, LSB/DigL: -(200+width)..-200,
+    /// AM/SAM/FM/DSB: symmetric ±width/2, CW: centered on pitch (650 Hz).
+    pub fn passband_for_mode(self, mode: WdspMode) -> (f64, f64) {
+        let w = self.width_hz();
+        match mode {
+            WdspMode::Usb | WdspMode::DigU => (200.0, 200.0 + w),
+            WdspMode::Lsb | WdspMode::DigL => (-(200.0 + w), -200.0),
+            WdspMode::CwU => {
+                let center = 650.0;
+                (center - w / 2.0, center + w / 2.0)
+            }
+            WdspMode::CwL => {
+                let center = -650.0;
+                (center - w / 2.0, center + w / 2.0)
+            }
+            _ => (-w / 2.0, w / 2.0),
         }
     }
 }
@@ -363,6 +446,8 @@ impl App {
                 volume:       serde_rx.volume,
                 nr3:          serde_rx.nr3,
                 nr4:          serde_rx.nr4,
+                filter_lo:    mode_from_serde(serde_rx.mode).default_passband_hz().0,
+                filter_hi:    mode_from_serde(serde_rx.mode).default_passband_hz().1,
             });
         }
 
@@ -460,8 +545,14 @@ impl App {
             return;
         }
         view.mode = mode;
+        // Reset filter to the mode's default passband on mode change,
+        // matching Thetis upstream behaviour.
+        let (lo, hi) = mode.default_passband_hz();
+        view.filter_lo = lo;
+        view.filter_hi = hi;
         if let Some(r) = &self.radio {
             let _ = r.set_rx_mode(rx, mode);
+            let _ = r.set_rx_passband(rx, lo, hi);
         }
         self.mark_dirty();
     }
@@ -500,6 +591,25 @@ impl App {
             let _ = r.set_rx_nr4(rx, on);
         }
         self.mark_dirty();
+    }
+
+    /// Set the passband directly (variable filter).
+    pub fn set_rx_filter(&mut self, rx: u8, lo: f64, hi: f64) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.filter_lo = lo;
+        view.filter_hi = hi;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_passband(rx, lo, hi);
+        }
+        self.mark_dirty();
+    }
+
+    /// Apply a named filter preset, computing (lo, hi) from the
+    /// preset width and the active mode.
+    pub fn set_rx_filter_preset(&mut self, rx: u8, preset: FilterPreset) {
+        let Some(view) = self.rxs.get(rx as usize) else { return };
+        let (lo, hi) = preset.passband_for_mode(view.mode);
+        self.set_rx_filter(rx, lo, hi);
     }
 
     /// Promote `rx` to the active RX (target of band buttons,

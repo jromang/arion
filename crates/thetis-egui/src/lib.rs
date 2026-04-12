@@ -22,7 +22,8 @@ use eframe::egui;
 use egui::{Color32, ColorImage, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 
 use thetis_app::{
-    dbm_to_s_units, mode_to_serde, App, AppOptions, Band, WindowKind, SMETER_DBFS_TO_DBM_OFFSET,
+    dbm_to_s_units, mode_to_serde, App, AppOptions, Band, FilterPreset, WindowKind,
+    SMETER_DBFS_TO_DBM_OFFSET,
 };
 use thetis_core::{WdspMode, MAX_RX, SPECTRUM_BINS};
 use thetis_settings::Memory;
@@ -242,16 +243,51 @@ impl EguiView {
 
         ui.separator();
 
-        // --- Filter presets (placeholder for now — shows current passband) ---
+        // --- Filter presets + variable filter ---
         egui::CollapsingHeader::new(egui::RichText::new("Filter").strong())
             .default_open(true)
             .show(ui, |ui| {
-                let mode = self.app.rx(active_rx).map(|r| r.mode).unwrap_or(WdspMode::Usb);
-                let (lo, hi) = mode.default_passband_hz();
-                ui.label(format!("Low:  {:.0} Hz", lo));
-                ui.label(format!("High: {:.0} Hz", hi));
-                ui.label(format!("BW:   {:.0} Hz", hi - lo));
-                ui.weak("(Variable filter — D.4)");
+                let state = self.app.rx(active_rx).cloned().unwrap_or_default();
+                let bw = state.filter_hi - state.filter_lo;
+
+                // Preset buttons in 2-column grid
+                ui.columns(2, |cols| {
+                    for (i, &preset) in FilterPreset::ALL.iter().enumerate() {
+                        let col = &mut cols[i % 2];
+                        let preset_bw = preset.width_hz();
+                        let is_selected = (bw - preset_bw).abs() < 10.0;
+                        let text = if is_selected {
+                            egui::RichText::new(preset.label()).strong()
+                                .color(Color32::BLACK)
+                                .background_color(Color32::LIGHT_GREEN)
+                        } else {
+                            egui::RichText::new(preset.label()).monospace()
+                        };
+                        if col.selectable_label(is_selected, text).clicked() {
+                            self.app.set_rx_filter_preset(rx_u8, preset);
+                        }
+                    }
+                });
+
+                ui.separator();
+
+                // Variable filter: direct lo/hi spinners
+                ui.label(egui::RichText::new("Variable:").small());
+                ui.horizontal(|ui| {
+                    ui.label("Lo:");
+                    let mut lo = state.filter_lo;
+                    if ui.add(egui::DragValue::new(&mut lo).speed(10.0).suffix(" Hz")).changed() {
+                        self.app.set_rx_filter(rx_u8, lo, state.filter_hi);
+                    }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Hi:");
+                    let mut hi = state.filter_hi;
+                    if ui.add(egui::DragValue::new(&mut hi).speed(10.0).suffix(" Hz")).changed() {
+                        self.app.set_rx_filter(rx_u8, state.filter_lo, hi);
+                    }
+                });
+                ui.label(format!("BW: {:.0} Hz", bw));
             });
     }
 
@@ -692,11 +728,15 @@ impl EguiView {
                 );
 
                 draw_spectrum(ui, spec_rect, &snapshot.rx[r].spectrum_bins_db);
-                let (lo, hi) = snapshot.rx[r].mode.default_passband_hz();
+                // Use the actual filter bounds from App rather than
+                // the mode defaults, so the overlay follows preset /
+                // variable filter changes in real time.
+                let rx_state = self.app.rx(r).cloned().unwrap_or_default();
                 draw_passband_overlay(
                     ui, spec_rect,
                     snapshot.rx[r].span_hz,
-                    lo as f32, hi as f32,
+                    rx_state.filter_lo as f32,
+                    rx_state.filter_hi as f32,
                 );
                 let is_active = r == self.app.active_rx();
                 let prefix = if is_active && num_rx > 1 { "▶ " } else { "" };
