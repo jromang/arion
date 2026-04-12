@@ -898,16 +898,53 @@ impl EguiView {
     fn draw_setup_audio(&mut self, ui: &mut egui::Ui) {
         ui.label(egui::RichText::new("Audio").strong());
         ui.add_space(4.0);
-        ui.label("Output device picker — coming in D.11.");
-        ui.add_space(8.0);
+
+        let current = self.app.audio_device_name().to_string();
+        let display = if current.is_empty() {
+            "(system default)".to_string()
+        } else {
+            current.clone()
+        };
+
+        // Cache the device list so we only enumerate once per frame
+        // (avoids the JACK/OSS stderr spam on every combo open).
+        let devices = thetis_audio::enumerate_output_devices();
 
         ui.horizontal(|ui| {
-            ui.label("Audio device:");
-            ui.weak(if self.app.radio_ip().is_empty() {
-                "(default)"
-            } else {
-                "(default — D.11 will add picker)"
-            });
+            ui.label("Output device:");
+            let mut changed_to: Option<String> = None;
+
+            egui::ComboBox::from_id_salt("audio-device")
+                .selected_text(&display)
+                .width(300.0)
+                .show_ui(ui, |ui| {
+                    if ui.selectable_label(current.is_empty(), "(system default)").clicked() {
+                        changed_to = Some(String::new());
+                    }
+                    for name in &devices {
+                        if ui.selectable_label(*name == current, name).clicked() {
+                            changed_to = Some(name.clone());
+                        }
+                    }
+                });
+
+            if let Some(name) = changed_to {
+                self.app.set_audio_device_name(name);
+            }
+        });
+
+        ui.add_space(4.0);
+        ui.weak("Changes take effect on next Connect.");
+
+        // Show enumerated devices for reference
+        ui.add_space(4.0);
+        ui.collapsing("Available devices", |ui| {
+            if devices.is_empty() {
+                ui.weak("(no output devices found)");
+            }
+            for name in &devices {
+                ui.monospace(name);
+            }
         });
     }
 

@@ -81,6 +81,19 @@ impl From<cpal::DevicesError> for AudioError {
     fn from(e: cpal::DevicesError) -> Self { AudioError::Cpal(e.to_string()) }
 }
 
+/// List the names of all available output audio devices on the
+/// default host. Returns an empty `Vec` (not an error) if the host
+/// has no output devices — the UI displays "(no devices)" instead.
+pub fn enumerate_output_devices() -> Vec<String> {
+    let host = cpal::default_host();
+    host.output_devices()
+        .map(|devs| {
+            devs.filter_map(|d| d.name().ok())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 /// Knobs for [`AudioOutput::start`].
 #[derive(Debug, Clone)]
 pub struct AudioConfig {

@@ -8,6 +8,7 @@ description = "egui + wgpu desktop frontend for Thetis (consumes thetis-app)"
 [dependencies]
 thetis-app.workspace = true
 thetis-core.workspace = true
+thetis-audio.workspace = true
 thetis-settings.workspace = true
 eframe.workspace = true
 egui.workspace = true

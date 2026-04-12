@@ -424,6 +424,7 @@ pub struct App {
 
     // --- UI state / form fields ------------------------------------
     radio_ip: String,
+    audio_device: String,
     /// How many receivers to request on the next `Connect`. Fixed
     /// for the lifetime of a session; changing it requires a
     /// disconnect/reconnect cycle.
@@ -493,6 +494,7 @@ impl App {
             telemetry:    None,
             last_error:   None,
             radio_ip,
+            audio_device: settings.general.audio_device.clone(),
             num_rx:       settings.general.num_rx.clamp(1, MAX_RX as u8),
             rxs,
             active_rx:    settings.general.active_rx.clamp(0, MAX_RX as u8 - 1) as usize,
@@ -531,6 +533,15 @@ impl App {
 
     pub fn settings_path(&self) -> Option<PathBuf> {
         Settings::default_path()
+    }
+
+    pub fn audio_device_name(&self) -> &str {
+        &self.audio_device
+    }
+
+    pub fn set_audio_device_name(&mut self, name: String) {
+        self.audio_device = name;
+        self.mark_dirty();
     }
 
     pub fn display_settings(&self) -> &thetis_settings::DisplaySettings {
@@ -797,10 +808,15 @@ impl App {
             }
         };
 
+        let audio_dev = if self.audio_device.is_empty() {
+            None
+        } else {
+            Some(self.audio_device.clone())
+        };
         let mut config = RadioConfig {
             radio_addr:    addr,
             num_rx:        self.num_rx,
-            audio_device:  None,
+            audio_device:  audio_dev,
             prime_wisdom:  true,
             ..RadioConfig::default()
         };
@@ -888,7 +904,7 @@ impl App {
         s.ensure_rx_slots(MAX_RX);
         s.general = GeneralSettings {
             last_radio_ip: self.radio_ip.clone(),
-            audio_device:  String::new(),
+            audio_device:  self.audio_device.clone(),
             active_rx:     self.active_rx as u8,
             num_rx:        self.num_rx,
         };
