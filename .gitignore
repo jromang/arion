@@ -16,3 +16,4 @@ Cargo.lock.bak
 Thumbs.db
 todo/
 CLAUDE.md
+crates/wdsp-sys/vendor-nr/rnnoise/models/
