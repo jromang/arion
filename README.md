@@ -1,102 +1,169 @@
-# Arion
+<p align="center">
+  <strong>Arion</strong> — A modern SDR control application for HermesLite 2 & Apache Labs radios
+</p>
 
-A modern, cross-platform SDR control application for Apache Labs
-(ANAN, Saturn) and HermesLite 2 radios, written in Rust. Inspired by
-[Thetis](https://github.com/ramdor/Thetis) (archived April 2026),
-Arion is a ground-up rewrite — not a port — targeting Linux, macOS
-and Windows from day one.
+<p align="center">
+  <img src="https://img.shields.io/badge/status-proof--of--concept-orange" alt="Status: PoC">
+  <img src="https://img.shields.io/badge/license-GPL--2.0--or--later-blue" alt="License: GPL-2.0-or-later">
+  <img src="https://img.shields.io/badge/rust-stable%20%E2%89%A5%201.82-brightgreen" alt="Rust: stable ≥ 1.82">
+  <img src="https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey" alt="Platform: Linux | macOS | Windows">
+</p>
+
+---
+
+> **Warning — Proof of Concept.**
+> Arion is under active development and not production-ready.
+> APIs, file formats, and configuration will change without notice.
+> Use at your own risk — contributions and feedback welcome.
+
+## What is Arion?
+
+Arion is a cross-platform SDR (Software Defined Radio) control
+application for [HermesLite 2](http://www.hermeslite.com/) and
+Apache Labs ANAN radios, written in Rust. It communicates with the
+radio hardware via HPSDR Protocol 1 over Ethernet.
+
+Inspired by [Thetis](https://github.com/ramdor/Thetis) (archived
+April 2026), Arion is a **ground-up rewrite** — not a port — with
+a modern architecture designed for multiple platforms and frontends
+from day one.
+
+### Why Arion?
+
+In Greek mythology, Arion was a legendary musician whose song was so
+powerful that a dolphin carried him safely across the sea. Like its
+namesake, Arion transforms waves into music — radio waves into audio.
 
 ## Features
 
-- **Multi-RX** (2 independent DDC receivers), NR3 (RNNoise), NR4
-  (libspecbleach), ANF, SNBA, binaural audio, 10-band graphic EQ
-- **Click-to-tune**, wheel-tune, band buttons, filter presets +
-  variable filter, S-meter in S-units with per-band calibration
-- **TOML persistence** (settings, band stacks, memories)
-- **Rhai scripting** with built-in REPL (syntax highlighting via
-  egui_code_editor)
-- **Two frontends** sharing the same `arion-app` view-model (MVVM):
-  - `arion` — egui + wgpu desktop (DSEG7 7-segment VFO, waterfall,
-    spectrum with peak hold + average, resizable panels, floating
-    windows, Setup with 5 tabs)
-  - `arion-tui` — ratatui console (waterfall HalfBlock, side panel,
-    popups, mouse support, works over SSH/tmux on a headless Pi)
-- **Fully vendored C dependencies** (FFTW 3.3.10, rnnoise,
-  libspecbleach) — no pkg-config, no system libraries required
-- **Cross-compile** Linux → Windows (`x86_64-pc-windows-gnu`)
-- **Instant first launch** thanks to embedded FFTW wisdom blob
+- **Dual RX** — two independent DDC receivers (RX1 + RX2)
+- **DSP** — NR3 (RNNoise), NR4 (libspecbleach), ANF, SNBA, binaural,
+  10-band graphic EQ with presets, variable passband filter
+- **Spectrum & Waterfall** — real-time display with peak hold,
+  averaging, configurable dB range, spectrum fill
+- **S-Meter** — S-units display with per-band calibration
+- **Band stack** — quick-jump between amateur bands with memory
+- **Memories** — named frequency/mode bookmarks
+- **Rhai scripting** — built-in REPL with syntax highlighting;
+  every UI action is scriptable
+- **Two frontends** on one shared core (MVVM architecture):
+  - `arion` — egui + wgpu desktop with 7-segment VFO display,
+    resizable panels, floating windows, Setup with 5 tabs
+  - `arion-tui` — ratatui console for SSH / tmux / headless servers
+- **Self-contained build** — FFTW, rnnoise, libspecbleach vendored;
+  no system libraries or `pkg-config` needed
+- **Cross-compile** — Linux → Windows in one command
+- **Instant startup** — embedded FFTW wisdom blob (first launch <1s)
 
-## Workspace layout
+## Quick start
 
-```
-crates/
-  wdsp-sys/         Raw FFI to the vendored WDSP C library
-  wdsp/             Safe Rust wrapper (Channel, Mode, EQ, ANF, wisdom)
-  hpsdr-protocol/   HPSDR Protocol 1 packet types
-  hpsdr-net/        UDP discovery + multi-RX session
-  arion-audio/      cpal output + ring buffer + rubato resampling
-  arion-core/       Radio orchestrator (net → WDSP → audio)
-  arion-settings/   TOML persistence (Settings, Calibration, etc.)
-  arion-app/        Headless view-model (MVVM, zero UI dependency)
-  arion-script/     Rhai scripting engine + bindings
-  arion-egui/       egui desktop frontend
-  arion-tui/        ratatui console frontend
-apps/
-  arion/            Desktop binary (eframe)
-  arion-tui/        Console binary (crossterm, headless-friendly)
-thetis-upstream/    Git submodule: original Thetis source (read-only reference)
-```
-
-## System requirements
+### Prerequisites
 
 - Rust stable ≥ 1.82
-- An audio backend supported by [cpal](https://crates.io/crates/cpal):
-  ALSA (Linux), CoreAudio (macOS), WASAPI (Windows)
-- For the desktop UI: Vulkan, Metal, or DX12 via wgpu
+- A [HermesLite 2](http://www.hermeslite.com/) or Apache Labs ANAN
+  radio on the local network
+- Audio: ALSA (Linux), CoreAudio (macOS), WASAPI (Windows)
+- GPU: Vulkan, Metal, or DX12 (for the desktop frontend only)
 
-FFTW3, rnnoise, and libspecbleach are **vendored** in
-`crates/wdsp-sys/vendor*/` and built by `build.rs` via the `cmake`
-and `cc` crates. No external C libraries or `pkg-config` needed.
-
-## Build
+### Build & run
 
 ```sh
-git clone --recurse-submodules <url> arion
+git clone --recurse-submodules <url>
 cd arion
-cargo build --workspace
+
+# Desktop (egui)
+HL2_IP=192.168.1.40 cargo run -p arion --release
+
+# Console (ratatui — no GPU required, works over SSH)
+HL2_IP=192.168.1.40 cargo run -p arion-tui-bin
 ```
 
 ### Cross-compile Linux → Windows
 
 ```sh
-# 1. Install the cross C compiler (Arch: pacman -S mingw-w64-gcc)
-# 2. Add the Rust target
+# Install cross compiler (Arch: pacman -S mingw-w64-gcc)
 rustup target add x86_64-pc-windows-gnu
-# 3. Build. On distros where /usr/bin/rustc shadows rustup (Arch),
-#    force PATH so rustup's rustc with the windows-gnu sysroot wins:
 PATH="$HOME/.cargo/bin:$PATH" \
   cargo build --target x86_64-pc-windows-gnu --release -p arion
+# → target/x86_64-pc-windows-gnu/release/arion.exe
 ```
 
-The output is `target/x86_64-pc-windows-gnu/release/arion.exe`.
-`wdsp-sys/build.rs` detects the target and:
-- Builds FFTW 3.3.10 with `WITH_OUR_MALLOC` (mingw lacks
-  `posix_memalign` / `memalign`)
-- Injects `shim-win/Windows.h` to fix casing (WDSP includes
-  `<Windows.h>`, w32api ships `<windows.h>`)
-- Skips the POSIX shim (mingw's w32api provides the real Win32 types)
-- Links against `avrt` + `winmm`
+## Architecture
 
-## Running
+Arion follows a strict **MVVM + Hexagonal Architecture** pattern:
 
-```sh
-# Desktop (egui)
-HL2_IP=192.168.1.40 cargo run -p arion --release
-
-# Console (ratatui — works over SSH/tmux)
-HL2_IP=192.168.1.40 cargo run -p arion-tui-bin
 ```
+Frontends (Views)          arion-egui (desktop)
+                           arion-tui  (console)
+                                │
+ViewModel                  arion-app  (headless, zero UI dep)
+                                │
+Model / Ports              arion-core (Radio, DSP thread)
+                           arion-settings (TOML persistence)
+                           arion-script (Rhai engine)
+                                │
+Infrastructure             wdsp / wdsp-sys (WDSP C FFI)
+                           hpsdr-net (HPSDR P1 UDP)
+                           arion-audio (cpal + rubato)
+```
+
+Key design rules:
+- **One command path** — UI clicks, keyboard shortcuts, and Rhai
+  scripts all call the same `App::set_*` methods
+- **Humble views** — frontends only read state and dispatch actions
+- **Zero UI dep in core** — `arion-app` compiles and tests headless
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for full details
+including data flow diagrams, threading model, and design patterns.
+
+## Workspace
+
+```
+crates/
+  wdsp-sys/          Raw FFI to vendored WDSP (FFTW, rnnoise, specbleach)
+  wdsp/              Safe Rust wrapper (Channel, Mode, EQ, wisdom)
+  hpsdr-protocol/    HPSDR Protocol 1 wire types
+  hpsdr-net/         UDP discovery + multi-RX session
+  arion-audio/       cpal output + ring buffer + resampling
+  arion-core/        Radio orchestrator (net → DSP → audio)
+  arion-settings/    TOML persistence (atomic write)
+  arion-app/         Headless view-model (MVVM core)
+  arion-script/      Rhai scripting engine + bindings
+  arion-egui/        egui desktop frontend (DSEG7 VFO, waterfall, EQ, REPL)
+  arion-tui/         ratatui console frontend (waterfall, side panel, popups)
+apps/
+  arion/             Desktop binary
+  arion-tui/         Console binary
+thetis-upstream/     Git submodule: original Thetis C# source (read-only reference)
+```
+
+## Roadmap
+
+| Phase | Status | Description |
+|---|---|---|
+| A | Done | Foundations + minimal RX on HermesLite 2 |
+| B | Done | Daily-usable RX (multi-RX, NR, click-to-tune, bands, persistence, cross-compile) |
+| D | Done | Thetis-style UI, MVVM refactor, Rhai scripting, TUI frontend |
+| E | Partial | DSP bindings (ANF, EQ, SNBA done; PureSignal, Diversity need antenna) |
+| C | Planned | TX (SSB/CW), CAT Kenwood server, TCI server, MIDI |
+| F | Planned | CI, installers, documentation, audio recording |
+
+## Known limitations
+
+- **No TX** — transmit pipeline not implemented yet (Phase C)
+- **No CAT / TCI** — external control protocols not yet available
+- **NB / NB2** — noise blanker UI toggles exist but are not wired to
+  DSP (upstream WDSP uses complex ANB/NOB structures)
+- **Single sample rate** — 48 kHz only from the radio; rubato handles
+  device-side resampling
+- **No installer** — build from source required
+
+## Contributing
+
+Arion is in early development. Bug reports and feature requests via
+[issues](../../issues) are welcome. If you'd like to contribute code,
+please open an issue first to discuss the approach.
 
 ## License
 
-GPL-2.0-or-later
+[GPL-2.0-or-later](LICENSE)
