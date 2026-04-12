@@ -26,6 +26,7 @@ use thetis_app::{
     SMETER_DBFS_TO_DBM_OFFSET,
 };
 use thetis_core::{WdspMode, MAX_RX, SPECTRUM_BINS};
+use thetis_script::{ReplLineKind, ScriptEngine};
 use thetis_settings::Memory;
 
 /// One-stop entry point for the binary: create and run the app.
@@ -103,9 +104,12 @@ pub struct EguiView {
     /// frontend.
     new_memory_name: String,
     new_memory_tag:  String,
-    /// Active tab index in the Setup window (0=General, 1=Audio,
-    /// 2=Display, 3=DSP, 4=Calibration).
+    /// Active tab index in the Setup window.
     setup_tab: usize,
+    /// Rhai scripting engine + REPL state.
+    script_engine: ScriptEngine,
+    /// REPL input field.
+    repl_input: String,
 }
 
 impl EguiView {
@@ -130,6 +134,8 @@ impl EguiView {
             new_memory_name: String::new(),
             new_memory_tag:  String::new(),
             setup_tab:       0,
+            script_engine:   ScriptEngine::default(),
+            repl_input:      String::new(),
         }
     }
 }
@@ -217,6 +223,9 @@ impl eframe::App for EguiView {
         }
         if self.app.window_open(WindowKind::Eq) {
             self.draw_eq_window(&ctx);
+        }
+        if self.app.window_open(WindowKind::Repl) {
+            self.draw_repl_window(&ctx);
         }
         if self.app.window_open(WindowKind::Setup) {
             self.draw_setup_window(&ctx);
@@ -508,6 +517,7 @@ impl EguiView {
                     (WindowKind::BandStack,  "Band Stack"),
                     (WindowKind::Multimeter, "Multimeter"),
                     (WindowKind::Eq,         "Equalizer"),
+                    (WindowKind::Repl,       "REPL"),
                     (WindowKind::Setup,      "Setup"),
                 ] {
                     let open = self.app.window_open(kind);
@@ -827,6 +837,122 @@ impl EguiView {
         if !open {
             self.app.set_window_open(WindowKind::Eq, false);
         }
+    }
+
+    /// Floating REPL window: Rhai scripting console with a rich
+    /// multi-line code editor (syntax highlighting, line numbers)
+    /// and a scrollable color-coded output buffer.
+    fn draw_repl_window(&mut self, ctx: &egui::Context) {
+        let mut open = true;
+        egui::Window::new("REPL")
+            .open(&mut open)
+            .default_width(600.0)
+            .default_height(450.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                // Toolbar
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Script:").strong());
+                    if ui.button("▶ Run (Ctrl+Enter)").clicked() {
+                        self.run_repl_script();
+                    }
+                    if ui.button("Clear").clicked() {
+                        self.script_engine.clear_output();
+                    }
+                });
+
+                ui.separator();
+
+                // Split the remaining space: output on top, editor
+                // on bottom. Both are independently scrollable and
+                // follow the window resize.
+                let avail = ui.available_height();
+                let output_h = (avail * 0.45).max(60.0);
+                let editor_h = (avail - output_h - 8.0).max(60.0);
+
+                // --- Output buffer ---
+                egui::Frame::new()
+                    .fill(Color32::from_rgb(10, 12, 16))
+                    .inner_margin(egui::Margin::symmetric(4, 2))
+                    .show(ui, |ui| {
+                        egui::ScrollArea::vertical()
+                            .id_salt("repl-output")
+                            .max_height(output_h)
+                            .stick_to_bottom(true)
+                            .show(ui, |ui| {
+                                if self.script_engine.output().is_empty() {
+                                    ui.weak("Type Rhai code below, then Ctrl+Enter to run.");
+                                    ui.weak("Example: freq(0, 14074000)");
+                                }
+                                for line in self.script_engine.output() {
+                                    let color = match line.kind {
+                                        ReplLineKind::Input  => Color32::from_gray(140),
+                                        ReplLineKind::Result => Color32::from_rgb(100, 255, 120),
+                                        ReplLineKind::Error  => Color32::from_rgb(255, 100, 100),
+                                        ReplLineKind::Print  => Color32::from_rgb(100, 200, 255),
+                                    };
+                                    ui.monospace(egui::RichText::new(&line.text).color(color));
+                                }
+                            });
+                    });
+
+                ui.separator();
+
+                // --- Code editor ---
+                use egui_code_editor::{CodeEditor, ColorTheme, Syntax};
+
+                let syntax = Syntax::new("rhai")
+                    .with_comment("//")
+                    .with_comment_multiline(["/*", "*/"])
+                    .with_keywords([
+                        "let", "const", "fn", "if", "else", "while",
+                        "for", "in", "loop", "break", "continue",
+                        "return", "true", "false", "nil",
+                    ])
+                    .with_types([
+                        "int", "float", "bool", "string", "char",
+                        "Array", "Map",
+                    ])
+                    .with_special([
+                        "freq", "mode", "volume", "nr3", "nr4",
+                        "band", "do_connect", "do_disconnect",
+                        "print", "rx0_freq", "rx0_mode",
+                        "rx1_freq", "rx1_mode", "rx0_smeter",
+                        "rx1_smeter", "active_rx", "connected",
+                        "num_rx",
+                    ]);
+
+                egui::ScrollArea::vertical()
+                    .id_salt("repl-editor-scroll")
+                    .max_height(editor_h)
+                    .show(ui, |ui| {
+                        CodeEditor::default()
+                            .id_source("repl-editor")
+                            .with_rows(12)
+                            .with_fontsize(14.0)
+                            .with_theme(ColorTheme::GRUVBOX_DARK)
+                            .with_syntax(syntax)
+                            .with_numlines(true)
+                            .show(ui, &mut self.repl_input);
+                    });
+
+                // Ctrl+Enter shortcut
+                if ui.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::Enter)) {
+                    self.run_repl_script();
+                }
+            });
+        if !open {
+            self.app.set_window_open(WindowKind::Repl, false);
+        }
+    }
+
+    fn run_repl_script(&mut self) {
+        let code = self.repl_input.clone();
+        if code.trim().is_empty() {
+            return;
+        }
+        self.script_engine.run_line(&code, &mut self.app);
+        self.script_engine.apply_pending_commands(&mut self.app);
     }
 
     /// Floating Setup window with 5 tabs.

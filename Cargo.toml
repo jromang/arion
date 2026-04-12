@@ -9,6 +9,7 @@ members = [
     "crates/thetis-core",
     "crates/thetis-settings",
     "crates/thetis-app",
+    "crates/thetis-script",
     "crates/thetis-egui",
     "apps/thetis",
 ]
@@ -55,6 +56,8 @@ egui = "0.34"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 bytes = "1"
+rhai = "1"
+egui_code_editor = "0.2"
 
 # Internal crates
 wdsp-sys = { path = "crates/wdsp-sys" }
@@ -65,6 +68,7 @@ thetis-audio = { path = "crates/thetis-audio" }
 thetis-core = { path = "crates/thetis-core" }
 thetis-settings = { path = "crates/thetis-settings" }
 thetis-app = { path = "crates/thetis-app" }
+thetis-script = { path = "crates/thetis-script" }
 thetis-egui = { path = "crates/thetis-egui" }
 
 [profile.release]
