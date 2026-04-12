@@ -205,6 +205,18 @@ impl eframe::App for EguiView {
         if self.app.window_open(WindowKind::Memories) {
             self.draw_memories_window(&ctx);
         }
+        if self.app.window_open(WindowKind::BandStack) {
+            self.draw_band_stack_window(&ctx);
+        }
+        if self.app.window_open(WindowKind::Multimeter) {
+            self.draw_multimeter_window(&ctx);
+        }
+        if self.app.window_open(WindowKind::Eq) {
+            self.draw_eq_window(&ctx);
+        }
+        if self.app.window_open(WindowKind::Setup) {
+            self.draw_setup_window(&ctx);
+        }
     }
 
     /// Final flush on window close. eframe calls this exactly once
@@ -487,13 +499,18 @@ impl EguiView {
                 }
             });
             ui.menu_button("View", |ui| {
-                if ui.button("Memories").clicked() {
-                    self.app.toggle_window(WindowKind::Memories);
-                    ui.close();
-                }
-                if ui.button("Setup").clicked() {
-                    self.app.toggle_window(WindowKind::Setup);
-                    ui.close();
+                for (kind, label) in [
+                    (WindowKind::Memories,   "Memories"),
+                    (WindowKind::BandStack,  "Band Stack"),
+                    (WindowKind::Multimeter, "Multimeter"),
+                    (WindowKind::Eq,         "Equalizer"),
+                    (WindowKind::Setup,      "Setup"),
+                ] {
+                    let open = self.app.window_open(kind);
+                    if ui.selectable_label(open, label).clicked() {
+                        self.app.toggle_window(kind);
+                        ui.close();
+                    }
                 }
             });
             ui.menu_button("Help", |ui| {
@@ -667,6 +684,163 @@ impl EguiView {
         self.app.add_memory(memory);
         self.new_memory_name.clear();
         self.new_memory_tag.clear();
+    }
+
+    /// Floating band stack editor. Shows per-band freq + mode in a table;
+    /// click a row to jump to that band.
+    fn draw_band_stack_window(&mut self, ctx: &egui::Context) {
+        let mut open = true;
+        egui::Window::new("Band Stack")
+            .open(&mut open)
+            .default_width(280.0)
+            .default_height(320.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                let active_rx = self.app.active_rx();
+                let active_freq = self.app.rx(active_rx).map(|v| v.frequency_hz).unwrap_or(0);
+                let current_band = Band::for_freq(active_freq);
+
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    egui::Grid::new("band-stack-grid")
+                        .striped(true)
+                        .show(ui, |ui| {
+                            ui.label(egui::RichText::new("Band").strong());
+                            ui.label(egui::RichText::new("Frequency").strong());
+                            ui.label(egui::RichText::new("Mode").strong());
+                            ui.end_row();
+
+                            for band in Band::ALL {
+                                let entry = self.app.band_stack().get(band);
+                                let is_current = current_band == Some(band);
+                                let label = if is_current {
+                                    egui::RichText::new(band.label()).strong()
+                                        .color(Color32::LIGHT_GREEN)
+                                } else {
+                                    egui::RichText::new(band.label()).monospace()
+                                };
+                                if ui.selectable_label(is_current, label).clicked() {
+                                    self.app.jump_to_band(band);
+                                }
+                                ui.monospace(format!("{:>2}.{:03}.{:03}",
+                                    entry.frequency_hz / 1_000_000,
+                                    (entry.frequency_hz % 1_000_000) / 1_000,
+                                    entry.frequency_hz % 1_000));
+                                ui.monospace(format!("{:?}", entry.mode));
+                                ui.end_row();
+                            }
+                        });
+                });
+            });
+        if !open {
+            self.app.set_window_open(WindowKind::BandStack, false);
+        }
+    }
+
+    /// Floating multimeter: large S-meter bar with S-units, one per
+    /// active RX. Bigger than the inline meter in the VFO row.
+    fn draw_multimeter_window(&mut self, ctx: &egui::Context) {
+        let mut open = true;
+        egui::Window::new("Multimeter")
+            .open(&mut open)
+            .default_width(350.0)
+            .default_height(120.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                let Some(snapshot) = self.app.telemetry_snapshot() else {
+                    ui.label("Not connected");
+                    return;
+                };
+                let num_rx = snapshot.num_rx.min(MAX_RX as u8) as usize;
+                for r in 0..num_rx {
+                    let dbfs = snapshot.rx[r].s_meter_db;
+                    let dbm  = dbfs - SMETER_DBFS_TO_DBM_OFFSET;
+                    let s    = dbm_to_s_units(dbm);
+
+                    ui.horizontal(|ui| {
+                        ui.monospace(format!("RX{}", r + 1));
+
+                        let bar_w = 200.0;
+                        let (rect, _) = ui.allocate_exact_size(
+                            Vec2::new(bar_w, 22.0),
+                            Sense::hover(),
+                        );
+                        let painter = ui.painter();
+                        painter.rect_filled(rect, 2.0, Color32::from_gray(20));
+
+                        let s9_split = 0.6_f32;
+                        let s_norm = if s <= 9.0 {
+                            (s / 9.0) * s9_split
+                        } else {
+                            s9_split + ((s - 9.0) / 6.0).clamp(0.0, 1.0) * (1.0 - s9_split)
+                        };
+                        let filled = Rect::from_min_size(
+                            rect.min,
+                            Vec2::new(rect.width() * s_norm, rect.height()),
+                        );
+                        painter.rect_filled(filled, 2.0, level_color(dbfs));
+
+                        // Tick marks
+                        for i in 1..=9 {
+                            let t = (i as f32 / 9.0) * s9_split;
+                            let x = rect.min.x + t * rect.width();
+                            painter.line_segment(
+                                [Pos2::new(x, rect.max.y - 6.0), Pos2::new(x, rect.max.y)],
+                                Stroke::new(1.0, Color32::from_gray(120)),
+                            );
+                        }
+
+                        let readout = if s <= 9.0 {
+                            format!("S{:.0}", s.round())
+                        } else {
+                            format!("S9+{:.0}", (dbm + 73.0).max(0.0))
+                        };
+                        ui.monospace(format!("{:<7} {:>6.1} dBm", readout, dbm));
+                    });
+                }
+            });
+        if !open {
+            self.app.set_window_open(WindowKind::Multimeter, false);
+        }
+    }
+
+    /// Floating EQ window — placeholder until phase E.
+    fn draw_eq_window(&mut self, ctx: &egui::Context) {
+        let mut open = true;
+        egui::Window::new("Equalizer")
+            .open(&mut open)
+            .default_width(300.0)
+            .default_height(200.0)
+            .show(ctx, |ui| {
+                ui.heading("RX Equalizer");
+                ui.separator();
+                ui.label("10-band parametric EQ — coming in phase E.");
+                ui.add_space(20.0);
+                ui.horizontal(|ui| {
+                    ui.add_enabled(false, egui::Button::new("Flat"));
+                    ui.add_enabled(false, egui::Button::new("Apply Default"));
+                });
+            });
+        if !open {
+            self.app.set_window_open(WindowKind::Eq, false);
+        }
+    }
+
+    /// Floating Setup window — placeholder until D.10 fills the tabs.
+    fn draw_setup_window(&mut self, ctx: &egui::Context) {
+        let mut open = true;
+        egui::Window::new("Setup")
+            .open(&mut open)
+            .default_width(500.0)
+            .default_height(400.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.heading("Setup");
+                ui.separator();
+                ui.label("Tabbed settings window — coming in D.10.");
+            });
+        if !open {
+            self.app.set_window_open(WindowKind::Setup, false);
+        }
     }
 
     fn draw_rx_row(&mut self, ui: &mut egui::Ui, rx: usize) {
