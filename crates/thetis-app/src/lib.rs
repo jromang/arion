@@ -684,13 +684,25 @@ impl App {
 
     pub fn toggle_rx_flag(&mut self, rx: u8, flag: &str) {
         let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        let new_val;
         match flag {
-            "nb"  => view.nb  = !view.nb,
-            "nb2" => view.nb2 = !view.nb2,
-            "anf" => view.anf = !view.anf,
-            "bin" => view.bin = !view.bin,
-            "tnf" => view.tnf = !view.tnf,
+            "nb"  => { view.nb  = !view.nb;  new_val = view.nb; }
+            "nb2" => { view.nb2 = !view.nb2; new_val = view.nb2; }
+            "anf" => { view.anf = !view.anf; new_val = view.anf; }
+            "bin" => { view.bin = !view.bin; new_val = view.bin; }
+            "tnf" => { view.tnf = !view.tnf; new_val = view.tnf; }
             _ => return,
+        }
+        // Push to live radio DSP where bindings exist
+        if let Some(r) = &self.radio {
+            match flag {
+                "anf" => { let _ = r.set_rx_anf(rx, new_val); }
+                "bin" => { let _ = r.set_rx_binaural(rx, new_val); }
+                // NB/NB2/TNF: upstream WDSP uses low-level ANB/NOB
+                // structures, not simple SetRXA* calls. Binding
+                // deferred until the full NB pipeline is understood.
+                _ => {}
+            }
         }
         self.mark_dirty();
     }

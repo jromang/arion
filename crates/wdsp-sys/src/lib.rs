@@ -128,6 +128,16 @@ unsafe extern "C" {
     /// or multi-RX modes).
     pub fn SetRXAPanelBinaural(channel: c_int, binaural: c_int);
 
+    // --- ANF (Auto Notch Filter) ----------------------------------------
+
+    /// Turn the LMS auto-notch filter on (`1`) or off (`0`).
+    pub fn SetRXAANFRun(channel: c_int, run: c_int);
+
+    // --- SNBA (Spectral Noise Blanker) ----------------------------------
+
+    /// Turn the spectral noise blanker on (`1`) or off (`0`).
+    pub fn SetRXASNBARun(channel: c_int, run: c_int);
+
     // --- NR3 (RNNoise) --------------------------------------------------
     //
     // These are only meaningful when `wdsp-sys` was built against a

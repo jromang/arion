@@ -213,6 +213,9 @@ enum DspCommand {
     SetRxNr3 { rx: u8, enabled: bool },
     SetRxNr4 { rx: u8, enabled: bool },
     SetRxPassband { rx: u8, lo: f64, hi: f64 },
+    SetRxAnf { rx: u8, enabled: bool },
+    SetRxSnba { rx: u8, enabled: bool },
+    SetRxBinaural { rx: u8, enabled: bool },
 }
 
 /// A running end-to-end receive session.
@@ -451,6 +454,21 @@ impl Radio {
 
     pub fn set_rx_passband(&self, rx: u8, lo: f64, hi: f64) -> anyhow::Result<()> {
         self.commands.send(DspCommand::SetRxPassband { rx, lo, hi })?;
+        Ok(())
+    }
+
+    pub fn set_rx_anf(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxAnf { rx, enabled })?;
+        Ok(())
+    }
+
+    pub fn set_rx_snba(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxSnba { rx, enabled })?;
+        Ok(())
+    }
+
+    pub fn set_rx_binaural(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxBinaural { rx, enabled })?;
         Ok(())
     }
 
@@ -711,6 +729,27 @@ fn dsp_loop(
                     if r < num_rx {
                         tracing::info!(rx, lo, hi, "DSP: passband change");
                         channels[r].set_passband_hz(lo, hi);
+                    }
+                }
+                DspCommand::SetRxAnf { rx, enabled } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        tracing::info!(rx, enabled, "DSP: ANF toggle");
+                        channels[r].set_anf_enabled(enabled);
+                    }
+                }
+                DspCommand::SetRxSnba { rx, enabled } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        tracing::info!(rx, enabled, "DSP: SNBA toggle");
+                        channels[r].set_snba_enabled(enabled);
+                    }
+                }
+                DspCommand::SetRxBinaural { rx, enabled } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        tracing::info!(rx, enabled, "DSP: binaural toggle");
+                        channels[r].set_binaural(enabled);
                     }
                 }
             }

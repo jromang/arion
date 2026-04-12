@@ -296,6 +296,21 @@ impl Channel {
         unsafe { sys::SetRXASBNRreductionAmount(self.id, db); }
     }
 
+    /// Enable or disable the LMS auto-notch filter (ANF).
+    pub fn set_anf_enabled(&mut self, enabled: bool) {
+        unsafe { sys::SetRXAANFRun(self.id, i32::from(enabled)); }
+    }
+
+    /// Enable or disable the spectral noise blanker (SNB).
+    pub fn set_snba_enabled(&mut self, enabled: bool) {
+        unsafe { sys::SetRXASNBARun(self.id, i32::from(enabled)); }
+    }
+
+    /// Enable or disable binaural (true stereo) audio output.
+    pub fn set_binaural(&mut self, enabled: bool) {
+        unsafe { sys::SetRXAPanelBinaural(self.id, i32::from(enabled)); }
+    }
+
     pub fn panel_gain(&self) -> f64 { self.panel_gain }
 
     /// Push one input buffer of interleaved complex IQ samples and pull
