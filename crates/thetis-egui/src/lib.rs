@@ -458,19 +458,43 @@ impl EguiView {
 
             ui.separator();
 
-            // LED-style frequency display: large monospace lime-on-black.
-            // Format: "14.074.500" with dot separators for readability.
+            // LED 7-segment frequency display using the DSEG7 Classic
+            // font. Renders "14.074.500" in big green digits on a dark
+            // background, matching the look of a hardware radio VFO
+            // (Kenwood TS-2000 / Icom IC-7300 style). The DragValue
+            // underneath provides click-to-edit and drag-to-tune.
             let freq = state.frequency_hz;
-            let led_bg = Color32::from_rgb(8, 12, 8);
+            let led_bg    = Color32::from_rgb(6, 10, 6);
+            let led_color = Color32::from_rgb(80, 255, 100);
+            let dseg_font = egui::FontId::new(
+                32.0,
+                egui::FontFamily::Name(FONT_DSEG7.into()),
+            );
 
             egui::Frame::new()
                 .fill(led_bg)
-                .inner_margin(egui::Margin::symmetric(8, 2))
-                .corner_radius(3.0)
+                .inner_margin(egui::Margin::symmetric(10, 4))
+                .corner_radius(4.0)
                 .show(ui, |ui| {
-                    // The DragValue gives us click-to-edit + drag tuning
-                    // in a single widget. We render the custom LED text
-                    // over it by using a monospace font override.
+                    // Override all text styles to DSEG7 + green for
+                    // this scope. DragValue uses Body or Button style
+                    // depending on whether it's being edited.
+                    for style in [
+                        egui::TextStyle::Body,
+                        egui::TextStyle::Button,
+                        egui::TextStyle::Monospace,
+                    ] {
+                        ui.style_mut().text_styles.insert(style, dseg_font.clone());
+                    }
+                    ui.visuals_mut().widgets.inactive.fg_stroke.color = led_color;
+                    ui.visuals_mut().widgets.hovered.fg_stroke.color  = led_color;
+                    ui.visuals_mut().widgets.active.fg_stroke.color   = led_color;
+                    ui.visuals_mut().widgets.noninteractive.fg_stroke.color = led_color;
+                    // Suppress the bg fill on the DragValue so only
+                    // the dark Frame background shows through.
+                    ui.visuals_mut().widgets.inactive.bg_fill = Color32::TRANSPARENT;
+                    ui.visuals_mut().widgets.hovered.bg_fill  = Color32::TRANSPARENT;
+
                     let mut freq_f = freq as f64;
                     let resp = ui.add(
                         egui::DragValue::new(&mut freq_f)
@@ -484,7 +508,9 @@ impl EguiView {
                                     f % 1_000)
                             })
                             .custom_parser(|s| {
-                                let clean: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+                                let clean: String = s.chars()
+                                    .filter(|c| c.is_ascii_digit())
+                                    .collect();
                                 clean.parse::<f64>().ok()
                             }),
                     );
@@ -766,7 +792,24 @@ fn draw_s_meter_scaled(ui: &mut egui::Ui, rx: usize, dbfs: f32) {
 
 /// Tweak egui's stock dark visuals to give the radio more contrast
 /// without shipping a custom font.
+/// Custom font family name used for the 7-segment VFO display.
+const FONT_DSEG7: &str = "DSEG7";
+
 fn apply_dark_theme(ctx: &egui::Context) {
+    // --- Register the DSEG7 7-segment font for VFO displays ---
+    let mut fonts = egui::FontDefinitions::default();
+    fonts.font_data.insert(
+        FONT_DSEG7.to_owned(),
+        std::sync::Arc::new(egui::FontData::from_static(
+            include_bytes!("../fonts/DSEG7Classic-Regular.ttf"),
+        )),
+    );
+    fonts.families.insert(
+        egui::FontFamily::Name(FONT_DSEG7.into()),
+        vec![FONT_DSEG7.to_owned(), "Hack".to_owned()],
+    );
+    ctx.set_fonts(fonts);
+
     let mut style = (*ctx.global_style()).clone();
     style.visuals = egui::Visuals::dark();
 
