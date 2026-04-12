@@ -4,7 +4,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/status-proof--of--concept-orange" alt="Status: PoC">
-  <img src="https://img.shields.io/badge/license-GPL--2.0--or--later-blue" alt="License: GPL-2.0-or-later">
+  <img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue" alt="License: GPL-3.0-or-later">
   <img src="https://img.shields.io/badge/rust-stable%20%E2%89%A5%201.82-brightgreen" alt="Rust: stable ≥ 1.82">
   <img src="https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-lightgrey" alt="Platform: Linux | macOS | Windows">
 </p>
@@ -166,4 +166,4 @@ please open an issue first to discuss the approach.
 
 ## License
 
-[GPL-2.0-or-later](LICENSE)
+[GPL-3.0-or-later](LICENSE)

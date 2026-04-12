@@ -20,7 +20,7 @@ members = [
 version = "0.0.1"
 edition = "2021"
 rust-version = "1.82"
-license = "GPL-2.0-or-later"
+license = "GPL-3.0-or-later"
 repository = "https://github.com/jeff/arion"
 
 [workspace.dependencies]
