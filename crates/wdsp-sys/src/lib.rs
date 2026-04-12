@@ -128,6 +128,23 @@ unsafe extern "C" {
     /// or multi-RX modes).
     pub fn SetRXAPanelBinaural(channel: c_int, binaural: c_int);
 
+    // --- TX Compressor (CFCOMP) -----------------------------------------
+
+    /// Enable/disable the TX compandeur fréquentiel.
+    pub fn SetTXACFCOMPRun(channel: c_int, run: c_int);
+
+    /// Set the pre-compression gain in dB.
+    pub fn SetTXACFCOMPPrecomp(channel: c_int, precomp: c_double);
+
+    /// Enable/disable the TX graphic equalizer.
+    pub fn SetTXAEQRun(channel: c_int, run: c_int);
+
+    /// Set a 10-band TX graphic EQ (same format as RX).
+    pub fn SetTXAGrphEQ10(channel: c_int, txeq: *const c_int);
+
+    /// Set TX panel gain (mic gain, linear).
+    pub fn SetTXAPanelGain1(channel: c_int, gain: c_double);
+
     // --- EQ (Graphic Equalizer) -----------------------------------------
 
     /// Enable/disable the RX graphic equalizer.

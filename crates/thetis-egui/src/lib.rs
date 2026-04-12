@@ -486,15 +486,21 @@ impl EguiView {
                 match state.mode {
                     WdspMode::CwL | WdspMode::CwU => {
                         ui.label(egui::RichText::new("CW").strong());
+                        ui.weak("Speed/Pitch — Phase C");
                     }
                     WdspMode::Fm => {
                         ui.label(egui::RichText::new("FM").strong());
+                        ui.weak("Dev/CTCSS — Phase C");
                     }
                     WdspMode::DigL | WdspMode::DigU => {
                         ui.label(egui::RichText::new("DIG").strong());
+                        ui.weak("VAC — Phase C");
                     }
                     _ => {
-                        ui.label(egui::RichText::new("PH").strong());
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("PH").strong());
+                            ui.weak("TX: Mic/VOX/CPDR — Phase C");
+                        });
                     }
                 }
             });

@@ -296,6 +296,35 @@ impl Channel {
         unsafe { sys::SetRXASBNRreductionAmount(self.id, db); }
     }
 
+    // --- TX DSP controls (used when channel is opened as TX) ----------
+
+    /// Enable/disable the TX compandeur fréquentiel (CFCOMP).
+    pub fn set_tx_cfcomp_run(&mut self, enabled: bool) {
+        unsafe { sys::SetTXACFCOMPRun(self.id, i32::from(enabled)); }
+    }
+
+    /// Set the TX pre-compression gain in dB.
+    pub fn set_tx_cfcomp_precomp(&mut self, db: f64) {
+        unsafe { sys::SetTXACFCOMPPrecomp(self.id, db); }
+    }
+
+    /// Enable/disable the TX graphic equalizer.
+    pub fn set_tx_eq_enabled(&mut self, enabled: bool) {
+        unsafe { sys::SetTXAEQRun(self.id, i32::from(enabled)); }
+    }
+
+    /// Apply a 10-band TX graphic EQ.
+    pub fn set_tx_eq_bands(&mut self, gains: &[i32; 11]) {
+        unsafe { sys::SetTXAGrphEQ10(self.id, gains.as_ptr()); }
+    }
+
+    /// Set TX panel gain (mic gain, linear scale).
+    pub fn set_tx_panel_gain(&mut self, gain: f64) {
+        unsafe { sys::SetTXAPanelGain1(self.id, gain); }
+    }
+
+    // --- RX DSP controls ------------------------------------------------
+
     /// Enable or disable the RX graphic equalizer.
     pub fn set_eq_enabled(&mut self, enabled: bool) {
         unsafe { sys::SetRXAEQRun(self.id, i32::from(enabled)); }
