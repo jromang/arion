@@ -11,7 +11,9 @@ members = [
     "crates/thetis-app",
     "crates/thetis-script",
     "crates/thetis-egui",
+    "crates/thetis-tui",
     "apps/thetis",
+    "apps/thetis-tui",
 ]
 
 [workspace.package]
@@ -58,6 +60,8 @@ toml = "0.9"
 bytes = "1"
 rhai = "1"
 egui_code_editor = "0.2"
+ratatui = "0.29"
+crossterm = "0.28"
 
 # Internal crates
 wdsp-sys = { path = "crates/wdsp-sys" }
@@ -70,6 +74,7 @@ thetis-settings = { path = "crates/thetis-settings" }
 thetis-app = { path = "crates/thetis-app" }
 thetis-script = { path = "crates/thetis-script" }
 thetis-egui = { path = "crates/thetis-egui" }
+thetis-tui = { path = "crates/thetis-tui" }
 
 [profile.release]
 lto = "thin"

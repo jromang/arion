@@ -1,0 +1,21 @@
+[package]
+name = "thetis-tui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "ratatui console frontend for Thetis (headless-friendly)"
+
+# No dependency on egui / eframe / wgpu. Builds on a headless
+# server with no graphics libraries installed.
+
+[dependencies]
+thetis-app.workspace = true
+thetis-core.workspace = true
+thetis-script.workspace = true
+ratatui.workspace = true
+crossterm.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+
+[lib]
+doctest = false
