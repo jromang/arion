@@ -300,129 +300,138 @@ impl EguiView {
         });
     }
 
-    /// Bottom controls panel: 4 columns matching Thetis upstream.
+    /// Bottom controls panel. Shows a control row for the active RX,
+    /// and when `num_rx == 2`, a second mirror row for RX2 beneath it.
     fn draw_bottom_panel(&mut self, ui: &mut egui::Ui) {
-        let rx = self.app.active_rx();
+        let active = self.app.active_rx();
+        self.draw_rx_controls(ui, active);
+
+        // RX2 mirror row — Thetis upstream shows a dedicated 5-panel
+        // strip for RX2 at the bottom of the console.
+        if self.app.num_rx() >= 2 {
+            let other = if active == 0 { 1 } else { 0 };
+            ui.separator();
+            self.draw_rx_controls(ui, other);
+        }
+    }
+
+    /// One row of controls for a specific RX: Lock/Mute, AGC,
+    /// NB/NB2/ANF/BIN/TNF toggles, display options, mode-specific
+    /// panel. Used for both the active RX and the RX2 mirror row.
+    fn draw_rx_controls(&mut self, ui: &mut egui::Ui, rx: usize) {
         let rx_u8 = rx as u8;
         let state = self.app.rx(rx).cloned().unwrap_or_default();
+        let is_active = rx == self.app.active_rx();
 
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 3.0;
 
-            // --- Column 1: VFO controls ---
+            // RX label — click to make this the active RX
+            let label = format!("RX{}", rx + 1);
+            let label_text = if is_active {
+                egui::RichText::new(label).strong().color(Color32::LIGHT_GREEN)
+            } else {
+                egui::RichText::new(label).color(Color32::GRAY)
+            };
+            if ui.selectable_label(is_active, label_text).clicked() && !is_active {
+                self.app.set_active_rx(rx);
+            }
+
+            ui.separator();
+
+            // Lock / Mute
             ui.group(|ui| {
-                ui.set_width(100.0);
-                ui.vertical(|ui| {
-                    // Lock toggle
-                    let mut locked = state.locked;
-                    if ui.selectable_label(locked, if locked { "🔒 Lock" } else { "🔓 Lock" }).clicked() {
-                        locked = !locked;
-                        self.app.set_rx_locked(rx_u8, locked);
-                    }
-                    // Mute toggle
-                    let mut muted = state.muted;
-                    if ui.selectable_label(muted, if muted { "🔇 Mute" } else { "🔊 Mute" }).clicked() {
-                        muted = !muted;
-                        self.app.set_rx_muted(rx_u8, muted);
-                    }
-                });
+                let mut locked = state.locked;
+                if ui.selectable_label(locked, if locked { "🔒" } else { "🔓" })
+                    .on_hover_text("Lock VFO frequency")
+                    .clicked()
+                {
+                    locked = !locked;
+                    self.app.set_rx_locked(rx_u8, locked);
+                }
+                let mut muted = state.muted;
+                if ui.selectable_label(muted, if muted { "🔇" } else { "🔊" })
+                    .on_hover_text("Mute audio")
+                    .clicked()
+                {
+                    muted = !muted;
+                    self.app.set_rx_muted(rx_u8, muted);
+                }
             });
 
-            // --- Column 2: DSP toggles ---
+            // AGC
             ui.group(|ui| {
-                ui.set_width(160.0);
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        // AGC mode combo
-                        ui.label("AGC:");
-                        let mut agc = state.agc_mode;
-                        egui::ComboBox::from_id_salt(("agc", rx))
-                            .selected_text(format!("{:?}", agc))
-                            .width(60.0)
-                            .show_ui(ui, |ui| {
-                                use thetis_app::AgcPreset;
-                                for m in [AgcPreset::Off, AgcPreset::Long, AgcPreset::Slow, AgcPreset::Med, AgcPreset::Fast] {
-                                    ui.selectable_value(&mut agc, m, format!("{m:?}"));
-                                }
-                            });
-                        if agc != state.agc_mode {
-                            self.app.set_rx_agc(rx_u8, agc);
+                ui.label("AGC:");
+                let mut agc = state.agc_mode;
+                egui::ComboBox::from_id_salt(("agc", rx))
+                    .selected_text(format!("{:?}", agc))
+                    .width(55.0)
+                    .show_ui(ui, |ui| {
+                        use thetis_app::AgcPreset;
+                        for m in [AgcPreset::Off, AgcPreset::Long, AgcPreset::Slow, AgcPreset::Med, AgcPreset::Fast] {
+                            ui.selectable_value(&mut agc, m, format!("{m:?}"));
                         }
                     });
-
-                    ui.horizontal(|ui| {
-                        // DSP toggle buttons — compact row of colored labels
-                        for (flag, label) in [
-                            ("nb",  "NB"),
-                            ("nb2", "NB2"),
-                            ("anf", "ANF"),
-                            ("bin", "BIN"),
-                            ("tnf", "TNF"),
-                        ] {
-                            let on = match flag {
-                                "nb"  => state.nb,
-                                "nb2" => state.nb2,
-                                "anf" => state.anf,
-                                "bin" => state.bin,
-                                "tnf" => state.tnf,
-                                _ => false,
-                            };
-                            let text = if on {
-                                egui::RichText::new(label).color(Color32::BLACK)
-                                    .background_color(Color32::from_rgb(100, 200, 255))
-                            } else {
-                                egui::RichText::new(label).color(Color32::from_gray(120))
-                            };
-                            if ui.selectable_label(on, text)
-                                .on_hover_text(match flag {
-                                    "nb"  => "Noise Blanker",
-                                    "nb2" => "Noise Blanker 2",
-                                    "anf" => "Auto Notch Filter",
-                                    "bin" => "Binaural audio",
-                                    "tnf" => "Tunable Notch Filter",
-                                    _ => "",
-                                })
-                                .clicked()
-                            {
-                                self.app.toggle_rx_flag(rx_u8, flag);
-                            }
-                        }
-                    });
-                });
+                if agc != state.agc_mode {
+                    self.app.set_rx_agc(rx_u8, agc);
+                }
             });
 
-            // --- Column 3: Display options ---
+            // DSP toggles
             ui.group(|ui| {
-                ui.set_width(80.0);
-                ui.vertical(|ui| {
-                    ui.weak("Display");
-                    ui.weak("Pan+Wat");
-                    ui.weak("(D.7)");
-                });
-            });
-
-            // --- Column 4: Mode-specific (placeholder labels) ---
-            ui.group(|ui| {
-                ui.vertical(|ui| {
-                    match state.mode {
-                        WdspMode::CwL | WdspMode::CwU => {
-                            ui.label(egui::RichText::new("CW").strong());
-                            ui.weak("Speed / Pitch / APF — phase D.5+");
-                        }
-                        WdspMode::Fm => {
-                            ui.label(egui::RichText::new("FM").strong());
-                            ui.weak("Dev / CTCSS / Offset — phase D.5+");
-                        }
-                        WdspMode::DigL | WdspMode::DigU => {
-                            ui.label(egui::RichText::new("Digital").strong());
-                            ui.weak("VAC routing — phase C");
-                        }
-                        _ => {
-                            ui.label(egui::RichText::new("Phone").strong());
-                            ui.weak("Mic / VOX / CPDR — phase C (TX)");
-                        }
+                for (flag, label) in [
+                    ("nb",  "NB"),
+                    ("nb2", "NB2"),
+                    ("anf", "ANF"),
+                    ("bin", "BIN"),
+                    ("tnf", "TNF"),
+                ] {
+                    let on = match flag {
+                        "nb"  => state.nb,
+                        "nb2" => state.nb2,
+                        "anf" => state.anf,
+                        "bin" => state.bin,
+                        "tnf" => state.tnf,
+                        _ => false,
+                    };
+                    let text = if on {
+                        egui::RichText::new(label).color(Color32::BLACK)
+                            .background_color(Color32::from_rgb(100, 200, 255))
+                    } else {
+                        egui::RichText::new(label).color(Color32::from_gray(120))
+                    };
+                    if ui.selectable_label(on, text)
+                        .on_hover_text(match flag {
+                            "nb"  => "Noise Blanker",
+                            "nb2" => "Noise Blanker 2",
+                            "anf" => "Auto Notch Filter",
+                            "bin" => "Binaural audio",
+                            "tnf" => "Tunable Notch Filter",
+                            _ => "",
+                        })
+                        .clicked()
+                    {
+                        self.app.toggle_rx_flag(rx_u8, flag);
                     }
-                });
+                }
+            });
+
+            // Mode-specific indicator
+            ui.group(|ui| {
+                match state.mode {
+                    WdspMode::CwL | WdspMode::CwU => {
+                        ui.label(egui::RichText::new("CW").strong());
+                    }
+                    WdspMode::Fm => {
+                        ui.label(egui::RichText::new("FM").strong());
+                    }
+                    WdspMode::DigL | WdspMode::DigU => {
+                        ui.label(egui::RichText::new("DIG").strong());
+                    }
+                    _ => {
+                        ui.label(egui::RichText::new("PH").strong());
+                    }
+                }
             });
         });
     }
