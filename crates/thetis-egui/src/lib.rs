@@ -103,6 +103,9 @@ pub struct EguiView {
     /// frontend.
     new_memory_name: String,
     new_memory_tag:  String,
+    /// Active tab index in the Setup window (0=General, 1=Audio,
+    /// 2=Display, 3=DSP, 4=Calibration).
+    setup_tab: usize,
 }
 
 impl EguiView {
@@ -126,6 +129,7 @@ impl EguiView {
             overlays,
             new_memory_name: String::new(),
             new_memory_tag:  String::new(),
+            setup_tab:       0,
         }
     }
 }
@@ -825,7 +829,7 @@ impl EguiView {
         }
     }
 
-    /// Floating Setup window — placeholder until D.10 fills the tabs.
+    /// Floating Setup window with 5 tabs.
     fn draw_setup_window(&mut self, ctx: &egui::Context) {
         let mut open = true;
         egui::Window::new("Setup")
@@ -834,13 +838,173 @@ impl EguiView {
             .default_height(400.0)
             .resizable(true)
             .show(ctx, |ui| {
-                ui.heading("Setup");
+                // Tab row
+                ui.horizontal(|ui| {
+                    for (i, label) in ["General", "Audio", "Display", "DSP", "Calibration"].iter().enumerate() {
+                        if ui.selectable_label(self.setup_tab == i, *label).clicked() {
+                            self.setup_tab = i;
+                        }
+                    }
+                });
                 ui.separator();
-                ui.label("Tabbed settings window — coming in D.10.");
+
+                match self.setup_tab {
+                    0 => self.draw_setup_general(ui),
+                    1 => self.draw_setup_audio(ui),
+                    2 => self.draw_setup_display(ui),
+                    3 => self.draw_setup_dsp(ui),
+                    4 => self.draw_setup_calibration(ui),
+                    _ => {}
+                }
             });
         if !open {
             self.app.set_window_open(WindowKind::Setup, false);
         }
+    }
+
+    fn draw_setup_general(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("General").strong());
+        ui.add_space(4.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Radio IP:");
+            let mut ip = self.app.radio_ip().to_string();
+            if ui.text_edit_singleline(&mut ip).changed() {
+                self.app.set_radio_ip(ip);
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Default num_rx:");
+            let mut n = self.app.num_rx();
+            ui.radio_value(&mut n, 1u8, "1");
+            ui.radio_value(&mut n, 2u8, "2");
+            if n != self.app.num_rx() {
+                self.app.set_num_rx(n);
+            }
+        });
+
+        let mut auto_connect = self.app.display_settings().auto_connect;
+        if ui.checkbox(&mut auto_connect, "Auto-connect on startup").changed() {
+            self.app.display_settings_mut().auto_connect = auto_connect;
+        }
+
+        if let Some(path) = self.app.settings_path() {
+            ui.add_space(8.0);
+            ui.weak(format!("Config: {}", path.display()));
+        }
+    }
+
+    fn draw_setup_audio(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("Audio").strong());
+        ui.add_space(4.0);
+        ui.label("Output device picker — coming in D.11.");
+        ui.add_space(8.0);
+
+        ui.horizontal(|ui| {
+            ui.label("Audio device:");
+            ui.weak(if self.app.radio_ip().is_empty() {
+                "(default)"
+            } else {
+                "(default — D.11 will add picker)"
+            });
+        });
+    }
+
+    fn draw_setup_display(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("Display").strong());
+        ui.add_space(4.0);
+
+        let ds = self.app.display_settings().clone();
+
+        ui.horizontal(|ui| {
+            ui.label("Spectrum min dB:");
+            let mut min = ds.spectrum_min_db;
+            if ui.add(egui::DragValue::new(&mut min).range(-160.0..=0.0).speed(1.0)).changed() {
+                self.app.display_settings_mut().spectrum_min_db = min;
+            }
+        });
+
+        ui.horizontal(|ui| {
+            ui.label("Spectrum max dB:");
+            let mut max = ds.spectrum_max_db;
+            if ui.add(egui::DragValue::new(&mut max).range(-80.0..=20.0).speed(1.0)).changed() {
+                self.app.display_settings_mut().spectrum_max_db = max;
+            }
+        });
+    }
+
+    fn draw_setup_dsp(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("DSP Defaults").strong());
+        ui.add_space(4.0);
+
+        let dsp = self.app.dsp_defaults().clone();
+
+        ui.horizontal(|ui| {
+            ui.label("Default AGC mode:");
+            let mut agc = dsp.agc_mode.clone();
+            egui::ComboBox::from_label("")
+                .selected_text(&agc)
+                .show_ui(ui, |ui| {
+                    for m in ["Off", "Long", "Slow", "Med", "Fast"] {
+                        ui.selectable_value(&mut agc, m.to_string(), m);
+                    }
+                });
+            if agc != dsp.agc_mode {
+                self.app.dsp_defaults_mut().agc_mode = agc;
+            }
+        });
+
+        let mut nr3 = dsp.nr3_default;
+        if ui.checkbox(&mut nr3, "NR3 on by default").changed() {
+            self.app.dsp_defaults_mut().nr3_default = nr3;
+        }
+
+        let mut nr4 = dsp.nr4_default;
+        if ui.checkbox(&mut nr4, "NR4 on by default").changed() {
+            self.app.dsp_defaults_mut().nr4_default = nr4;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("NR4 reduction (dB):");
+            let mut red = dsp.nr4_reduction;
+            if ui.add(egui::Slider::new(&mut red, 0.0..=40.0)).changed() {
+                self.app.dsp_defaults_mut().nr4_reduction = red;
+            }
+        });
+    }
+
+    fn draw_setup_calibration(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("S-Meter Calibration").strong());
+        ui.add_space(4.0);
+        ui.weak("Offset per band (dBm). Adjusts the S-meter reading.");
+        ui.add_space(4.0);
+
+        let bands = [
+            "160", "80", "60", "40", "30", "20", "17", "15", "12", "10", "6",
+        ];
+
+        egui::Grid::new("cal-grid").striped(true).show(ui, |ui| {
+            ui.label(egui::RichText::new("Band").strong());
+            ui.label(egui::RichText::new("Offset (dBm)").strong());
+            ui.end_row();
+
+            for band in bands {
+                ui.label(format!("{band} m"));
+                let current = self.app.calibration()
+                    .smeter_offsets
+                    .get(band)
+                    .copied()
+                    .unwrap_or(0.0);
+                let mut val = current;
+                if ui.add(egui::DragValue::new(&mut val).range(-20.0..=20.0).speed(0.1).suffix(" dB")).changed() {
+                    self.app.calibration_mut()
+                        .smeter_offsets
+                        .insert(band.to_string(), val);
+                }
+                ui.end_row();
+            }
+        });
     }
 
     fn draw_rx_row(&mut self, ui: &mut egui::Ui, rx: usize) {

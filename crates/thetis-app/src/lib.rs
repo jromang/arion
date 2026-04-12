@@ -433,6 +433,11 @@ pub struct App {
     active_rx: usize,
     band_stack: BandStack,
 
+    // --- Settings sections (D.10) ------------------------------------
+    display_settings: thetis_settings::DisplaySettings,
+    dsp_defaults:     thetis_settings::DspDefaults,
+    calibration:      thetis_settings::Calibration,
+
     // --- Persistence (B.5) -----------------------------------------
     memories:  Vec<Memory>,
     /// Window visibility flags, keyed by [`WindowKind`]. Frontends
@@ -492,6 +497,9 @@ impl App {
             rxs,
             active_rx:    settings.general.active_rx.clamp(0, MAX_RX as u8 - 1) as usize,
             band_stack,
+            display_settings: settings.display,
+            dsp_defaults:     settings.dsp,
+            calibration:      settings.calibration,
             memories:     settings.memories,
             open_windows: std::collections::HashMap::new(),
             last_save:    Instant::now(),
@@ -523,6 +531,28 @@ impl App {
 
     pub fn settings_path(&self) -> Option<PathBuf> {
         Settings::default_path()
+    }
+
+    pub fn display_settings(&self) -> &thetis_settings::DisplaySettings {
+        &self.display_settings
+    }
+    pub fn display_settings_mut(&mut self) -> &mut thetis_settings::DisplaySettings {
+        self.mark_dirty();
+        &mut self.display_settings
+    }
+    pub fn dsp_defaults(&self) -> &thetis_settings::DspDefaults {
+        &self.dsp_defaults
+    }
+    pub fn dsp_defaults_mut(&mut self) -> &mut thetis_settings::DspDefaults {
+        self.mark_dirty();
+        &mut self.dsp_defaults
+    }
+    pub fn calibration(&self) -> &thetis_settings::Calibration {
+        &self.calibration
+    }
+    pub fn calibration_mut(&mut self) -> &mut thetis_settings::Calibration {
+        self.mark_dirty();
+        &mut self.calibration
     }
 
     // --- Write API (mut self, dispatched from frontends) ------------
@@ -872,8 +902,11 @@ impl App {
                 nr4:          view.nr4,
             };
         }
-        s.band_stacks = self.band_stack.to_settings();
-        s.memories    = self.memories.clone();
+        s.band_stacks  = self.band_stack.to_settings();
+        s.display      = self.display_settings.clone();
+        s.dsp          = self.dsp_defaults.clone();
+        s.calibration  = self.calibration.clone();
+        s.memories     = self.memories.clone();
         s
     }
 }

@@ -90,19 +90,71 @@ pub enum Mode {
     Drm,
 }
 
+// --- Display / DSP / Calibration settings --------------------------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DisplaySettings {
+    pub spectrum_min_db:  f32,
+    pub spectrum_max_db:  f32,
+    pub waterfall_speed:  u8,
+    pub auto_connect:     bool,
+}
+
+impl Default for DisplaySettings {
+    fn default() -> Self {
+        DisplaySettings {
+            spectrum_min_db: -120.0,
+            spectrum_max_db:    0.0,
+            waterfall_speed:    1,
+            auto_connect:       false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DspDefaults {
+    pub agc_mode:       String,
+    pub nr3_default:    bool,
+    pub nr4_default:    bool,
+    pub nr4_reduction:  f32,
+}
+
+impl Default for DspDefaults {
+    fn default() -> Self {
+        DspDefaults {
+            agc_mode:      "Med".into(),
+            nr3_default:   false,
+            nr4_default:   false,
+            nr4_reduction: 10.0,
+        }
+    }
+}
+
+/// Per-band S-meter calibration offset in dBm. Stored as a map
+/// keyed by band label ("160", "80", …). Missing entries → 0.0 dBm
+/// offset (no correction).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Calibration {
+    pub smeter_offsets: BTreeMap<String, f32>,
+}
+
 // --- Top-level Settings -------------------------------------------------
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
     pub general:     GeneralSettings,
+    pub display:     DisplaySettings,
+    pub dsp:         DspDefaults,
+    pub calibration: Calibration,
     /// Per-RX state, ordered by RX index. Always at least 2 entries
     /// after a load — `Settings::ensure_rx_slots` pads with defaults
     /// so the UI can index without bounds-checking.
     pub rxs:         Vec<RxSettings>,
     /// Band stack keyed by short band label ("160", "80", "40", …).
-    /// Stored as a `BTreeMap` so the on-disk file is sorted (stable
-    /// diffs across saves) without making a custom Serialize impl.
     pub band_stacks: BTreeMap<String, BandStackEntry>,
     pub memories:    Vec<Memory>,
 }
