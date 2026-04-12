@@ -104,15 +104,57 @@ impl eframe::App for EguiView {
         // phase D.12, the script scheduler + event bus).
         self.app.tick(Instant::now());
 
-        // eframe 0.34 layout: TopPanel + BottomPanel + CentralPanel.
+        // --- Thetis-style panel layout (D.1) ---
+        //
+        // Panel ordering matters in egui: panels are laid out in
+        // declaration order, and each one claims space from the
+        // remaining available rect. CentralPanel must be last.
+        //
+        // ┌─────────────────────────────────────────────────┐
+        // │  TopPanel: VFO bars + connect + band buttons     │
+        // ├──────────────────────────────────┬──────────────┤
+        // │                                  │  SidePanel R │
+        // │   CentralPanel: spectrum +       │  Mode        │
+        // │   waterfall (resizable split)    │  Band        │
+        // │                                  │  Filter      │
+        // ├──────────────────────────────────┴──────────────┤
+        // │  BottomPanel: S-meter + DSP controls             │
+        // ├─────────────────────────────────────────────────┤
+        // │  StatusBar: pkts/dsp/audio/underruns              │
+        // └─────────────────────────────────────────────────┘
+
+        // 1. Top bar: connect, VFO rows, band buttons
         egui::Panel::top("top-bar").show_inside(ui, |ui| {
             self.draw_top_bar(ui);
         });
 
-        egui::Panel::bottom("s-meter").show_inside(ui, |ui| {
-            self.draw_s_meter(ui);
-        });
+        // 2. Status bar (bottom-most, thin, not resizable)
+        egui::Panel::bottom("status-bar")
+            .show_inside(ui, |ui| {
+                self.draw_status_bar(ui);
+            });
 
+        // 3. Bottom controls panel: S-meter + (future: DSP controls)
+        egui::Panel::bottom("controls")
+            .resizable(true)
+            .min_size(40.0)
+            .max_size(300.0)
+            .default_size(60.0)
+            .show_inside(ui, |ui| {
+                self.draw_s_meter(ui);
+            });
+
+        // 4. Right side panel: Mode + Band + Filter
+        egui::Panel::right("side-panel")
+            .resizable(true)
+            .min_size(140.0)
+            .max_size(300.0)
+            .default_size(180.0)
+            .show_inside(ui, |ui| {
+                self.draw_side_panel(ui);
+            });
+
+        // 5. Central panel: spectrum + waterfall (takes remaining space)
         let ctx = ui.ctx().clone();
         egui::CentralPanel::default().show_inside(ui, |ui| {
             self.draw_main(ui, &ctx);
@@ -135,6 +177,93 @@ impl eframe::App for EguiView {
 // --- UI sub-sections ----------------------------------------------------
 
 impl EguiView {
+    /// Right side panel: Mode selector + Band selector + Filter presets.
+    /// Replaces the old in-row ComboBox mode picker and the inline band
+    /// buttons — these now live in their own dedicated right-hand column
+    /// matching the Thetis upstream layout.
+    fn draw_side_panel(&mut self, ui: &mut egui::Ui) {
+        let active_rx = self.app.active_rx();
+        let rx_u8 = active_rx as u8;
+
+        // --- Mode selector ---
+        egui::CollapsingHeader::new(egui::RichText::new("Mode").strong())
+            .default_open(true)
+            .show(ui, |ui| {
+                let current_mode = self.app.rx(active_rx).map(|r| r.mode).unwrap_or(WdspMode::Usb);
+                let modes = [
+                    (WdspMode::Lsb,  "LSB"),  (WdspMode::Usb,  "USB"),
+                    (WdspMode::CwL,  "CWL"),  (WdspMode::CwU,  "CWU"),
+                    (WdspMode::Am,   "AM"),   (WdspMode::Sam,  "SAM"),
+                    (WdspMode::Dsb,  "DSB"),  (WdspMode::Fm,   "FM"),
+                    (WdspMode::DigL, "DIGL"), (WdspMode::DigU, "DIGU"),
+                    (WdspMode::Drm,  "DRM"),  (WdspMode::Spec, "SPEC"),
+                ];
+                ui.columns(2, |cols| {
+                    for (i, &(mode, label)) in modes.iter().enumerate() {
+                        let col = &mut cols[i % 2];
+                        let is_selected = mode == current_mode;
+                        let text = if is_selected {
+                            egui::RichText::new(label).strong().color(Color32::BLACK)
+                                .background_color(Color32::LIGHT_GREEN)
+                        } else {
+                            egui::RichText::new(label).monospace()
+                        };
+                        if col.selectable_label(is_selected, text).clicked() && mode != current_mode {
+                            self.app.set_rx_mode(rx_u8, mode);
+                        }
+                    }
+                });
+            });
+
+        ui.separator();
+
+        // --- Band selector ---
+        egui::CollapsingHeader::new(egui::RichText::new("Band").strong())
+            .default_open(true)
+            .show(ui, |ui| {
+                let active_freq = self.app.rx(active_rx).map(|v| v.frequency_hz).unwrap_or(0);
+                let current_band = Band::for_freq(active_freq);
+                ui.columns(2, |cols| {
+                    for (i, &band) in Band::ALL.iter().enumerate() {
+                        let col = &mut cols[i % 2];
+                        let is_current = current_band == Some(band);
+                        let text = if is_current {
+                            egui::RichText::new(band.label()).strong().color(Color32::BLACK)
+                                .background_color(Color32::LIGHT_GREEN)
+                        } else {
+                            egui::RichText::new(band.label()).monospace()
+                        };
+                        if col.selectable_label(is_current, text).clicked() {
+                            self.app.jump_to_band(band);
+                        }
+                    }
+                });
+            });
+
+        ui.separator();
+
+        // --- Filter presets (placeholder for now — shows current passband) ---
+        egui::CollapsingHeader::new(egui::RichText::new("Filter").strong())
+            .default_open(true)
+            .show(ui, |ui| {
+                let mode = self.app.rx(active_rx).map(|r| r.mode).unwrap_or(WdspMode::Usb);
+                let (lo, hi) = mode.default_passband_hz();
+                ui.label(format!("Low:  {:.0} Hz", lo));
+                ui.label(format!("High: {:.0} Hz", hi));
+                ui.label(format!("BW:   {:.0} Hz", hi - lo));
+                ui.weak("(Variable filter — D.4)");
+            });
+    }
+
+    /// Thin status bar at the very bottom: connection stats or
+    /// "disconnected" label. Replaces the old inline connection
+    /// status that was crammed into the top bar.
+    fn draw_status_bar(&self, ui: &mut egui::Ui) {
+        ui.horizontal(|ui| {
+            self.draw_connection_status(ui);
+        });
+    }
+
     fn draw_top_bar(&mut self, ui: &mut egui::Ui) {
         // Row 1: global session controls (Connect / Memories / IP / num_rx / status)
         ui.horizontal(|ui| {
@@ -186,8 +315,6 @@ impl EguiView {
                 self.app.set_num_rx(num_rx_buf);
             }
 
-            ui.separator();
-            self.draw_connection_status(ui);
         });
 
         // Row 2+: one "VFO bar" per configured RX.
@@ -195,9 +322,6 @@ impl EguiView {
             ui.separator();
             self.draw_rx_row(ui, rx);
         }
-
-        ui.separator();
-        self.draw_band_buttons(ui);
 
         if let Some(e) = self.app.last_error() {
             ui.colored_label(Color32::LIGHT_RED, format!("error: {e}"));
@@ -320,31 +444,6 @@ impl EguiView {
         self.new_memory_tag.clear();
     }
 
-    /// Horizontal row of amateur-band buttons. Pressing one routes
-    /// through `App::jump_to_band(band)` which snapshots the active RX's
-    /// current freq/mode into the matching band slot, then loads
-    /// the new band's entry. The currently-tuned band is highlighted.
-    fn draw_band_buttons(&mut self, ui: &mut egui::Ui) {
-        let active_rx = self.app.active_rx();
-        let active_freq = self.app.rx(active_rx).map(|v| v.frequency_hz).unwrap_or(0);
-        let current_band = Band::for_freq(active_freq);
-
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new("Band:").strong());
-            ui.label(format!("(RX{})", active_rx + 1));
-            for band in Band::ALL {
-                let is_current = current_band == Some(band);
-                let mut text = egui::RichText::new(band.label()).monospace();
-                if is_current {
-                    text = text.color(Color32::BLACK).background_color(Color32::LIGHT_GREEN);
-                }
-                if ui.button(text).clicked() {
-                    self.app.jump_to_band(band);
-                }
-            }
-        });
-    }
-
     fn draw_rx_row(&mut self, ui: &mut egui::Ui, rx: usize) {
         let rx_u8 = rx as u8;
         // Snapshot the read-only fields once so we don't keep `self.app`
@@ -377,22 +476,7 @@ impl EguiView {
             ui.label(format!("({:.3} MHz)", state.frequency_hz as f64 / 1.0e6));
 
             ui.separator();
-            ui.label("Mode:");
-            let mut mode_buf = state.mode;
-            egui::ComboBox::from_id_salt(("mode", rx))
-                .selected_text(format!("{:?}", mode_buf))
-                .show_ui(ui, |ui| {
-                    for m in [
-                        WdspMode::Lsb, WdspMode::Usb, WdspMode::Am, WdspMode::Sam,
-                        WdspMode::Fm, WdspMode::CwL, WdspMode::CwU,
-                        WdspMode::DigL, WdspMode::DigU,
-                    ] {
-                        ui.selectable_value(&mut mode_buf, m, format!("{m:?}"));
-                    }
-                });
-            if mode_buf != state.mode {
-                self.app.set_rx_mode(rx_u8, mode_buf);
-            }
+            ui.monospace(format!("{:?}", state.mode));
 
             ui.separator();
             ui.label("Vol:");
@@ -500,10 +584,13 @@ impl EguiView {
                     snapshot.rx[r].span_hz,
                     lo as f32, hi as f32,
                 );
+                let is_active = r == self.app.active_rx();
+                let prefix = if is_active && num_rx > 1 { "▶ " } else { "" };
                 ui.painter_at(spec_rect).text(
                     spec_rect.min + Vec2::new(6.0, 4.0),
                     egui::Align2::LEFT_TOP,
-                    format!("RX{}  {:.3} MHz  {:?}",
+                    format!("{}RX{}  {:.3} MHz  {:?}",
+                        prefix,
                         r + 1,
                         snapshot.rx[r].center_freq_hz as f64 / 1.0e6,
                         snapshot.rx[r].mode),
