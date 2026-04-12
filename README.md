@@ -16,6 +16,16 @@
 > APIs, file formats, and configuration will change without notice.
 > Use at your own risk — contributions and feedback welcome.
 
+## Screenshots
+
+**Desktop** (egui + wgpu)
+
+![Arion Desktop](assets/screenshots/desktop.png)
+
+**Console** (ratatui — works over SSH/tmux)
+
+![Arion TUI](assets/screenshots/tui.png)
+
 ## What is Arion?
 
 Arion is a cross-platform SDR (Software Defined Radio) control
