@@ -92,22 +92,61 @@ pub enum Mode {
 
 // --- Display / DSP / Calibration settings --------------------------------
 
+/// Waterfall colour scheme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum WaterfallPalette {
+    /// 8-stop gradient matching Thetis "Enhanced" (default).
+    #[default]
+    Enhanced,
+    /// Blue → magenta → red → orange (previous Arion default, "Classic").
+    Classic,
+    /// Black → white.
+    Greyscale,
+    /// Black → purple → orange → yellow → white.
+    Thermal,
+    /// Black → bright green (like Spectran).
+    Spectran,
+}
+
+impl WaterfallPalette {
+    pub const ALL: &'static [WaterfallPalette] = &[
+        WaterfallPalette::Enhanced,
+        WaterfallPalette::Classic,
+        WaterfallPalette::Greyscale,
+        WaterfallPalette::Thermal,
+        WaterfallPalette::Spectran,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            WaterfallPalette::Enhanced  => "Enhanced",
+            WaterfallPalette::Classic   => "Classic",
+            WaterfallPalette::Greyscale => "Greyscale",
+            WaterfallPalette::Thermal   => "Thermal",
+            WaterfallPalette::Spectran  => "Spectran",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplaySettings {
-    pub spectrum_min_db:  f32,
-    pub spectrum_max_db:  f32,
-    pub waterfall_speed:  u8,
-    pub auto_connect:     bool,
+    pub spectrum_min_db:    f32,
+    pub spectrum_max_db:    f32,
+    pub waterfall_speed:    u8,
+    pub waterfall_palette:  WaterfallPalette,
+    pub auto_connect:       bool,
 }
 
 impl Default for DisplaySettings {
     fn default() -> Self {
         DisplaySettings {
-            spectrum_min_db: -120.0,
-            spectrum_max_db:    0.0,
-            waterfall_speed:    1,
-            auto_connect:       false,
+            spectrum_min_db:   -120.0,
+            spectrum_max_db:      0.0,
+            waterfall_speed:      1,
+            waterfall_palette:    WaterfallPalette::Enhanced,
+            auto_connect:         false,
         }
     }
 }

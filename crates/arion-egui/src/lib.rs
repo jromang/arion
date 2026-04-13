@@ -27,6 +27,7 @@ use arion_app::{
     dbm_to_s_units, mode_to_serde, App, AppOptions, Band, FilterPreset, WindowKind,
     SMETER_DBFS_TO_DBM_OFFSET,
 };
+use arion_settings::WaterfallPalette;
 use arion_core::{WdspMode, MAX_RX, SPECTRUM_BINS};
 use arion_script::{FnHandle, ReplLineKind, ScriptEngine};
 
@@ -124,6 +125,8 @@ pub struct EguiView {
     rigctld_handle: Option<arion_rigctld::RigctldHandle>,
     /// Last-known rigctld status string for the Setup UI.
     rigctld_status: String,
+    /// Per-RX zoom/pan state for the spectrum display.
+    view_states: Vec<RxViewState>,
 }
 
 /// One script editor tab: a buffer that may or may not be backed by
@@ -177,8 +180,9 @@ impl EguiView {
         };
         let app = App::new(opts);
 
-        let waterfalls = (0..MAX_RX).map(|_| Waterfall::new()).collect();
-        let overlays   = (0..MAX_RX).map(|_| SpectrumOverlay::new()).collect();
+        let waterfalls: Vec<_> = (0..MAX_RX).map(Waterfall::new).collect();
+        let overlays     = (0..MAX_RX).map(|_| SpectrumOverlay::new()).collect();
+        let view_states  = (0..MAX_RX).map(|_| RxViewState::default()).collect();
 
         let (rigctld_tx, rigctld_rx) = mpsc::channel::<arion_rigctld::RigRequest>();
 
@@ -186,6 +190,7 @@ impl EguiView {
             app,
             waterfalls,
             overlays,
+            view_states,
             new_memory_name:    String::new(),
             new_memory_tag:     String::new(),
             setup_tab:          0,
@@ -1468,6 +1473,21 @@ impl EguiView {
                 self.app.display_settings_mut().spectrum_max_db = max;
             }
         });
+
+        ui.horizontal(|ui| {
+            ui.label("Waterfall palette:");
+            let mut palette = ds.waterfall_palette;
+            egui::ComboBox::from_id_salt("wf_palette")
+                .selected_text(palette.label())
+                .show_ui(ui, |ui| {
+                    for &p in WaterfallPalette::ALL {
+                        ui.selectable_value(&mut palette, p, p.label());
+                    }
+                });
+            if palette != ds.waterfall_palette {
+                self.app.display_settings_mut().waterfall_palette = palette;
+            }
+        });
     }
 
     fn draw_setup_dsp(&mut self, ui: &mut egui::Ui) {
@@ -1832,8 +1852,14 @@ impl EguiView {
         // Push fresh rows into each RX's waterfall *before* drawing so
         // the visual and the data stay in sync. The waterfalls cache
         // is a frontend resource, owned by EguiView (not App).
+        let ds_pre = self.app.display_settings();
         for r in 0..num_rx {
-            self.waterfalls[r].push_row(&snapshot.rx[r].spectrum_bins_db);
+            self.waterfalls[r].push_row(
+                &snapshot.rx[r].spectrum_bins_db,
+                ds_pre.spectrum_min_db,
+                ds_pre.spectrum_max_db,
+                ds_pre.waterfall_palette,
+            );
             self.overlays[r].update(&snapshot.rx[r].spectrum_bins_db);
         }
 
@@ -1857,88 +1883,163 @@ impl EguiView {
                     Vec2::new(avail.x, band_h - 8.0),
                     Sense::hover(),
                 );
+
+                let n_bins = snapshot.rx[r].spectrum_bins_db.len().max(1);
+                let (lo_bin, hi_bin) = self.view_states[r].visible_bins(n_bins);
+                let center_hz = snapshot.rx[r].center_freq_hz;
+                let span_hz   = snapshot.rx[r].span_hz;
+
+                // Compute visible Hz window (absolute)
+                let lo_hz = center_hz as f32 - span_hz as f32 * 0.5
+                    + lo_bin as f32 / n_bins as f32 * span_hz as f32;
+                let hi_hz = center_hz as f32 - span_hz as f32 * 0.5
+                    + hi_bin as f32 / n_bins as f32 * span_hz as f32;
+
+                // UV coords for waterfall cropping [0, 1]
+                let uv_lo = lo_bin as f32 / n_bins as f32;
+                let uv_hi = hi_bin as f32 / n_bins as f32;
+
+                // Layout: spectrum | 18px axis | 4px gap | waterfall
+                let axis_h  = 18.0_f32;
                 let spec_h  = (band_rect.height() * 0.35).max(80.0);
-                let water_h = (band_rect.height() - spec_h - 4.0).max(60.0);
+                let water_h = (band_rect.height() - spec_h - axis_h - 4.0).max(60.0);
                 let spec_rect = Rect::from_min_size(
                     band_rect.min,
                     Vec2::new(band_rect.width(), spec_h),
                 );
+                let axis_rect = Rect::from_min_size(
+                    Pos2::new(band_rect.min.x, band_rect.min.y + spec_h),
+                    Vec2::new(band_rect.width(), axis_h),
+                );
                 let water_rect = Rect::from_min_size(
-                    Pos2::new(band_rect.min.x, band_rect.min.y + spec_h + 4.0),
+                    Pos2::new(band_rect.min.x, band_rect.min.y + spec_h + axis_h + 4.0),
                     Vec2::new(band_rect.width(), water_h),
                 );
 
-                let ds = self.app.display_settings();
-                draw_spectrum_ex(
-                    ui, spec_rect,
-                    &snapshot.rx[r].spectrum_bins_db,
-                    ds.spectrum_min_db,
-                    ds.spectrum_max_db,
-                    false, // fill disabled — convex_polygon glitches on non-convex shapes
-                );
-
-                // Peak hold trace (white, 1px)
-                if self.overlays[r].show_peak {
-                    draw_trace_range(ui, spec_rect, &self.overlays[r].peak_bins,
-                        Color32::from_rgba_premultiplied(255, 255, 200, 180),
-                        ds.spectrum_min_db, ds.spectrum_max_db);
-                }
-                // Average trace (cyan, 1px)
-                if self.overlays[r].show_avg {
-                    draw_trace_range(ui, spec_rect, &self.overlays[r].avg_bins,
-                        Color32::from_rgba_premultiplied(100, 200, 255, 160),
-                        ds.spectrum_min_db, ds.spectrum_max_db);
-                }
-
-                // Passband overlay
-                let rx_state = self.app.rx(r).cloned().unwrap_or_default();
-                draw_passband_overlay(
-                    ui, spec_rect,
-                    snapshot.rx[r].span_hz,
-                    rx_state.filter_lo as f32,
-                    rx_state.filter_hi as f32,
-                );
-
-                // RX label
-                let is_active = r == self.app.active_rx();
-                let prefix = if is_active && num_rx > 1 { "▶ " } else { "" };
-                ui.painter_at(spec_rect).text(
-                    spec_rect.min + Vec2::new(6.0, 4.0),
-                    egui::Align2::LEFT_TOP,
-                    format!("{}RX{}  {:.3} MHz  {:?}",
-                        prefix,
-                        r + 1,
-                        snapshot.rx[r].center_freq_hz as f64 / 1.0e6,
-                        snapshot.rx[r].mode),
-                    egui::FontId::monospace(12.0),
-                    if snapshot.rx[r].enabled {
-                        Color32::LIGHT_GREEN
-                    } else {
-                        Color32::GRAY
-                    },
-                );
-
-                self.waterfalls[r].draw(ui, ctx, water_rect);
-
-                draw_vfo_marker(ui, spec_rect);
-                draw_vfo_marker(ui, water_rect);
-
-                let center_hz = snapshot.rx[r].center_freq_hz;
-                let span_hz   = snapshot.rx[r].span_hz;
-
-                // Single interact per rect — handles left-click tune
-                // AND right-click context menu on the same Response.
+                // Single response for this band — handles tune, pan, context menu.
+                // Created early so we can read drag_delta before drawing.
                 let spec_resp = ui.interact(
                     spec_rect,
                     egui::Id::new(("spec-tune", r)),
                     Sense::click_and_drag(),
                 );
+
+                // --- Zoom via modifier+scroll ---
+                let is_over_spec = ui.ctx().pointer_hover_pos()
+                    .is_some_and(|p| band_rect.contains(p));
+
+                let zoom_scroll: f32 = ui.input(|i| {
+                    if !is_over_spec { return 0.0; }
+                    i.events.iter().filter_map(|e| {
+                        if let egui::Event::MouseWheel { delta, modifiers, .. } = e {
+                            if modifiers.alt || modifiers.ctrl || modifiers.command {
+                                return Some(delta.y);
+                            }
+                        }
+                        None
+                    }).sum()
+                });
+                if zoom_scroll.abs() > 0.001 {
+                    let step = if zoom_scroll > 0.0 { -0.1_f32 } else { 0.1 };
+                    self.view_states[r].z_factor =
+                        (self.view_states[r].z_factor + step).clamp(0.05, 1.0);
+                }
+
+                // --- Pan via Middle-drag ---
+                if spec_resp.dragged_by(egui::PointerButton::Middle) {
+                    let delta_x = spec_resp.drag_delta().x;
+                    let vis_w = (hi_bin - lo_bin) as f32;
+                    let max_lo = (n_bins as f32 - vis_w).max(1.0);
+                    let p_delta = -delta_x / spec_rect.width() * vis_w / max_lo;
+                    self.view_states[r].p_slider =
+                        (self.view_states[r].p_slider + p_delta).clamp(0.0, 1.0);
+                }
+
+                // --- Spectrum draw (zoomed slice) ---
+                let vis_bins = &snapshot.rx[r].spectrum_bins_db
+                    [lo_bin.min(n_bins)..hi_bin.min(n_bins)];
+                let ds = self.app.display_settings();
+                draw_spectrum_ex(
+                    ui, spec_rect, vis_bins,
+                    ds.spectrum_min_db, ds.spectrum_max_db,
+                    false, // fill disabled — convex_polygon glitches on non-convex shapes
+                );
+
+                // Peak hold trace (white, 1px)
+                if self.overlays[r].show_peak {
+                    let peak_slice = &self.overlays[r].peak_bins
+                        [lo_bin.min(n_bins)..hi_bin.min(n_bins)];
+                    draw_trace_range(ui, spec_rect, peak_slice,
+                        Color32::from_rgba_premultiplied(255, 255, 200, 180),
+                        ds.spectrum_min_db, ds.spectrum_max_db);
+                }
+                // Average trace (cyan, 1px)
+                if self.overlays[r].show_avg {
+                    let avg_slice = &self.overlays[r].avg_bins
+                        [lo_bin.min(n_bins)..hi_bin.min(n_bins)];
+                    draw_trace_range(ui, spec_rect, avg_slice,
+                        Color32::from_rgba_premultiplied(100, 200, 255, 160),
+                        ds.spectrum_min_db, ds.spectrum_max_db);
+                }
+
+                // Passband overlay (absolute Hz)
+                let rx_state = self.app.rx(r).cloned().unwrap_or_default();
+                let center_f = center_hz as f32;
+                draw_passband_overlay(
+                    ui, spec_rect, lo_hz, hi_hz,
+                    center_f + rx_state.filter_lo as f32,
+                    center_f + rx_state.filter_hi as f32,
+                );
+
+                // Frequency axis strip
+                draw_freq_axis(&ui.painter_at(axis_rect), axis_rect, lo_hz, hi_hz);
+
+                // RX label
+                let is_active = r == self.app.active_rx();
+                let prefix = if is_active && num_rx > 1 { "▶ " } else { "" };
+                let zoom_label = if self.view_states[r].z_factor < 0.99 {
+                    format!("  [{:.0}×]", 1.0 / self.view_states[r].z_factor)
+                } else {
+                    String::new()
+                };
+                ui.painter_at(spec_rect).text(
+                    spec_rect.min + Vec2::new(6.0, 4.0),
+                    egui::Align2::LEFT_TOP,
+                    format!("{}RX{}  {:.3} MHz  {:?}{}",
+                        prefix,
+                        r + 1,
+                        center_hz as f64 / 1.0e6,
+                        snapshot.rx[r].mode,
+                        zoom_label),
+                    egui::FontId::monospace(12.0),
+                    if snapshot.rx[r].enabled { Color32::LIGHT_GREEN } else { Color32::GRAY },
+                );
+
+                // Waterfall (UV-cropped for zoom)
+                self.waterfalls[r].draw(ui, ctx, water_rect, uv_lo, uv_hi);
+
+                // VFO marker at correct position within the visible window
+                let vfo_frac = if (hi_hz - lo_hz).abs() > 0.1 {
+                    (center_hz as f32 - lo_hz) / (hi_hz - lo_hz)
+                } else {
+                    0.5
+                };
+                let vfo_spec_x  = spec_rect.left()  + vfo_frac * spec_rect.width();
+                let vfo_water_x = water_rect.left() + vfo_frac * water_rect.width();
+                draw_vfo_marker(&ui.painter_at(spec_rect),  spec_rect,  vfo_spec_x);
+                draw_vfo_marker(&ui.painter_at(water_rect), water_rect, vfo_water_x);
+
+                // --- Tune interaction + context menu ---
                 spec_resp.context_menu(|ui| {
                     ui.checkbox(&mut self.overlays[r].show_peak, "Peak hold");
                     ui.checkbox(&mut self.overlays[r].show_avg,  "Average");
+                    if ui.button("Reset zoom").clicked() {
+                        self.view_states[r] = RxViewState::default();
+                        ui.close();
+                    }
                 });
                 let (new_freq, clicked) = tune_from_response(
-                    &spec_resp, ui, spec_rect, center_hz, span_hz,
+                    &spec_resp, ui, spec_rect, center_hz, lo_hz, hi_hz,
                 );
                 if let Some(f) = new_freq { pending_tunes.push((r, f)); }
                 if clicked { newly_active = Some(r); }
@@ -1946,7 +2047,7 @@ impl EguiView {
                 let (new_freq, clicked) = handle_tune_input(
                     ui, water_rect,
                     egui::Id::new(("water-tune", r)),
-                    center_hz, span_hz,
+                    center_hz, lo_hz, hi_hz,
                 );
                 if let Some(f) = new_freq { pending_tunes.push((r, f)); }
                 if clicked { newly_active = Some(r); }
@@ -2021,20 +2122,24 @@ fn apply_dark_theme(ctx: &egui::Context) {
 
 // --- Tuning interaction --------------------------------------------------
 
-fn draw_vfo_marker(ui: &egui::Ui, rect: Rect) {
-    let x = rect.center().x;
-    ui.painter_at(rect).line_segment(
+fn draw_vfo_marker(painter: &egui::Painter, rect: Rect, x: f32) {
+    let x = x.clamp(rect.left(), rect.right());
+    painter.line_segment(
         [Pos2::new(x, rect.min.y), Pos2::new(x, rect.max.y)],
         Stroke::new(1.0, Color32::from_rgba_premultiplied(255, 255, 255, 160)),
     );
 }
 
+/// Handle click-to-tune and scroll-to-tune on a rect.
+/// `lo_hz` / `hi_hz` define the currently-visible Hz range (absolute).
+/// Ctrl+scroll is reserved for zoom and is skipped here.
 fn handle_tune_input(
     ui: &mut egui::Ui,
     rect: Rect,
     id: egui::Id,
     center_hz: u32,
-    span_hz: u32,
+    lo_hz: f32,
+    hi_hz: f32,
 ) -> (Option<u32>, bool) {
     let response = ui.interact(rect, id, Sense::click_and_drag());
 
@@ -2043,9 +2148,9 @@ fn handle_tune_input(
 
     if clicked {
         if let Some(pos) = response.interact_pointer_pos() {
-            let dx_norm = (pos.x - rect.center().x) / rect.width();
-            let delta_hz = (dx_norm * span_hz as f32).round() as i64;
-            let next = (center_hz as i64 + delta_hz).max(0) as u32;
+            let t = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+            let click_hz = lo_hz + t * (hi_hz - lo_hz);
+            let next = (click_hz.round() as i64).max(0) as u32;
             if next != center_hz {
                 new_freq = Some(next);
             }
@@ -2054,21 +2159,12 @@ fn handle_tune_input(
 
     if response.hovered() {
         let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
-        if scroll_y.abs() > 0.5 {
-            let modifiers = ui.input(|i| i.modifiers);
-            let step_hz: i64 = if modifiers.ctrl {
-                1000
-            } else if modifiers.shift {
-                100
-            } else {
-                10
-            };
+        let modifiers = ui.input(|i| i.modifiers);
+        // Ctrl+scroll = zoom (handled in draw_main). Skip tune here.
+        if scroll_y.abs() > 0.5 && !modifiers.ctrl {
+            let step_hz: i64 = if modifiers.shift { 100 } else { 10 };
             let ticks = (scroll_y / 50.0).round() as i64;
-            let ticks = if ticks == 0 {
-                if scroll_y > 0.0 { 1 } else { -1 }
-            } else {
-                ticks
-            };
+            let ticks = if ticks == 0 { if scroll_y > 0.0 { 1 } else { -1 } } else { ticks };
             let base = new_freq.unwrap_or(center_hz) as i64;
             let next = (base + ticks * step_hz).max(0) as u32;
             if next as i64 != base {
@@ -2082,21 +2178,24 @@ fn handle_tune_input(
 
 /// Extract tune intent from an already-obtained Response (used when
 /// the spectrum rect also needs a context_menu on the same Response).
+/// `lo_hz` / `hi_hz` define the currently-visible Hz range (absolute).
+/// Ctrl+scroll is reserved for zoom and is skipped here.
 fn tune_from_response(
     response: &egui::Response,
     ui: &egui::Ui,
     rect: Rect,
     center_hz: u32,
-    span_hz: u32,
+    lo_hz: f32,
+    hi_hz: f32,
 ) -> (Option<u32>, bool) {
     let mut new_freq: Option<u32> = None;
     let clicked = response.clicked() || response.dragged();
 
     if clicked {
         if let Some(pos) = response.interact_pointer_pos() {
-            let dx_norm = (pos.x - rect.center().x) / rect.width();
-            let delta_hz = (dx_norm * span_hz as f32).round() as i64;
-            let next = (center_hz as i64 + delta_hz).max(0) as u32;
+            let t = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
+            let click_hz = lo_hz + t * (hi_hz - lo_hz);
+            let next = (click_hz.round() as i64).max(0) as u32;
             if next != center_hz {
                 new_freq = Some(next);
             }
@@ -2105,21 +2204,12 @@ fn tune_from_response(
 
     if response.hovered() {
         let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
-        if scroll_y.abs() > 0.5 {
-            let modifiers = ui.input(|i| i.modifiers);
-            let step_hz: i64 = if modifiers.ctrl {
-                1000
-            } else if modifiers.shift {
-                100
-            } else {
-                10
-            };
+        let modifiers = ui.input(|i| i.modifiers);
+        // Ctrl+scroll = zoom (handled in draw_main). Skip tune here.
+        if scroll_y.abs() > 0.5 && !modifiers.ctrl {
+            let step_hz: i64 = if modifiers.shift { 100 } else { 10 };
             let ticks = (scroll_y / 50.0).round() as i64;
-            let ticks = if ticks == 0 {
-                if scroll_y > 0.0 { 1 } else { -1 }
-            } else {
-                ticks
-            };
+            let ticks = if ticks == 0 { if scroll_y > 0.0 { 1 } else { -1 } } else { ticks };
             let base = new_freq.unwrap_or(center_hz) as i64;
             let next = (base + ticks * step_hz).max(0) as u32;
             if next as i64 != base {
@@ -2152,29 +2242,32 @@ fn draw_trace_range(ui: &egui::Ui, rect: Rect, bins: &[f32], color: Color32, min
 
 // --- Passband overlay ----------------------------------------------------
 
-fn draw_passband_overlay(ui: &egui::Ui, rect: Rect, span_hz: u32, f_lo: f32, f_hi: f32) {
-    if span_hz == 0 || f_hi <= f_lo {
+/// Draw the filter passband shading on the spectrum.
+/// `lo_hz` / `hi_hz` are the absolute Hz boundaries of the visible
+/// spectrum window; `filter_lo_abs` / `filter_hi_abs` are the absolute
+/// Hz edges of the passband.
+fn draw_passband_overlay(
+    ui: &egui::Ui,
+    rect: Rect,
+    lo_hz: f32,
+    hi_hz: f32,
+    filter_lo_abs: f32,
+    filter_hi_abs: f32,
+) {
+    let span = hi_hz - lo_hz;
+    if span <= 0.0 || filter_hi_abs <= filter_lo_abs {
         return;
     }
-    let span = span_hz as f32;
-    let to_x = |hz: f32| -> f32 {
-        let t = (hz / span) + 0.5;
-        rect.min.x + t.clamp(0.0, 1.0) * rect.width()
+    let to_x = |abs_hz: f32| -> f32 {
+        rect.left() + ((abs_hz - lo_hz) / span).clamp(0.0, 1.0) * rect.width()
     };
-    let x0 = to_x(f_lo);
-    let x1 = to_x(f_hi);
+    let x0 = to_x(filter_lo_abs);
+    let x1 = to_x(filter_hi_abs);
     if (x1 - x0).abs() < 1.0 {
         return;
     }
-    let band = Rect::from_min_max(
-        Pos2::new(x0, rect.min.y),
-        Pos2::new(x1, rect.max.y),
-    );
-    ui.painter_at(rect).rect_filled(
-        band,
-        0.0,
-        Color32::from_rgba_premultiplied(80, 200, 255, 30),
-    );
+    let band = Rect::from_min_max(Pos2::new(x0, rect.min.y), Pos2::new(x1, rect.max.y));
+    ui.painter_at(rect).rect_filled(band, 0.0, Color32::from_rgba_premultiplied(80, 200, 255, 30));
 }
 
 // --- Spectrum (immediate-mode line draw) --------------------------------
@@ -2256,6 +2349,100 @@ fn level_color(db: f32) -> Color32 {
     else                { Color32::from_rgb(220, 80, 60) }
 }
 
+// --- Zoom / pan view state -----------------------------------------------
+
+/// Per-RX display zoom + pan state. Pure display — never moves the VFO.
+#[derive(Clone)]
+struct RxViewState {
+    /// Zoom factor ∈ [0.05, 1.0].  1.0 = full span; 0.05 = 5% of span.
+    /// Perceptually linear: `t = log10(9·z + 1)` matches Thetis exactly.
+    z_factor: f32,
+    /// Pan position ∈ [0, 1].  0 = anchored at left edge; 1 = right edge.
+    p_slider: f32,
+}
+
+impl Default for RxViewState {
+    fn default() -> Self {
+        RxViewState { z_factor: 1.0, p_slider: 0.5 }
+    }
+}
+
+impl RxViewState {
+    /// Return the `[lo_bin, hi_bin)` slice of the spectrum that is
+    /// currently visible given the zoom + pan.
+    ///
+    /// `z_factor = 1.0` → all bins visible (no zoom).
+    /// `z_factor = 0.05` → 5 % of bins visible (20× zoom).
+    fn visible_bins(&self, n_bins: usize) -> (usize, usize) {
+        let vis = ((n_bins as f32 * self.z_factor) as usize)
+            .max(2)
+            .min(n_bins);
+        let max_lo = n_bins - vis;
+        let lo = ((self.p_slider * max_lo as f32) as usize).min(max_lo);
+        (lo, lo + vis)
+    }
+}
+
+// --- Frequency axis -------------------------------------------------------
+
+/// Draw a frequency-labelled axis strip.
+/// The strip is `rect` (typically 18 px tall), `lo_hz`…`hi_hz` are the
+/// absolute Hz boundaries of the currently-visible spectrum window.
+fn draw_freq_axis(painter: &egui::Painter, rect: Rect, lo_hz: f32, hi_hz: f32) {
+    let span = hi_hz - lo_hz;
+    if span <= 0.0 || rect.width() < 4.0 {
+        return;
+    }
+    painter.rect_filled(rect, 0.0, egui::Color32::from_rgb(8, 10, 14));
+
+    // Adaptive tick step: pick the smallest step giving ≤10 ticks.
+    // Candidates: 1, 2, 2.5, 5 × successive powers of 10.
+    const STEPS: [f32; 4] = [1.0, 2.0, 2.5, 5.0];
+    let mut tick_hz = 1.0_f32;
+    'find: for exp in -1_i32..=10 {
+        let scale = 10.0_f32.powi(exp);
+        for &s in &STEPS {
+            let candidate = s * scale;
+            if span / candidate <= 10.0 {
+                tick_hz = candidate;
+                break 'find;
+            }
+        }
+    }
+
+    // Decimal places to display: enough to resolve tick_hz in MHz.
+    let decimals: usize = if tick_hz >= 1_000_000.0 { 0 }
+        else if tick_hz >= 100_000.0 { 1 }
+        else if tick_hz >= 10_000.0  { 2 }
+        else                          { 3 };
+
+    // Iterate by integer tick index to avoid floating-point drift and
+    // use integer modulo for major/minor classification (no flicker).
+    let first_n = (lo_hz / tick_hz).ceil() as i64;
+    let last_n  = (hi_hz / tick_hz).floor() as i64;
+    for n in first_n..=last_n {
+        let f = n as f64 * tick_hz as f64;  // f64 for sub-Hz precision
+        let x = rect.left() + ((f as f32 - lo_hz) / span) * rect.width();
+        // Major tick every 5 minor ticks — stable integer test
+        let is_major = n % 5 == 0;
+        let tick_h: f32 = if is_major { 6.0 } else { 4.0 };
+        painter.line_segment(
+            [egui::Pos2::new(x, rect.top()), egui::Pos2::new(x, rect.top() + tick_h)],
+            egui::Stroke::new(1.0, egui::Color32::from_gray(90)),
+        );
+        if is_major {
+            let label = format!("{:.prec$}", f / 1_000_000.0, prec = decimals);
+            painter.text(
+                egui::Pos2::new(x, rect.top() + tick_h + 1.0),
+                egui::Align2::CENTER_TOP,
+                label,
+                egui::FontId::monospace(8.0),
+                egui::Color32::from_gray(150),
+            );
+        }
+    }
+}
+
 // --- Waterfall (egui-specific texture cache) ----------------------------
 
 /// Per-RX scrolling waterfall display, owned by `EguiView` rather than
@@ -2263,20 +2450,24 @@ fn level_color(db: f32) -> Color32 {
 struct Waterfall {
     pixels:  Vec<Color32>,
     texture: Option<TextureHandle>,
+    /// Unique index used to give each waterfall its own texture name
+    /// so egui doesn't confuse them when multiple RX bands are active.
+    rx_idx:  usize,
 }
 
 impl Waterfall {
     const WIDTH:  usize = SPECTRUM_BINS;
     const HEIGHT: usize = 256;
 
-    fn new() -> Self {
+    fn new(rx_idx: usize) -> Self {
         Waterfall {
             pixels:  vec![Color32::BLACK; Self::WIDTH * Self::HEIGHT],
             texture: None,
+            rx_idx,
         }
     }
 
-    fn push_row(&mut self, bins_db: &[f32]) {
+    fn push_row(&mut self, bins_db: &[f32], min_db: f32, max_db: f32, palette: WaterfallPalette) {
         let row_len = Self::WIDTH;
         self.pixels.copy_within(row_len.., 0);
 
@@ -2285,11 +2476,14 @@ impl Waterfall {
         let n = bins_db.len().min(row_len);
         for (i, px) in new_row.iter_mut().enumerate().take(n) {
             let src_idx = (i * bins_db.len()) / row_len;
-            *px = db_to_waterfall_color(bins_db[src_idx]);
+            *px = db_to_waterfall_color(bins_db[src_idx], min_db, max_db, palette);
         }
     }
 
-    fn draw(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, rect: Rect) {
+    /// Draw the waterfall into `rect`.
+    /// `uv_lo` / `uv_hi` ∈ [0, 1] control horizontal UV cropping for
+    /// zoom: 0.0 = left edge of the full spectrum, 1.0 = right edge.
+    fn draw(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, rect: Rect, uv_lo: f32, uv_hi: f32) {
         ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
 
         let image = ColorImage {
@@ -2297,34 +2491,105 @@ impl Waterfall {
             pixels: self.pixels.clone(),
             source_size: Vec2::new(Self::WIDTH as f32, Self::HEIGHT as f32),
         };
+        let label = format!("waterfall_{}", self.rx_idx);
         let tex = self.texture.get_or_insert_with(|| {
-            ctx.load_texture("waterfall", image.clone(), TextureOptions::LINEAR)
+            ctx.load_texture(&label, image.clone(), TextureOptions::LINEAR)
         });
         tex.set(image, TextureOptions::LINEAR);
 
+        let uv_lo = uv_lo.clamp(0.0, 1.0);
+        let uv_hi = uv_hi.clamp(uv_lo, 1.0);
         ui.painter_at(rect).image(
             tex.id(),
             rect,
-            Rect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(1.0, 1.0)),
+            Rect::from_min_max(Pos2::new(uv_lo, 0.0), Pos2::new(uv_hi, 1.0)),
             Color32::WHITE,
         );
     }
 }
 
-fn db_to_waterfall_color(db: f32) -> Color32 {
-    let t = ((db + 120.0) / 120.0).clamp(0.0, 1.0);
-    if t < 0.25 {
-        let b = (t / 0.25 * 255.0) as u8;
-        Color32::from_rgb(0, 0, b)
-    } else if t < 0.5 {
-        let g = ((t - 0.25) / 0.25 * 255.0) as u8;
-        Color32::from_rgb(0, g, 255)
-    } else if t < 0.75 {
-        let r = ((t - 0.5) / 0.25 * 255.0) as u8;
-        let b = 255 - r;
-        Color32::from_rgb(r, 255, b)
-    } else {
-        let g = 255 - ((t - 0.75) / 0.25 * 255.0) as u8;
-        Color32::from_rgb(255, g, 0)
+/// Linearly interpolate between two RGB colours at parameter `t` ∈ [0,1].
+#[inline]
+fn lerp_color(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> Color32 {
+    let r = (a.0 as f32 + (b.0 as f32 - a.0 as f32) * t).round() as u8;
+    let g = (a.1 as f32 + (b.1 as f32 - a.1 as f32) * t).round() as u8;
+    let b_ = (a.2 as f32 + (b.2 as f32 - a.2 as f32) * t).round() as u8;
+    Color32::from_rgb(r, g, b_)
+}
+
+/// Interpolate across a list of `(stop_t, r, g, b)` stops.
+#[inline]
+fn lerp_stops(stops: &[(f32, u8, u8, u8)], t: f32) -> Color32 {
+    if stops.len() < 2 { return Color32::BLACK; }
+    // Find bracketing pair
+    let mut lo = &stops[0];
+    let mut hi = &stops[1];
+    for i in 1..stops.len() {
+        if t <= stops[i].0 {
+            lo = &stops[i - 1];
+            hi = &stops[i];
+            break;
+        }
+        lo = &stops[i];
+        hi = &stops[i];
+    }
+    let span = hi.0 - lo.0;
+    let local_t = if span > 0.0 { ((t - lo.0) / span).clamp(0.0, 1.0) } else { 0.0 };
+    lerp_color((lo.1, lo.2, lo.3), (hi.1, hi.2, hi.3), local_t)
+}
+
+fn db_to_waterfall_color(db: f32, min_db: f32, max_db: f32, palette: WaterfallPalette) -> Color32 {
+    let range = max_db - min_db;
+    let t = if range.abs() < 0.001 { 0.0 } else { ((db - min_db) / range).clamp(0.0, 1.0) };
+
+    match palette {
+        WaterfallPalette::Enhanced => {
+            // Exact Thetis "Enhanced" palette (PanDisplay.cs:2470-2635)
+            const STOPS: &[(f32, u8, u8, u8)] = &[
+                (0.0 / 9.0, 0,   0,   0),
+                (2.0 / 9.0, 0,   0,   255),
+                (3.0 / 9.0, 0,   255, 255),
+                (4.0 / 9.0, 0,   255, 0),
+                (5.0 / 9.0, 255, 255, 0),
+                (7.0 / 9.0, 255, 0,   0),
+                (8.0 / 9.0, 255, 0,   255),
+                (1.0,        192, 124, 255),
+            ];
+            lerp_stops(STOPS, t)
+        }
+        WaterfallPalette::Classic => {
+            // Blue → magenta → red → orange (previous Arion style)
+            const STOPS: &[(f32, u8, u8, u8)] = &[
+                (0.00, 0,   0,   128),
+                (0.50, 180, 0,   180),
+                (0.75, 200, 0,   0),
+                (1.00, 255, 140, 0),
+            ];
+            lerp_stops(STOPS, t)
+        }
+        WaterfallPalette::Greyscale => {
+            let v = (t * 255.0).round() as u8;
+            Color32::from_gray(v)
+        }
+        WaterfallPalette::Thermal => {
+            const STOPS: &[(f32, u8, u8, u8)] = &[
+                (0.00, 0,   0,   0),
+                (0.30, 128, 0,   128),
+                (0.60, 255, 64,  0),
+                (0.85, 255, 200, 0),
+                (1.00, 255, 255, 255),
+            ];
+            lerp_stops(STOPS, t)
+        }
+        WaterfallPalette::Spectran => {
+            // Black → dark green → bright green (Spectran-style)
+            const STOPS: &[(f32, u8, u8, u8)] = &[
+                (0.00, 0,  0,   0),
+                (0.40, 0,  80,  0),
+                (0.70, 0,  200, 50),
+                (1.00, 180, 255, 100),
+            ];
+            lerp_stops(STOPS, t)
+        }
     }
 }
