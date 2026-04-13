@@ -1492,6 +1492,16 @@ impl EguiView {
                 self.app.display_settings_mut().waterfall_palette = palette;
             }
         });
+
+        ui.horizontal(|ui| {
+            ui.label("Waterfall speed:");
+            let mut speed = ds.waterfall_speed;
+            if ui.add(egui::Slider::new(&mut speed, 1..=8)
+                .text("frames/row")).changed()
+            {
+                self.app.display_settings_mut().waterfall_speed = speed;
+            }
+        });
     }
 
     fn draw_setup_dsp(&mut self, ui: &mut egui::Ui) {
@@ -1863,6 +1873,7 @@ impl EguiView {
                 ds_pre.spectrum_min_db,
                 ds_pre.spectrum_max_db,
                 ds_pre.waterfall_palette,
+                ds_pre.waterfall_speed,
             );
             self.overlays[r].update(&snapshot.rx[r].spectrum_bins_db);
         }
@@ -2557,6 +2568,14 @@ struct Waterfall {
     /// Unique index used to give each waterfall its own texture name
     /// so egui doesn't confuse them when multiple RX bands are active.
     rx_idx:  usize,
+    /// Frame counter: incremented every call; a row is only pushed when
+    /// `frame_counter % speed == 0` (speed ∈ [1, 8]).
+    frame_counter: u32,
+    /// Total rows actually pushed (mod 2^32 — only the low bits matter).
+    rows_pushed: u32,
+    /// UTC second (Unix epoch) recorded each time a row is actually pushed.
+    /// Front = oldest (top of waterfall), back = newest (bottom).
+    row_timestamps: std::collections::VecDeque<u64>,
 }
 
 impl Waterfall {
@@ -2568,10 +2587,21 @@ impl Waterfall {
             pixels:  vec![Color32::BLACK; Self::WIDTH * Self::HEIGHT],
             texture: None,
             rx_idx,
+            frame_counter: 0,
+            rows_pushed: 0,
+            row_timestamps: std::collections::VecDeque::with_capacity(Self::HEIGHT),
         }
     }
 
-    fn push_row(&mut self, bins_db: &[f32], min_db: f32, max_db: f32, palette: WaterfallPalette) {
+    /// Push a new spectrum row at the given `speed` (1 = every frame, 8 = every 8th frame).
+    fn push_row(&mut self, bins_db: &[f32], min_db: f32, max_db: f32,
+                palette: WaterfallPalette, speed: u8) {
+        let speed = speed.max(1) as u32;
+        self.frame_counter = self.frame_counter.wrapping_add(1);
+        if !self.frame_counter.is_multiple_of(speed) {
+            return;
+        }
+
         let row_len = Self::WIDTH;
         self.pixels.copy_within(row_len.., 0);
 
@@ -2582,6 +2612,17 @@ impl Waterfall {
             let src_idx = (i * bins_db.len()) / row_len;
             *px = db_to_waterfall_color(bins_db[src_idx], min_db, max_db, palette);
         }
+
+        // Record timestamp: shift old entries up (pop front if full), push newest at back.
+        if self.row_timestamps.len() >= Self::HEIGHT {
+            self.row_timestamps.pop_front();
+        }
+        let unix_now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        self.row_timestamps.push_back(unix_now);
+        self.rows_pushed = self.rows_pushed.wrapping_add(1);
     }
 
     /// Draw the waterfall into `rect`.
@@ -2603,12 +2644,54 @@ impl Waterfall {
 
         let uv_lo = uv_lo.clamp(0.0, 1.0);
         let uv_hi = uv_hi.clamp(uv_lo, 1.0);
-        ui.painter_at(rect).image(
+        let painter = ui.painter_at(rect);
+        painter.image(
             tex.id(),
             rect,
             Rect::from_min_max(Pos2::new(uv_lo, 0.0), Pos2::new(uv_hi, 1.0)),
             Color32::WHITE,
         );
+
+        // Time labels on the right edge.
+        // Labels scroll with the waterfall: phase = rows_pushed % step_rows shifts
+        // all label positions by one row each time a new row is pushed, so labels
+        // appear to drift upward in sync with the data. Alpha: unmultiplied so that
+        // low-alpha values actually become transparent (premultiplied with r>a is invalid).
+        let n = self.row_timestamps.len();
+        if n >= 2 {
+            let px_per_row = rect.height() / Self::HEIGHT as f32;
+            let step_rows = ((60.0 / px_per_row).round() as usize).max(1);
+            let phase = self.rows_pushed as usize % step_rows;
+
+            for k in 0.. {
+                let rows_from_bottom = k * step_rows + phase;
+                if rows_from_bottom >= Self::HEIGHT { break; }
+
+                // Alpha: bright at bottom (rows_from_bottom small), fades toward top.
+                let alpha = ((1.0 - rows_from_bottom as f32 / Self::HEIGHT as f32)
+                    * 210.0) as u8;
+                if alpha < 20 { break; }
+
+                // Newest timestamp = n-1 (bottom). Go back by rows_from_bottom.
+                let ts_idx = match n.checked_sub(1 + rows_from_bottom) {
+                    Some(i) => i,
+                    None => break,
+                };
+                let unix_ts = self.row_timestamps[ts_idx];
+                let hh = (unix_ts / 3600) % 24;
+                let mm = (unix_ts / 60) % 60;
+                let ss = unix_ts % 60;
+
+                let screen_y = rect.bottom() - rows_from_bottom as f32 * px_per_row;
+                painter.text(
+                    egui::pos2(rect.right() - 4.0, screen_y),
+                    egui::Align2::RIGHT_BOTTOM,
+                    format!("{hh:02}:{mm:02}:{ss:02}Z"),
+                    egui::FontId::monospace(9.0),
+                    Color32::from_rgba_unmultiplied(200, 200, 200, alpha),
+                );
+            }
+        }
     }
 }
 
