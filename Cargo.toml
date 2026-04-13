@@ -10,6 +10,7 @@ members = [
     "crates/arion-settings",
     "crates/arion-app",
     "crates/arion-script",
+    "crates/arion-rigctld",
     "crates/arion-egui",
     "crates/arion-tui",
     "apps/arion",
@@ -74,6 +75,7 @@ arion-core = { path = "crates/arion-core" }
 arion-settings = { path = "crates/arion-settings" }
 arion-app = { path = "crates/arion-app" }
 arion-script = { path = "crates/arion-script" }
+arion-rigctld = { path = "crates/arion-rigctld" }
 arion-egui = { path = "crates/arion-egui" }
 arion-tui = { path = "crates/arion-tui" }
 

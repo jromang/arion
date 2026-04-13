@@ -17,6 +17,7 @@
 #![forbid(unsafe_code)]
 
 use std::path::PathBuf;
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -27,7 +28,9 @@ use arion_app::{
     SMETER_DBFS_TO_DBM_OFFSET,
 };
 use arion_core::{WdspMode, MAX_RX, SPECTRUM_BINS};
-use arion_script::{ReplLineKind, ScriptEngine};
+use arion_script::{FnHandle, ReplLineKind, ScriptEngine};
+
+mod script_ui;
 use arion_settings::Memory;
 
 /// One-stop entry point for the binary: create and run the app.
@@ -113,6 +116,14 @@ pub struct EguiView {
     script_tabs: Vec<ScriptTab>,
     /// Currently active script tab index.
     active_script_tab: usize,
+    /// rigctld request sender (cloned to session threads).
+    rigctld_tx:     mpsc::Sender<arion_rigctld::RigRequest>,
+    /// rigctld request receiver (drained every frame).
+    rigctld_rx:     mpsc::Receiver<arion_rigctld::RigRequest>,
+    /// Active rigctld server handle, if running.
+    rigctld_handle: Option<arion_rigctld::RigctldHandle>,
+    /// Last-known rigctld status string for the Setup UI.
+    rigctld_status: String,
 }
 
 /// One script editor tab: a buffer that may or may not be backed by
@@ -169,7 +180,9 @@ impl EguiView {
         let waterfalls = (0..MAX_RX).map(|_| Waterfall::new()).collect();
         let overlays   = (0..MAX_RX).map(|_| SpectrumOverlay::new()).collect();
 
-        EguiView {
+        let (rigctld_tx, rigctld_rx) = mpsc::channel::<arion_rigctld::RigRequest>();
+
+        let mut view = EguiView {
             app,
             waterfalls,
             overlays,
@@ -179,6 +192,40 @@ impl EguiView {
             script_engine:      ScriptEngine::default(),
             script_tabs:        vec![ScriptTab::scratch(1)],
             active_script_tab:  0,
+            rigctld_tx,
+            rigctld_rx,
+            rigctld_handle:     None,
+            rigctld_status:     "stopped".into(),
+        };
+        view.load_startup_script();
+        // Auto-start rigctld if enabled in settings.
+        if view.app.network_settings().rigctld_enabled {
+            view.start_rigctld();
+        }
+        view
+    }
+
+    /// Load and run `~/.config/arion/startup.rhai` if it exists.
+    /// Silent when the file is absent. I/O or evaluation errors log
+    /// a warning and are pushed as a REPL error line so the user can
+    /// see them when they open the Scripts window.
+    fn load_startup_script(&mut self) {
+        let Some(path) = arion_script::startup_script_path() else {
+            return;
+        };
+        let source = match std::fs::read_to_string(&path) {
+            Ok(s) => s,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
+            Err(e) => {
+                let msg = format!("startup.rhai: read error: {e}");
+                tracing::warn!(path = %path.display(), "{msg}");
+                self.script_engine.push_output(ReplLineKind::Error, msg);
+                return;
+            }
+        };
+        tracing::info!(path = %path.display(), "loading startup script");
+        if let Err(e) = self.script_engine.run_script(&source, &mut self.app) {
+            tracing::warn!(error = %e, "startup.rhai evaluation failed");
         }
     }
 }
@@ -192,6 +239,9 @@ impl eframe::App for EguiView {
         // Per-frame app tick: drives debounced auto-save (and, in
         // phase D.12, the script scheduler + event bus).
         self.app.tick(Instant::now());
+
+        // Drain rigctld requests arriving from session threads.
+        arion_rigctld::drain(&mut self.app, &self.rigctld_rx);
 
         // --- Arion-style panel layout (D.1) ---
         //
@@ -273,12 +323,18 @@ impl eframe::App for EguiView {
         if self.app.window_open(WindowKind::Setup) {
             self.draw_setup_window(&ctx);
         }
+
+        // Scripted windows (declared from Rhai via `window(id, title, ||…)`).
+        script_ui::render_script_ui(&ctx, &mut self.script_engine, &mut self.app);
     }
 
     /// Final flush on window close. eframe calls this exactly once
     /// after the user closes the viewport, so it's the right place
     /// to disconnect the radio cleanly and persist the last state.
     fn on_exit(&mut self) {
+        if let Some(h) = self.rigctld_handle.take() {
+            h.stop();
+        }
         self.app.shutdown();
     }
 }
@@ -580,6 +636,28 @@ impl EguiView {
                 ui.label("Arion — Phase D");
                 ui.hyperlink_to("Source", "https://github.com/jeff/arion");
             });
+
+            // Scripts menu: populated dynamically from `menu_item(path, fn)`.
+            let items: Vec<(String, FnHandle)> = {
+                let ui_state = self.script_engine.ui_state();
+                let s = ui_state.borrow();
+                s.menu_items.clone()
+            };
+            if !items.is_empty() {
+                let mut to_dispatch: Vec<FnHandle> = Vec::new();
+                ui.menu_button("Scripts", |ui| {
+                    for (path, handle) in &items {
+                        let label = path.rsplit('/').next().unwrap_or(path.as_str());
+                        if ui.button(label).clicked() {
+                            to_dispatch.push(handle.clone());
+                            ui.close();
+                        }
+                    }
+                });
+                for h in to_dispatch {
+                    let _ = self.script_engine.dispatch_callback(&h, &mut self.app);
+                }
+            }
         });
     }
 
@@ -1082,15 +1160,30 @@ impl EguiView {
             ])
             .with_types([
                 "int", "float", "bool", "string", "char",
-                "Array", "Map",
+                "Array", "Map", "Radio", "Rx",
             ])
             .with_special([
-                "freq", "mode", "volume", "nr3", "nr4",
-                "band", "do_connect", "do_disconnect",
-                "print", "rx0_freq", "rx0_mode",
-                "rx1_freq", "rx1_mode", "rx0_smeter",
-                "rx1_smeter", "active_rx", "connected",
-                "num_rx",
+                // Root object
+                "radio",
+                // Rx property setters / getters (accessed via radio[i].prop)
+                "freq", "mode", "volume", "muted", "locked", "enabled",
+                "filter_lo", "filter_hi", "nr3", "nr4", "agc",
+                "nb", "nb2", "anf", "bin", "tnf",
+                "eq_enabled", "eq_gains",
+                "s_meter", "spectrum", "center_freq",
+                // Free-function action API
+                "filter", "filter_preset", "eq", "eq_band",
+                "band", "tune", "mute", "lock",
+                "active_rx", "num_rx", "connect", "disconnect",
+                "memory_save", "memory_load", "memory_delete",
+                "window", "save", "audio_device", "help",
+                // Scripted UI builders
+                "window_show", "window_hide", "window_toggle",
+                "on_change", "menu_item",
+                "label", "button", "slider", "checkbox", "text_edit",
+                "separator", "hbox", "vbox",
+                // Misc
+                "print",
             ]);
 
         let Some(tab) = self.script_tabs.get_mut(self.active_script_tab) else {
@@ -1157,7 +1250,6 @@ impl EguiView {
             return;
         }
         self.script_engine.run_line(&code, &mut self.app);
-        self.script_engine.apply_pending_commands(&mut self.app);
     }
 
     fn new_tab(&mut self) {
@@ -1246,7 +1338,7 @@ impl EguiView {
             .show(ctx, |ui| {
                 // Tab row
                 ui.horizontal(|ui| {
-                    for (i, label) in ["General", "Audio", "Display", "DSP", "Calibration"].iter().enumerate() {
+                    for (i, label) in ["General", "Audio", "Display", "DSP", "Calibration", "Network"].iter().enumerate() {
                         if ui.selectable_label(self.setup_tab == i, *label).clicked() {
                             self.setup_tab = i;
                         }
@@ -1260,6 +1352,7 @@ impl EguiView {
                     2 => self.draw_setup_display(ui),
                     3 => self.draw_setup_dsp(ui),
                     4 => self.draw_setup_calibration(ui),
+                    5 => self.draw_setup_network(ui),
                     _ => {}
                 }
             });
@@ -1448,6 +1541,78 @@ impl EguiView {
                 ui.end_row();
             }
         });
+    }
+
+    fn draw_setup_network(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("Network — rigctld server").strong());
+        ui.add_space(4.0);
+        ui.weak("Expose a Hamlib-compatible TCP server so WSJT-X, fldigi, GPredict, etc. can drive Arion.");
+        ui.add_space(6.0);
+
+        let net = self.app.network_settings().clone();
+
+        let mut enabled = net.rigctld_enabled;
+        if ui.checkbox(&mut enabled, "Enable rigctld server").changed() {
+            self.app.network_settings_mut().rigctld_enabled = enabled;
+            if enabled {
+                self.start_rigctld();
+            } else {
+                self.stop_rigctld();
+            }
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Port:");
+            let mut port = net.rigctld_port as u32;
+            let running = self.rigctld_handle.is_some();
+            let resp = ui.add_enabled(
+                !running,
+                egui::DragValue::new(&mut port).range(1u32..=65535u32).speed(1.0),
+            );
+            if resp.changed() {
+                self.app.network_settings_mut().rigctld_port = port.clamp(1, 65535) as u16;
+            }
+            if running {
+                ui.weak("(stop the server to edit)");
+            }
+        });
+
+        ui.add_space(6.0);
+        ui.label(format!("Status: {}", self.rigctld_status));
+    }
+
+    /// Spawn the rigctld server on the configured port. Updates
+    /// `rigctld_status` with a human-readable message. No-op if the
+    /// server is already running.
+    fn start_rigctld(&mut self) {
+        if self.rigctld_handle.is_some() {
+            return;
+        }
+        let port = self.app.network_settings().rigctld_port;
+        let addr: std::net::SocketAddr = match format!("127.0.0.1:{port}").parse() {
+            Ok(a) => a,
+            Err(e) => {
+                self.rigctld_status = format!("invalid address: {e}");
+                return;
+            }
+        };
+        match arion_rigctld::RigctldHandle::start(addr, self.rigctld_tx.clone()) {
+            Ok(h) => {
+                self.rigctld_status = format!("running on {}", h.addr());
+                self.rigctld_handle = Some(h);
+            }
+            Err(e) => {
+                self.rigctld_status = format!("failed: {e}");
+                tracing::warn!(error = %e, "rigctld start failed");
+            }
+        }
+    }
+
+    fn stop_rigctld(&mut self) {
+        if let Some(h) = self.rigctld_handle.take() {
+            h.stop();
+            self.rigctld_status = "stopped".into();
+        }
     }
 
     fn draw_rx_row(&mut self, ui: &mut egui::Ui, rx: usize) {

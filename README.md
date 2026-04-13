@@ -168,6 +168,30 @@ thetis-upstream/     Git submodule: original Thetis C# source (read-only referen
   device-side resampling
 - **No installer** — build from source required
 
+## Scripting
+
+Arion embeds a [Rhai](https://rhai.rs) scripting engine. The desktop
+app ships a REPL + multi-tab editor (menu *View → Scripts*), lets you
+build custom panels and menus, and auto-loads a startup script.
+
+- **Full reference** — see [`docs/SCRIPTING.md`](docs/SCRIPTING.md).
+- **Examples** — `examples/scripts/01_basics.rhai` …
+  `06_ui_complete.rhai`.
+- **Startup script** — `~/.config/arion/startup.rhai` (Linux) is
+  loaded once on launch; use it to declare persistent windows, menu
+  items, and presets.
+- **REPL help** — type `help()` or `help("topic")`.
+
+## External control (rigctld)
+
+Arion embeds a Hamlib-`rigctld`-compatible TCP server so that WSJT-X,
+fldigi, GPredict, CQRLOG and friends can drive the radio like any
+other rig. Enable it in *Setup → Network*; default port is 4532.
+
+- **Full reference** — see [`docs/RIGCTLD.md`](docs/RIGCTLD.md).
+- **WSJT-X** — *Radio = Hamlib NET rigctl*, *Network Server =
+  `127.0.0.1:4532`*, *Poll Interval = 1 s*.
+
 ## Contributing
 
 Arion is in early development. Bug reports and feature requests via

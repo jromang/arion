@@ -1,16 +1,13 @@
 [package]
-name = "arion-script"
+name = "arion-rigctld"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "Rhai scripting engine + bindings for Arion"
+description = "Hamlib rigctld-compatible TCP server for Arion"
 
 [dependencies]
 arion-app.workspace = true
 arion-core.workspace = true
-arion-settings.workspace = true
-directories.workspace = true
-rhai.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 

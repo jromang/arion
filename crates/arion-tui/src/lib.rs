@@ -211,7 +211,6 @@ impl TuiView {
                 let line = self.repl_input.clone();
                 self.repl_input.clear();
                 self.script.run_line(&line, &mut self.app);
-                self.script.apply_pending_commands(&mut self.app);
             }
             KeyCode::Char(c) => self.repl_input.push(c),
             KeyCode::Backspace => { self.repl_input.pop(); }

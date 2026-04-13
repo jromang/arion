@@ -445,6 +445,7 @@ pub struct App {
     display_settings: arion_settings::DisplaySettings,
     dsp_defaults:     arion_settings::DspDefaults,
     calibration:      arion_settings::Calibration,
+    network_settings: arion_settings::NetworkSettings,
 
     // --- Persistence (B.5) -----------------------------------------
     memories:  Vec<Memory>,
@@ -509,6 +510,7 @@ impl App {
             display_settings: settings.display,
             dsp_defaults:     settings.dsp,
             calibration:      settings.calibration,
+            network_settings: settings.network,
             memories:     settings.memories,
             open_windows: std::collections::HashMap::new(),
             last_save:    Instant::now(),
@@ -571,6 +573,13 @@ impl App {
     pub fn calibration_mut(&mut self) -> &mut arion_settings::Calibration {
         self.mark_dirty();
         &mut self.calibration
+    }
+    pub fn network_settings(&self) -> &arion_settings::NetworkSettings {
+        &self.network_settings
+    }
+    pub fn network_settings_mut(&mut self) -> &mut arion_settings::NetworkSettings {
+        self.mark_dirty();
+        &mut self.network_settings
     }
 
     // --- Write API (mut self, dispatched from frontends) ------------
@@ -971,6 +980,7 @@ impl App {
         s.display      = self.display_settings.clone();
         s.dsp          = self.dsp_defaults.clone();
         s.calibration  = self.calibration.clone();
+        s.network      = self.network_settings.clone();
         s.memories     = self.memories.clone();
         s
     }

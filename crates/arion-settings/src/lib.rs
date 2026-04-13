@@ -132,6 +132,25 @@ impl Default for DspDefaults {
     }
 }
 
+/// Network-facing services (currently only the rigctld server).
+/// Defaults are "off" so a fresh install doesn't surprise the user
+/// with an open TCP port.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct NetworkSettings {
+    pub rigctld_enabled: bool,
+    pub rigctld_port:    u16,
+}
+
+impl Default for NetworkSettings {
+    fn default() -> Self {
+        NetworkSettings {
+            rigctld_enabled: false,
+            rigctld_port:    4532,
+        }
+    }
+}
+
 /// Per-band S-meter calibration offset in dBm. Stored as a map
 /// keyed by band label ("160", "80", …). Missing entries → 0.0 dBm
 /// offset (no correction).
@@ -150,6 +169,7 @@ pub struct Settings {
     pub display:     DisplaySettings,
     pub dsp:         DspDefaults,
     pub calibration: Calibration,
+    pub network:     NetworkSettings,
     /// Per-RX state, ordered by RX index. Always at least 2 entries
     /// after a load — `Settings::ensure_rx_slots` pads with defaults
     /// so the UI can index without bounds-checking.

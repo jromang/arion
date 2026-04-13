@@ -284,14 +284,26 @@ dependencies = [
  "arion-app",
  "arion-audio",
  "arion-core",
+ "arion-rigctld",
  "arion-script",
  "arion-settings",
  "eframe",
  "egui",
  "egui_code_editor",
  "rfd",
+ "rhai",
  "tracing",
  "wgpu",
+]
+
+[[package]]
+name = "arion-rigctld"
+version = "0.0.1"
+dependencies = [
+ "arion-app",
+ "arion-core",
+ "thiserror 2.0.18",
+ "tracing",
 ]
 
 [[package]]
@@ -301,7 +313,9 @@ dependencies = [
  "arion-app",
  "arion-core",
  "arion-settings",
+ "directories",
  "rhai",
+ "thiserror 2.0.18",
  "tracing",
 ]
 

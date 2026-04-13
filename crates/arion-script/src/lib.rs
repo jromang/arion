@@ -1,313 +1,328 @@
 //! Rhai scripting engine for Arion.
 //!
-//! Provides a [`ScriptEngine`] that wraps a `rhai::Engine` with
-//! bindings to [`arion_app::App`]. Every UI action has a script
-//! equivalent — a user typing `radio.set_freq(0, 14074000)` in the
-//! REPL gets exactly the same result as clicking in the waterfall.
+//! Public façade — see [`ScriptEngine`]. The engine is designed to be
+//! called from the UI thread (egui or TUI) once per user action via
+//! [`ScriptEngine::run_line`]. Long-running scripts are capped by
+//! `Engine::set_max_operations` so the UI stays responsive.
 //!
-//! The engine is designed to be called from the UI thread (egui or
-//! TUI) once per frame via [`ScriptEngine::run_line`]. Long-running
-//! scripts are capped by `Engine::set_max_operations` so the UI
-//! stays responsive.
+//! Architectural principles:
+//! - **Single source of truth**: the engine never caches `App` state.
+//!   Every getter reads live.
+//! - **Scoped borrow**: a raw `*mut App` pointer is written to an
+//!   `Rc<RefCell<Option<*mut App>>>` at the start of `run_line` /
+//!   `invoke_callback` and cleared before the call returns, so closures
+//!   registered in the engine only see a valid App during a call.
+//! - **Registry**: each family of bindings lives in a `modules/*.rs`
+//!   file and implements `ScriptModule`. Adding an API surface is a
+//!   one-file change + one line in `modules::register_builtins`.
 
-use std::sync::{Arc, Mutex};
+pub mod ctx;
+pub mod engine;
+pub mod error;
+pub mod help_data;
+pub mod modules;
+pub mod ui_tree;
 
-use rhai::{Dynamic, Engine, Scope};
-use arion_app::App;
+pub use engine::{ReplLine, ReplLineKind, ScriptEngine};
+pub use error::ScriptError;
+pub use ui_tree::{FnHandle, ScriptWindow, UiState, Widget};
 
-/// A line of REPL output, tagged with its kind for coloring in the
-/// frontend.
-#[derive(Debug, Clone)]
-pub struct ReplLine {
-    pub kind: ReplLineKind,
-    pub text: String,
+use std::path::PathBuf;
+
+/// Default path of the user's startup script:
+/// `~/.config/arion/startup.rhai` on Linux, the platform equivalent
+/// elsewhere (macOS `Application Support`, Windows `%APPDATA%`).
+/// Returns `None` only on headless systems with no `HOME`.
+pub fn startup_script_path() -> Option<PathBuf> {
+    directories::ProjectDirs::from("rs", "arion", "arion")
+        .map(|p| p.config_dir().join("startup.rhai"))
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReplLineKind {
-    Input,
-    Result,
-    Error,
-    Print,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arion_app::{App, AppOptions};
 
-/// Wraps a `rhai::Engine` with Arion-specific function bindings and
-/// a REPL output buffer. The engine does **not** own the `App` — the
-/// caller passes `&mut App` into [`run_line`] so the borrow is
-/// scoped to the call (no `Arc<Mutex<App>>` needed, no deadlock
-/// risk).
-pub struct ScriptEngine {
-    engine: Engine,
-    scope:  Scope<'static>,
-    output: Vec<ReplLine>,
-    history: Vec<String>,
-}
+    fn new_app() -> App {
+        App::new(AppOptions::default())
+    }
 
-impl ScriptEngine {
-    pub fn new() -> Self {
-        let mut engine = Engine::new();
+    #[test]
+    fn run_line_sets_rx_frequency() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line("radio[0].freq = 14074000", &mut app);
+        assert_eq!(app.rx(0).unwrap().frequency_hz, 14_074_000);
+    }
 
-        // Cap execution to ~100 ms worth of operations so a rogue
-        // `loop {}` doesn't freeze the UI.
-        engine.set_max_operations(1_000_000);
+    #[test]
+    fn free_functions_work() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line("freq(radio.rx(0), 7074000)", &mut app);
+        assert_eq!(app.rx(0).unwrap().frequency_hz, 7_074_000);
+        eng.run_line("mode(radio.rx(0), \"LSB\")", &mut app);
+        assert_eq!(app.rx(0).unwrap().mode, arion_core::WdspMode::Lsb);
+        eng.run_line("volume(radio.rx(0), 0.75)", &mut app);
+        assert!((app.rx(0).unwrap().volume - 0.75).abs() < 1e-5);
+    }
 
-        ScriptEngine {
-            engine,
-            scope: Scope::new(),
-            output: Vec::new(),
-            history: Vec::new(),
+    #[test]
+    fn property_setters_and_getters() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line("radio[0].mode = \"USB\"", &mut app);
+        assert_eq!(app.rx(0).unwrap().mode, arion_core::WdspMode::Usb);
+        eng.run_line("radio[0].agc = \"Fast\"", &mut app);
+        assert_eq!(app.rx(0).unwrap().agc_mode, arion_app::AgcPreset::Fast);
+        eng.run_line("radio[0].muted = true", &mut app);
+        assert!(app.rx(0).unwrap().muted);
+        eng.run_line("radio[0].volume = 0.4", &mut app);
+        assert!((app.rx(0).unwrap().volume - 0.4).abs() < 1e-5);
+    }
+
+    #[test]
+    fn eq_gains_round_trip() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line(
+            "radio[0].eq_gains = [1,2,3,4,5,6,7,8,9,10,11]",
+            &mut app,
+        );
+        assert_eq!(app.rx(0).unwrap().eq_gains, [1,2,3,4,5,6,7,8,9,10,11]);
+    }
+
+    #[test]
+    fn band_jump() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line("band(\"40\")", &mut app);
+        let rx = app.active_rx();
+        // 40m default anchor is 7.074 MHz (see band_stack_default_seeded).
+        assert_eq!(app.rx(rx).unwrap().frequency_hz, 7_074_000);
+    }
+
+    #[test]
+    fn filter_preset_sets_passband() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line("radio[0].mode = \"USB\"", &mut app);
+        eng.run_line("filter_preset(radio.rx(0), \"2.4K\")", &mut app);
+        let r = app.rx(0).unwrap();
+        assert!((r.filter_hi - r.filter_lo - 2400.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn window_toggle() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line("window(\"memories\", true)", &mut app);
+        assert!(app.window_open(arion_app::WindowKind::Memories));
+        eng.run_line("toggle_window(\"memories\")", &mut app);
+        assert!(!app.window_open(arion_app::WindowKind::Memories));
+    }
+
+    #[test]
+    fn memory_save_and_load() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line("freq(radio.rx(0), 10123000)", &mut app);
+        eng.run_line("memory_save(\"test\")", &mut app);
+        assert_eq!(app.memories().len(), 1);
+        assert_eq!(app.memories()[0].freq_hz, 10_123_000);
+        eng.run_line("freq(radio.rx(0), 3500000)", &mut app);
+        eng.run_line("memory_load(0)", &mut app);
+        assert_eq!(app.rx(app.active_rx()).unwrap().frequency_hz, 10_123_000);
+    }
+
+    #[test]
+    fn radio_properties_read_live() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        app.set_radio_ip("192.168.1.99".to_string());
+        eng.run_line("radio.ip", &mut app);
+        // If we got here without error, the getter worked.
+        let out = eng.output();
+        let last_result = out.iter().rev().find(|l| l.kind == ReplLineKind::Result).unwrap();
+        assert!(last_result.text.contains("192.168.1.99"));
+    }
+
+    #[test]
+    fn active_rx_num_rx() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line("active_rx(1)", &mut app);
+        assert_eq!(app.active_rx(), 1);
+    }
+
+    #[test]
+    fn nr3_flag_persists() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line("radio[0].nr3 = true", &mut app);
+        assert!(app.rx(0).unwrap().nr3);
+        eng.run_line("radio[0].nr3 = false", &mut app);
+        assert!(!app.rx(0).unwrap().nr3);
+    }
+
+    #[test]
+    fn flag_toggle_via_free_fn() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line("anf(radio.rx(0), true)", &mut app);
+        assert!(app.rx(0).unwrap().anf);
+    }
+
+    #[test]
+    fn ui_window_builder_collects_children() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line(
+            r#"window("a", "A", || { button("x", || {}); label("hi"); })"#,
+            &mut app,
+        );
+        let ui = eng.ui_state();
+        let ui = ui.borrow();
+        let w = ui.windows.get("a").expect("window a exists");
+        assert_eq!(w.title, "A");
+        match &w.root {
+            Widget::VBox(children) => {
+                assert_eq!(children.len(), 2);
+                assert!(matches!(children[0], Widget::Button { .. }));
+                assert!(matches!(children[1], Widget::Label(_)));
+            }
+            _ => panic!("root should be VBox"),
         }
     }
 
-    /// Execute a single line of Rhai code with access to the App.
-    /// Pushes the input, result (or error), and any `print()` output
-    /// into the REPL buffer.
-    pub fn run_line(&mut self, line: &str, app: &mut App) {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            return;
-        }
-
-        self.history.push(trimmed.to_string());
-        self.output.push(ReplLine {
-            kind: ReplLineKind::Input,
-            text: format!("> {trimmed}"),
-        });
-
-        // Register App bindings fresh each call so we don't need to
-        // store a long-lived reference. We use a shared print buffer
-        // to capture `print()` calls from within the script.
-        let print_buf: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
-        let pb = print_buf.clone();
-        self.engine.on_print(move |s| {
-            if let Ok(mut buf) = pb.lock() {
-                buf.push(s.to_string());
-            }
-        });
-
-        // Register app-bound functions as a custom module.
-        // We use a closure-based approach: bind App as a Dynamic
-        // stored in the scope, and register functions that access it.
-        self.register_app_bindings(app);
-
-        match self.engine.eval_with_scope::<Dynamic>(&mut self.scope, trimmed) {
-            Ok(val) => {
-                let text = if val.is_unit() {
-                    "ok".to_string()
-                } else {
-                    format!("{val}")
-                };
-                self.output.push(ReplLine {
-                    kind: ReplLineKind::Result,
-                    text,
-                });
-            }
-            Err(e) => {
-                self.output.push(ReplLine {
-                    kind: ReplLineKind::Error,
-                    text: format!("{e}"),
-                });
-            }
-        }
-
-        // Flush print buffer
-        let printed: Vec<String> = print_buf.lock()
-            .map(|b| b.clone())
-            .unwrap_or_default();
-        for line in printed {
-            self.output.push(ReplLine {
-                kind: ReplLineKind::Print,
-                text: line,
-            });
-        }
+    #[test]
+    fn ui_slider_and_on_change_registered() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line(
+            r#"window("w", "W", || { slider("V", "vol", 0.0, 1.0); }); on_change("vol", |v| { print(v); })"#,
+            &mut app,
+        );
+        let ui = eng.ui_state();
+        let ui = ui.borrow();
+        assert!(ui.values.contains_key("vol"));
+        assert!(ui.on_change.contains_key("vol"));
     }
 
-    /// Register all app-bound functions into the scope. Since we
-    /// can't store `&mut App` across frames, we snapshot the values
-    /// we need for read-only queries into scope variables, and
-    /// collect write-intent results via scope variables that the
-    /// caller reads back.
-    ///
-    /// For D.12 we use a simpler approach: store commands as scope
-    /// variables that the caller interprets after eval.
-    fn register_app_bindings(&mut self, app: &mut App) {
-        // Snapshot read-only values into scope
-        if let Some(rx) = app.rx(0) {
-            self.scope.set_or_push("rx0_freq", rx.frequency_hz as i64);
-            self.scope.set_or_push("rx0_mode", format!("{:?}", rx.mode));
-        }
-        if let Some(rx) = app.rx(1) {
-            self.scope.set_or_push("rx1_freq", rx.frequency_hz as i64);
-            self.scope.set_or_push("rx1_mode", format!("{:?}", rx.mode));
-        }
-        self.scope.set_or_push("active_rx", app.active_rx() as i64);
-        self.scope.set_or_push("connected", app.is_connected());
-        self.scope.set_or_push("num_rx", app.num_rx() as i64);
-
-        if let Some(snapshot) = app.telemetry_snapshot() {
-            for r in 0..snapshot.num_rx.min(2) as usize {
-                let key = format!("rx{r}_smeter");
-                self.scope.set_or_push(key, snapshot.rx[r].s_meter_db as f64);
-            }
-        }
-
-        // Command accumulator: scripts push commands here, caller
-        // reads them after eval.
-        self.scope.set_or_push("_cmds", rhai::Array::new());
+    #[test]
+    fn ui_window_show_hide_toggle() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line(r#"window("x", "X", || { label("z"); })"#, &mut app);
+        assert!(eng.ui_state().borrow().windows["x"].open);
+        eng.run_line(r#"window_hide("x")"#, &mut app);
+        assert!(!eng.ui_state().borrow().windows["x"].open);
+        eng.run_line(r#"window_toggle("x")"#, &mut app);
+        assert!(eng.ui_state().borrow().windows["x"].open);
+        eng.run_line(r#"window_show("x")"#, &mut app);
+        assert!(eng.ui_state().borrow().windows["x"].open);
     }
 
-    /// Apply any commands that scripts pushed into `_cmds` during
-    /// evaluation. Called by the frontend after `run_line`.
-    pub fn apply_pending_commands(&mut self, app: &mut App) {
-        let cmds: rhai::Array = self.scope
-            .get_value("_cmds")
-            .unwrap_or_default();
-
-        for cmd in cmds {
-            if let Ok(s) = cmd.into_string() {
-                self.apply_command(&s, app);
-            }
-        }
-        self.scope.set_or_push("_cmds", rhai::Array::new());
+    #[test]
+    fn ui_menu_item_registered() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line(r#"menu_item("Tools/Foo", || {})"#, &mut app);
+        assert_eq!(eng.ui_state().borrow().menu_items.len(), 1);
+        assert_eq!(eng.ui_state().borrow().menu_items[0].0, "Tools/Foo");
     }
 
-    fn apply_command(&self, cmd: &str, app: &mut App) {
-        let parts: Vec<&str> = cmd.splitn(3, ' ').collect();
-        match parts.as_slice() {
-            ["set_freq", rx, hz] => {
-                if let (Ok(rx), Ok(hz)) = (rx.parse::<u8>(), hz.parse::<u32>()) {
-                    app.set_rx_frequency(rx, hz);
-                }
-            }
-            ["set_mode", rx, mode] => {
-                if let Ok(rx) = rx.parse::<u8>() {
-                    let m = match *mode {
-                        "LSB" | "Lsb"  => Some(arion_core::WdspMode::Lsb),
-                        "USB" | "Usb"  => Some(arion_core::WdspMode::Usb),
-                        "AM"  | "Am"   => Some(arion_core::WdspMode::Am),
-                        "SAM" | "Sam"  => Some(arion_core::WdspMode::Sam),
-                        "FM"  | "Fm"   => Some(arion_core::WdspMode::Fm),
-                        "CWL" | "CwL"  => Some(arion_core::WdspMode::CwL),
-                        "CWU" | "CwU"  => Some(arion_core::WdspMode::CwU),
-                        "DIGL" | "DigL" => Some(arion_core::WdspMode::DigL),
-                        "DIGU" | "DigU" => Some(arion_core::WdspMode::DigU),
-                        _ => None,
-                    };
-                    if let Some(m) = m {
-                        app.set_rx_mode(rx, m);
-                    }
-                }
-            }
-            ["set_volume", rx, vol] => {
-                if let (Ok(rx), Ok(vol)) = (rx.parse::<u8>(), vol.parse::<f32>()) {
-                    app.set_rx_volume(rx, vol);
-                }
-            }
-            ["set_nr3", rx, on] => {
-                if let Ok(rx) = rx.parse::<u8>() {
-                    app.set_rx_nr3(rx, *on == "true");
-                }
-            }
-            ["set_nr4", rx, on] => {
-                if let Ok(rx) = rx.parse::<u8>() {
-                    app.set_rx_nr4(rx, *on == "true");
-                }
-            }
-            ["tune_band", _rx, band] => {
-                if let Some(b) = match *band {
-                    "160" => Some(arion_app::Band::M160),
-                    "80"  => Some(arion_app::Band::M80),
-                    "60"  => Some(arion_app::Band::M60),
-                    "40"  => Some(arion_app::Band::M40),
-                    "30"  => Some(arion_app::Band::M30),
-                    "20"  => Some(arion_app::Band::M20),
-                    "17"  => Some(arion_app::Band::M17),
-                    "15"  => Some(arion_app::Band::M15),
-                    "12"  => Some(arion_app::Band::M12),
-                    "10"  => Some(arion_app::Band::M10),
-                    "6"   => Some(arion_app::Band::M6),
-                    _ => None,
-                } {
-                    app.jump_to_band(b);
-                }
-            }
-            ["connect", ..] => { app.connect(); }
-            ["disconnect", ..] => { app.disconnect(); }
-            _ => {
-                tracing::warn!(cmd, "unknown script command");
-            }
-        }
-    }
-
-    pub fn output(&self) -> &[ReplLine] {
-        &self.output
-    }
-
-    pub fn history(&self) -> &[String] {
-        &self.history
-    }
-
-    pub fn clear_output(&mut self) {
-        self.output.clear();
-    }
-
-    /// Register convenience functions in the Rhai engine that push
-    /// commands into `_cmds`. These are the user-facing API.
-    pub fn register_api(&mut self) {
-        // set_freq(rx, hz) → pushes "set_freq {rx} {hz}"
-        self.engine.register_fn("set_freq", |rx: i64, hz: i64| -> String {
-            format!("set_freq {rx} {hz}")
-        });
-        self.engine.register_fn("set_mode", |rx: i64, mode: &str| -> String {
-            format!("set_mode {rx} {mode}")
-        });
-        self.engine.register_fn("set_volume", |rx: i64, vol: f64| -> String {
-            format!("set_volume {rx} {vol}")
-        });
-        self.engine.register_fn("set_nr3", |rx: i64, on: bool| -> String {
-            format!("set_nr3 {rx} {on}")
-        });
-        self.engine.register_fn("set_nr4", |rx: i64, on: bool| -> String {
-            format!("set_nr4 {rx} {on}")
-        });
-        self.engine.register_fn("tune_band", |rx: i64, band: &str| -> String {
-            format!("tune_band {rx} {band}")
-        });
-        self.engine.register_fn("connect", || -> String {
-            "connect".to_string()
-        });
-        self.engine.register_fn("disconnect", || -> String {
-            "disconnect".to_string()
-        });
-
-        // Wrapper: call function and push result to _cmds
-        // Users write: `set_freq(0, 14074000)` which returns the
-        // command string. We need a script wrapper to auto-push.
-        // For now, users must write:
-        //   _cmds.push(set_freq(0, 14074000))
-        // Or we pre-wrap common patterns. Let's make it transparent
-        // by registering command functions that auto-push:
+    #[test]
+    fn run_script_multiline_mutates_state() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
         let src = r#"
-            fn freq(rx, hz)      { _cmds.push(set_freq(rx, hz)); }
-            fn mode(rx, m)       { _cmds.push(set_mode(rx, m)); }
-            fn volume(rx, v)     { _cmds.push(set_volume(rx, v)); }
-            fn nr3(rx, on)       { _cmds.push(set_nr3(rx, on)); }
-            fn nr4(rx, on)       { _cmds.push(set_nr4(rx, on)); }
-            fn band(rx, b)       { _cmds.push(tune_band(rx, b)); }
-            fn do_connect()      { _cmds.push(connect()); }
-            fn do_disconnect()   { _cmds.push(disconnect()); }
+            radio[0].freq = 7074000;
+            radio[0].mode = "LSB";
+            radio[0].volume = 0.25;
+            radio[0].nr3 = true;
         "#;
-        // Compile and merge into the scope as a prelude AST
-        if let Ok(ast) = self.engine.compile(src) {
-            let _ = self.engine.run_ast_with_scope(&mut self.scope, &ast);
+        eng.run_script(src, &mut app).expect("script must succeed");
+        let r = app.rx(0).unwrap();
+        assert_eq!(r.frequency_hz, 7_074_000);
+        assert_eq!(r.mode, arion_core::WdspMode::Lsb);
+        assert!((r.volume - 0.25).abs() < 1e-5);
+        assert!(r.nr3);
+    }
+
+    #[test]
+    fn run_script_error_surfaces_as_repl_line() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        let res = eng.run_script("let x = bogus_symbol_zzz + 1;", &mut app);
+        assert!(res.is_err());
+        assert!(eng.output().iter().any(|l| l.kind == ReplLineKind::Error));
+    }
+
+    #[test]
+    fn startup_script_path_has_expected_tail() {
+        if let Some(p) = startup_script_path() {
+            assert!(p.ends_with("startup.rhai"));
         }
     }
-}
 
-impl Default for ScriptEngine {
-    fn default() -> Self {
-        let mut eng = Self::new();
-        eng.register_api();
-        eng
+    #[test]
+    fn help_overview_returns_non_empty() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line("help()", &mut app);
+        let out = eng.output();
+        let last = out.iter().rev().find(|l| l.kind == ReplLineKind::Result).unwrap();
+        assert!(last.text.contains("Topics"));
+    }
+
+    #[test]
+    fn help_topic_returns_entry() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line("help(\"radio\")", &mut app);
+        let last = eng.output().iter().rev()
+            .find(|l| l.kind == ReplLineKind::Result).unwrap();
+        assert!(last.text.contains("radio"));
+    }
+
+    #[test]
+    fn help_unknown_topic_returns_hint() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line("help(\"xyzxyz\")", &mut app);
+        let last = eng.output().iter().rev()
+            .find(|l| l.kind == ReplLineKind::Result).unwrap();
+        assert!(last.text.contains("no topic"));
+    }
+
+    #[test]
+    fn help_coherence_core_functions_all_documented() {
+        let topics = help_data::help_topics();
+        let required = [
+            "overview", "radio", "rx", "actions", "modes", "bands",
+            "filters", "agc", "memories", "ui", "startup",
+            "freq", "mode", "volume", "mute", "lock",
+            "filter", "filter_preset",
+            "nr3", "nr4", "nb", "nb2", "anf", "bin", "tnf",
+            "eq", "eq_band", "band", "tune",
+            "active_rx", "num_rx", "connect", "disconnect",
+            "memory_save", "memory_load", "memory_delete",
+            "save", "audio_device",
+            "window", "button", "slider", "checkbox",
+            "on_change", "menu_item", "help",
+        ];
+        for k in required {
+            assert!(topics.contains_key(k), "help topic missing: {k}");
+        }
+    }
+
+    #[test]
+    fn unknown_mode_errors() {
+        let mut app = new_app();
+        let mut eng = ScriptEngine::new();
+        eng.run_line("mode(radio.rx(0), \"BOGUS\")", &mut app);
+        let out = eng.output();
+        assert!(out.iter().any(|l| l.kind == ReplLineKind::Error));
     }
 }
