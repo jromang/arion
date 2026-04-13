@@ -127,6 +127,8 @@ pub struct EguiView {
     rigctld_status: String,
     /// Per-RX zoom/pan state for the spectrum display.
     view_states: Vec<RxViewState>,
+    /// Per-RX passband drag state (which edge/center is being dragged).
+    passband_drags: Vec<PassbandDrag>,
 }
 
 /// One script editor tab: a buffer that may or may not be backed by
@@ -181,8 +183,9 @@ impl EguiView {
         let app = App::new(opts);
 
         let waterfalls: Vec<_> = (0..MAX_RX).map(Waterfall::new).collect();
-        let overlays     = (0..MAX_RX).map(|_| SpectrumOverlay::new()).collect();
-        let view_states  = (0..MAX_RX).map(|_| RxViewState::default()).collect();
+        let overlays        = (0..MAX_RX).map(|_| SpectrumOverlay::new()).collect();
+        let view_states     = (0..MAX_RX).map(|_| RxViewState::default()).collect();
+        let passband_drags  = (0..MAX_RX).map(|_| PassbandDrag::None).collect();
 
         let (rigctld_tx, rigctld_rx) = mpsc::channel::<arion_rigctld::RigRequest>();
 
@@ -191,6 +194,7 @@ impl EguiView {
             waterfalls,
             overlays,
             view_states,
+            passband_drags,
             new_memory_name:    String::new(),
             new_memory_tag:     String::new(),
             setup_tab:          0,
@@ -1955,6 +1959,98 @@ impl EguiView {
                         (self.view_states[r].p_slider + p_delta).clamp(0.0, 1.0);
                 }
 
+                // --- Passband drag hit-test (checked before tune) ---
+                let rx_state = self.app.rx(r).cloned().unwrap_or_default();
+                let center_f  = center_hz as f32;
+                let filter_lo_abs = center_f + rx_state.filter_lo as f32;
+                let filter_hi_abs = center_f + rx_state.filter_hi as f32;
+                let visible_span  = hi_hz - lo_hz;
+
+                // Pixel x of each filter edge (clamped to spec_rect)
+                let (x_flo, x_fhi) = if visible_span > 0.0 && filter_hi_abs > filter_lo_abs {
+                    let to_x = |hz: f32| {
+                        spec_rect.left()
+                            + ((hz - lo_hz) / visible_span).clamp(0.0, 1.0) * spec_rect.width()
+                    };
+                    (to_x(filter_lo_abs), to_x(filter_hi_abs))
+                } else {
+                    (spec_rect.left(), spec_rect.right())
+                };
+
+                const EDGE_TOL: f32 = 5.0;
+                let hp = ui.ctx().pointer_hover_pos();
+                let hover_lo = hp.is_some_and(|p| {
+                    (p.x - x_flo).abs() < EDGE_TOL && spec_rect.contains(p)
+                });
+                let hover_hi = hp.is_some_and(|p| {
+                    (p.x - x_fhi).abs() < EDGE_TOL && spec_rect.contains(p)
+                });
+                let hover_center = hp.is_some_and(|p| {
+                    p.x > x_flo + EDGE_TOL
+                        && p.x < x_fhi - EDGE_TOL
+                        && spec_rect.contains(p)
+                });
+
+                // Cursor icon
+                if hover_lo
+                    || hover_hi
+                    || matches!(
+                        self.passband_drags[r],
+                        PassbandDrag::LoEdge | PassbandDrag::HiEdge
+                    )
+                {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+                } else if hover_center
+                    || matches!(self.passband_drags[r], PassbandDrag::Center)
+                {
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+                }
+
+                // Detect drag start: classify which part was clicked
+                let press_origin = ui.input(|i| i.pointer.press_origin());
+                if spec_resp.drag_started() {
+                    self.passband_drags[r] = PassbandDrag::None;
+                    if let Some(o) = press_origin {
+                        if spec_rect.contains(o) {
+                            if (o.x - x_flo).abs() < EDGE_TOL {
+                                self.passband_drags[r] = PassbandDrag::LoEdge;
+                            } else if (o.x - x_fhi).abs() < EDGE_TOL {
+                                self.passband_drags[r] = PassbandDrag::HiEdge;
+                            } else if o.x > x_flo && o.x < x_fhi {
+                                self.passband_drags[r] = PassbandDrag::Center;
+                            }
+                        }
+                    }
+                }
+                if !spec_resp.dragged() {
+                    self.passband_drags[r] = PassbandDrag::None;
+                }
+
+                // Apply drag: convert pixel delta → Hz delta → new offsets
+                let passband_active =
+                    !matches!(self.passband_drags[r], PassbandDrag::None);
+                if passband_active && spec_resp.dragged() {
+                    let delta_hz =
+                        spec_resp.drag_delta().x / spec_rect.width() * visible_span;
+                    let lo_off = rx_state.filter_lo as f32;
+                    let hi_off = rx_state.filter_hi as f32;
+                    let (mut new_lo, mut new_hi) = match self.passband_drags[r] {
+                        PassbandDrag::LoEdge  => (lo_off + delta_hz, hi_off),
+                        PassbandDrag::HiEdge  => (lo_off, hi_off + delta_hz),
+                        PassbandDrag::Center  => (lo_off + delta_hz, hi_off + delta_hz),
+                        PassbandDrag::None    => (lo_off, hi_off),
+                    };
+                    // Enforce minimum 100 Hz bandwidth
+                    if new_hi - new_lo < 100.0 {
+                        match self.passband_drags[r] {
+                            PassbandDrag::LoEdge => new_lo = new_hi - 100.0,
+                            PassbandDrag::HiEdge => new_hi = new_lo + 100.0,
+                            _ => {}
+                        }
+                    }
+                    self.app.set_rx_filter(r as u8, new_lo as f64, new_hi as f64);
+                }
+
                 // --- Spectrum draw (zoomed slice) ---
                 let vis_bins = &snapshot.rx[r].spectrum_bins_db
                     [lo_bin.min(n_bins)..hi_bin.min(n_bins)];
@@ -1982,14 +2078,40 @@ impl EguiView {
                         ds.spectrum_min_db, ds.spectrum_max_db);
                 }
 
-                // Passband overlay (absolute Hz)
-                let rx_state = self.app.rx(r).cloned().unwrap_or_default();
-                let center_f = center_hz as f32;
-                draw_passband_overlay(
-                    ui, spec_rect, lo_hz, hi_hz,
-                    center_f + rx_state.filter_lo as f32,
-                    center_f + rx_state.filter_hi as f32,
-                );
+                // Passband overlay with hover/drag feedback
+                if visible_span > 0.0 && x_fhi > x_flo + 1.0 {
+                    let band_rect = Rect::from_min_max(
+                        egui::pos2(x_flo, spec_rect.top()),
+                        egui::pos2(x_fhi, spec_rect.bottom()),
+                    );
+                    let painter = ui.painter_at(spec_rect);
+                    painter.rect_filled(
+                        band_rect, 0.0,
+                        Color32::from_rgba_premultiplied(80, 200, 255, 30),
+                    );
+                    let lo_col = if hover_lo
+                        || matches!(self.passband_drags[r], PassbandDrag::LoEdge)
+                    {
+                        Color32::WHITE
+                    } else {
+                        Color32::from_rgba_premultiplied(0, 0, 200, 200)
+                    };
+                    let hi_col = if hover_hi
+                        || matches!(self.passband_drags[r], PassbandDrag::HiEdge)
+                    {
+                        Color32::WHITE
+                    } else {
+                        Color32::from_rgba_premultiplied(0, 0, 200, 200)
+                    };
+                    painter.line_segment(
+                        [egui::pos2(x_flo, spec_rect.top()), egui::pos2(x_flo, spec_rect.bottom())],
+                        Stroke::new(1.5, lo_col),
+                    );
+                    painter.line_segment(
+                        [egui::pos2(x_fhi, spec_rect.top()), egui::pos2(x_fhi, spec_rect.bottom())],
+                        Stroke::new(1.5, hi_col),
+                    );
+                }
 
                 // Frequency axis strip
                 draw_freq_axis(&ui.painter_at(axis_rect), axis_rect, lo_hz, hi_hz);
@@ -2029,7 +2151,7 @@ impl EguiView {
                 draw_vfo_marker(&ui.painter_at(spec_rect),  spec_rect,  vfo_spec_x);
                 draw_vfo_marker(&ui.painter_at(water_rect), water_rect, vfo_water_x);
 
-                // --- Tune interaction + context menu ---
+                // --- Tune interaction + context menu (skipped during passband drag) ---
                 spec_resp.context_menu(|ui| {
                     ui.checkbox(&mut self.overlays[r].show_peak, "Peak hold");
                     ui.checkbox(&mut self.overlays[r].show_avg,  "Average");
@@ -2038,11 +2160,13 @@ impl EguiView {
                         ui.close();
                     }
                 });
-                let (new_freq, clicked) = tune_from_response(
-                    &spec_resp, ui, spec_rect, center_hz, lo_hz, hi_hz,
-                );
-                if let Some(f) = new_freq { pending_tunes.push((r, f)); }
-                if clicked { newly_active = Some(r); }
+                if !passband_active {
+                    let (new_freq, clicked) = tune_from_response(
+                        &spec_resp, ui, spec_rect, center_hz, lo_hz, hi_hz,
+                    );
+                    if let Some(f) = new_freq { pending_tunes.push((r, f)); }
+                    if clicked { newly_active = Some(r); }
+                }
 
                 let (new_freq, clicked) = handle_tune_input(
                     ui, water_rect,
@@ -2240,36 +2364,6 @@ fn draw_trace_range(ui: &egui::Ui, rect: Rect, bins: &[f32], color: Color32, min
     ));
 }
 
-// --- Passband overlay ----------------------------------------------------
-
-/// Draw the filter passband shading on the spectrum.
-/// `lo_hz` / `hi_hz` are the absolute Hz boundaries of the visible
-/// spectrum window; `filter_lo_abs` / `filter_hi_abs` are the absolute
-/// Hz edges of the passband.
-fn draw_passband_overlay(
-    ui: &egui::Ui,
-    rect: Rect,
-    lo_hz: f32,
-    hi_hz: f32,
-    filter_lo_abs: f32,
-    filter_hi_abs: f32,
-) {
-    let span = hi_hz - lo_hz;
-    if span <= 0.0 || filter_hi_abs <= filter_lo_abs {
-        return;
-    }
-    let to_x = |abs_hz: f32| -> f32 {
-        rect.left() + ((abs_hz - lo_hz) / span).clamp(0.0, 1.0) * rect.width()
-    };
-    let x0 = to_x(filter_lo_abs);
-    let x1 = to_x(filter_hi_abs);
-    if (x1 - x0).abs() < 1.0 {
-        return;
-    }
-    let band = Rect::from_min_max(Pos2::new(x0, rect.min.y), Pos2::new(x1, rect.max.y));
-    ui.painter_at(rect).rect_filled(band, 0.0, Color32::from_rgba_premultiplied(80, 200, 255, 30));
-}
-
 // --- Spectrum (immediate-mode line draw) --------------------------------
 
 fn draw_spectrum_ex(
@@ -2350,6 +2444,16 @@ fn level_color(db: f32) -> Color32 {
 }
 
 // --- Zoom / pan view state -----------------------------------------------
+
+/// Which part of the filter passband is currently being dragged.
+#[derive(Default, Clone, Copy, PartialEq)]
+enum PassbandDrag {
+    #[default]
+    None,
+    LoEdge,
+    HiEdge,
+    Center,
+}
 
 /// Per-RX display zoom + pan state. Pure display — never moves the VFO.
 #[derive(Clone)]
