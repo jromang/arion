@@ -1974,6 +1974,10 @@ impl EguiView {
 const FONT_DSEG7: &str = "DSEG7";
 
 fn apply_dark_theme(ctx: &egui::Context) {
+    // Force dark theme regardless of the OS preference (Windows follows
+    // the system theme by default and would otherwise override visuals).
+    ctx.set_theme(egui::ThemePreference::Dark);
+
     // --- Register the DSEG7 7-segment font for VFO displays ---
     let mut fonts = egui::FontDefinitions::default();
     fonts.font_data.insert(
