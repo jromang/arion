@@ -210,6 +210,11 @@ Ideal for declaring persistent windows, menus, presets.");
     m.insert("anf", "anf(rx, bool) — auto notch filter.");
     m.insert("bin", "bin(rx, bool) — binaural processing.");
     m.insert("tnf", "tnf(rx, bool) — tracking notch filter.");
+    m.insert("rit",
+"rit(rx, hz) — Receiver Incremental Tuning offset in Hz.
+Display-only: paints a yellow vertical marker at center+rit_hz
+on the spectrum. Clamped to ±10 kHz. Use `radio[0].rit = 250` or
+the free function `rit(radio.rx(0), 250)`.");
     m.insert("agc",
 "agc(rx, preset) — sets the AGC preset.
   agc(radio.rx(0), \"Fast\");");

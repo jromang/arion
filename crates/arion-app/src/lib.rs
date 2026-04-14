@@ -85,6 +85,10 @@ pub struct RxState {
     pub anf:          bool,
     pub bin:          bool,
     pub tnf:          bool,
+    /// Receiver Incremental Tuning offset in Hz (display-only for now).
+    /// Positive = receive above the VFO, negative = below. Zero hides
+    /// the on-spectrum marker.
+    pub rit_hz:       i32,
     pub eq_enabled:   bool,
     /// 10-band graphic EQ gains. Index 0 = preamp, 1..=10 = bands
     /// at 32, 63, 125, 250, 500, 1k, 2k, 4k, 8k, 16k Hz.
@@ -112,6 +116,7 @@ impl Default for RxState {
             anf:          false,
             bin:          false,
             tnf:          false,
+            rit_hz:       0,
             eq_enabled:   false,
             eq_gains:     [0; 11],
         }
@@ -683,6 +688,15 @@ impl App {
     pub fn set_rx_agc(&mut self, rx: u8, agc: AgcPreset) {
         let Some(view) = self.rxs.get_mut(rx as usize) else { return };
         view.agc_mode = agc;
+        self.mark_dirty();
+    }
+
+    /// Set the Receiver Incremental Tuning offset in Hz. Display-only
+    /// today; the WDSP wiring will be added once the TX path lands.
+    /// Clamped to ±10 kHz which matches typical transceiver ranges.
+    pub fn set_rx_rit(&mut self, rx: u8, hz: i32) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.rit_hz = hz.clamp(-10_000, 10_000);
         self.mark_dirty();
     }
 

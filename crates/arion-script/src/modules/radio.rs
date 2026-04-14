@@ -108,6 +108,10 @@ impl ScriptModule for RadioModule {
         engine.register_fn("lock", move |rx: Rx, on: bool| {
             let _ = c.with_app(|app| app.set_rx_locked(rx.index, on));
         });
+        let c = ctx.clone();
+        engine.register_fn("rit", move |rx: Rx, hz: i64| {
+            let _ = c.with_app(|app| app.set_rx_rit(rx.index, hz as i32));
+        });
 
         // Flag toggles
         for (fname, flag) in [

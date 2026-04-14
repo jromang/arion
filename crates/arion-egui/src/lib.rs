@@ -2148,6 +2148,15 @@ impl EguiView {
                     );
                 }
 
+                // RIT offset marker — yellow vertical line at center + rit_hz.
+                if show_spec {
+                    let rit = self.app.rx(r).map(|v| v.rit_hz).unwrap_or(0);
+                    draw_rit_line(
+                        &ui.painter_at(spec_rect), spec_rect,
+                        rit, center_hz as f32, lo_hz, hi_hz,
+                    );
+                }
+
                 // Notch / TNF markers — placeholder ±1 kHz demo notches when TNF is on.
                 // Real positions come from WDSP once the TNF binding is exposed.
                 if show_spec && self.app.rx(r).is_some_and(|v| v.tnf) {
@@ -2534,6 +2543,40 @@ fn draw_trace_range(ui: &egui::Ui, rect: Rect, bins: &[f32], color: Color32, min
 }
 
 // --- Spectrum (immediate-mode line draw) --------------------------------
+
+/// Vertical yellow line at the RIT offset (center + rit_hz), with a label
+/// like "RIT +250 Hz". Skipped when rit_hz is 0 or the line falls outside
+/// the visible window. Arion extension — Thetis shows RIT only as a number.
+fn draw_rit_line(
+    painter: &egui::Painter,
+    rect: Rect,
+    rit_hz: i32,
+    center_hz: f32,
+    lo_hz: f32,
+    hi_hz: f32,
+) {
+    if rit_hz == 0 { return; }
+    let span = hi_hz - lo_hz;
+    if span <= 0.0 { return; }
+    let x = rect.left() + (center_hz + rit_hz as f32 - lo_hz) / span * rect.width();
+    if x < rect.left() || x > rect.right() { return; }
+    let color = Color32::YELLOW;
+    painter.vline(x, rect.y_range(), Stroke::new(1.0, color));
+    let label = format!("RIT {rit_hz:+} Hz");
+    let align = if x > rect.right() - 70.0 {
+        egui::Align2::RIGHT_TOP
+    } else {
+        egui::Align2::LEFT_TOP
+    };
+    let anchor_x = if matches!(align, egui::Align2::RIGHT_TOP) { x - 2.0 } else { x + 2.0 };
+    painter.text(
+        Pos2::new(anchor_x, rect.top() + 2.0),
+        align,
+        label,
+        egui::FontId::proportional(9.0),
+        color,
+    );
+}
 
 /// Display-only notch marker. Until the WDSP TNF binding is exposed, the
 /// egui frontend constructs placeholder markers from `rx.tnf` + center_hz.

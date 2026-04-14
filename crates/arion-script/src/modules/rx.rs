@@ -169,6 +169,17 @@ impl ScriptModule for RxModule {
             });
         }
 
+        // --- rit (i32 Hz, display-only until TX path lands) ---
+        let c = ctx.clone();
+        engine.register_get("rit", move |rx: &mut Rx| -> i64 {
+            c.with_app(|app| app.rx(rx.index as usize).map(|r| r.rit_hz as i64).unwrap_or(0))
+                .unwrap_or(0)
+        });
+        let c = ctx.clone();
+        engine.register_set("rit", move |rx: &mut Rx, hz: i64| {
+            let _ = c.with_app(|app| app.set_rx_rit(rx.index, hz as i32));
+        });
+
         // --- eq_enabled ---
         reg_bool_rx(engine, ctx, "eq_enabled",
             |app, i| app.rx(i).map(|r| r.eq_enabled).unwrap_or(false),
