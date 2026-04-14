@@ -135,7 +135,7 @@ async fn ws_session(mut socket: WebSocket, state: AppState, remote: SocketAddr) 
             _ = state_tick.tick() => {
                 let env = protocol::Envelope::State((*state.snapshot.load_full()).clone());
                 let Ok(text) = serde_json::to_string(&env) else { continue };
-                if socket.send(Message::Text(text)).await.is_err() {
+                if socket.send(Message::Text(text.into())).await.is_err() {
                     break;
                 }
             }
@@ -146,7 +146,7 @@ async fn ws_session(mut socket: WebSocket, state: AppState, remote: SocketAddr) 
                 for (rx_idx, rt) in snap.rx.iter().enumerate().take(snap.num_rx as usize) {
                     if !rt.enabled { continue; }
                     let frame = spectrum::encode(rx_idx as u8, rt);
-                    if socket.send(Message::Binary(frame)).await.is_err() {
+                    if socket.send(Message::Binary(frame.into())).await.is_err() {
                         return;
                     }
                 }
@@ -155,7 +155,7 @@ async fn ws_session(mut socket: WebSocket, state: AppState, remote: SocketAddr) 
                 match msg {
                     Some(Ok(Message::Text(t))) => {
                         if let Some(out) = handle_client_text(&state, advertise_ip, &t, &mut peer).await {
-                            if socket.send(Message::Text(out)).await.is_err() { break; }
+                            if socket.send(Message::Text(out.into())).await.is_err() { break; }
                         }
                     }
                     Some(Ok(Message::Close(_))) | None => break,

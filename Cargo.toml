@@ -36,7 +36,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 arc-swap = "1"
 rtrb = "0.3"
 socket2 = { version = "0.6", features = ["all"] }
-cpal = "0.16"
+cpal = "0.17"
 # eframe with wgpu as the renderer (Vulkan on Linux, Metal on macOS,
 # DX12 on Windows). glow is explicitly disabled so we don't end up
 # carrying a second backend we don't use.

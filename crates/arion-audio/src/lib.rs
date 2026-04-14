@@ -89,7 +89,7 @@ pub fn enumerate_output_devices() -> Vec<String> {
     let host = cpal::default_host();
     host.output_devices()
         .map(|devs| {
-            devs.filter_map(|d| d.name().ok())
+            devs.filter_map(|d| d.description().ok().map(|desc| desc.name().to_string()))
                 .collect()
         })
         .unwrap_or_default()
@@ -241,7 +241,10 @@ impl AudioOutput {
             None => host.default_output_device().ok_or(AudioError::NoDevice)?,
             Some(name) => find_output_device(&host, name)?,
         };
-        let device_name = device.name().unwrap_or_else(|_| "<unnamed>".into());
+        let device_name = device
+            .description()
+            .map(|d| d.name().to_string())
+            .unwrap_or_else(|_| "<unnamed>".into());
         tracing::info!(device = %device_name, "opening audio output device");
 
         // --- Pick a stream config --------------------------------------
@@ -412,15 +415,13 @@ fn pick_stream_config(
     // Tier 1: exact-rate match (no resampling).
     let exact = supported
         .iter()
-        .filter(|c| {
-            c.min_sample_rate().0 <= dsp_rate && dsp_rate <= c.max_sample_rate().0
-        })
+        .filter(|c| c.min_sample_rate() <= dsp_rate && dsp_rate <= c.max_sample_rate())
         .max_by_key(|c| c.channels());
     if let Some(c) = exact {
         return Some((
             StreamConfig {
                 channels:    c.channels(),
-                sample_rate: cpal::SampleRate(dsp_rate),
+                sample_rate: dsp_rate,
                 buffer_size: BufferSize::Default,
             },
             dsp_rate,
@@ -430,14 +431,14 @@ fn pick_stream_config(
     // Tier 2: no exact match — pick the range whose max_sample_rate is
     // closest to our DSP rate (distance = |max_rate - dsp_rate|), then
     // use that range's max rate.
-    let best = supported.iter().min_by_key(|c| {
-        (c.max_sample_rate().0 as i64 - dsp_rate as i64).abs()
-    })?;
-    let chosen_rate = best.max_sample_rate().0;
+    let best = supported
+        .iter()
+        .min_by_key(|c| (c.max_sample_rate() as i64 - dsp_rate as i64).abs())?;
+    let chosen_rate = best.max_sample_rate();
     Some((
         StreamConfig {
             channels:    best.channels(),
-            sample_rate: cpal::SampleRate(chosen_rate),
+            sample_rate: chosen_rate,
             buffer_size: BufferSize::Default,
         },
         chosen_rate,
@@ -546,11 +547,14 @@ pub fn list_output_devices() -> Result<Vec<(String, bool)>, AudioError> {
     let host = cpal::default_host();
     let default_name = host
         .default_output_device()
-        .and_then(|d| d.name().ok());
+        .and_then(|d| d.description().ok().map(|desc| desc.name().to_string()));
 
     let mut out = Vec::new();
     for dev in host.output_devices()? {
-        let name = dev.name().unwrap_or_else(|_| "<unnamed>".into());
+        let name = dev
+            .description()
+            .map(|d| d.name().to_string())
+            .unwrap_or_else(|_| "<unnamed>".into());
         let is_default = Some(&name) == default_name.as_ref();
         out.push((name, is_default));
     }
@@ -559,7 +563,7 @@ pub fn list_output_devices() -> Result<Vec<(String, bool)>, AudioError> {
 
 fn find_output_device(host: &cpal::Host, name: &str) -> Result<Device, AudioError> {
     for dev in host.output_devices()? {
-        if dev.name().ok().as_deref() == Some(name) {
+        if dev.description().ok().map(|d| d.name().to_string()).as_deref() == Some(name) {
             return Ok(dev);
         }
     }
