@@ -24,7 +24,7 @@ use eframe::egui;
 use egui::{Color32, ColorImage, Pos2, Rect, Sense, Stroke, TextureHandle, TextureOptions, Vec2};
 
 use arion_app::{
-    dbm_to_s_units, mode_to_serde, App, AppOptions, Band, FilterPreset, WindowKind,
+    dbm_to_s_units, mode_to_serde, AgcPreset, App, AppOptions, Band, FilterPreset, WindowKind,
     SMETER_DBFS_TO_DBM_OFFSET,
 };
 use arion_settings::WaterfallPalette;
@@ -2139,6 +2139,15 @@ impl EguiView {
                         ds.spectrum_min_db, ds.spectrum_max_db);
                 }
 
+                // AGC threshold line — only when AGC is on and we have a spectrum
+                if show_spec {
+                    let agc = self.app.rx(r).map(|v| v.agc_mode).unwrap_or(AgcPreset::Med);
+                    draw_agc_line(
+                        &ui.painter_at(spec_rect), spec_rect,
+                        agc, ds.spectrum_min_db, ds.spectrum_max_db,
+                    );
+                }
+
                 // Passband overlay with hover/drag feedback
                 if show_spec && visible_span > 0.0 && x_fhi > x_flo + 1.0 {
                     let band_rect = Rect::from_min_max(
@@ -2511,6 +2520,37 @@ fn draw_trace_range(ui: &egui::Ui, rect: Rect, bins: &[f32], color: Color32, min
 }
 
 // --- Spectrum (immediate-mode line draw) --------------------------------
+
+/// Horizontal orange line at the AGC threshold dBFS. Skipped when AGC is Off.
+/// Thresholds are WDSP defaults (Long/Slow -100, Med -90, Fast -80).
+fn draw_agc_line(
+    painter: &egui::Painter,
+    rect: Rect,
+    agc: AgcPreset,
+    min_db: f32,
+    max_db: f32,
+) {
+    let thresh_db: f32 = match agc {
+        AgcPreset::Off              => return,
+        AgcPreset::Long             => -100.0,
+        AgcPreset::Slow             => -100.0,
+        AgcPreset::Med              =>  -90.0,
+        AgcPreset::Fast             =>  -80.0,
+    };
+    if (min_db - max_db).abs() < 1.0 { return; }
+    let t = (thresh_db - max_db) / (min_db - max_db);
+    let y = rect.top() + t * rect.height();
+    if y < rect.top() + 1.0 || y > rect.bottom() - 1.0 { return; }
+    let color = Color32::from_rgb(255, 140, 0);
+    painter.hline(rect.x_range(), y, Stroke::new(1.0, color));
+    painter.text(
+        Pos2::new(rect.right() - 4.0, y - 1.0),
+        egui::Align2::RIGHT_BOTTOM,
+        "AGC",
+        egui::FontId::proportional(10.0),
+        color,
+    );
+}
 
 fn draw_spectrum_ex(
     ui: &mut egui::Ui,
