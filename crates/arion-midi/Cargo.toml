@@ -1,0 +1,21 @@
+[package]
+name = "arion-midi"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "MIDI controller bridge for Arion — maps CC/Note to App setters"
+
+[dependencies]
+arion-app.workspace = true
+arion-core.workspace = true
+arc-swap.workspace = true
+directories.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+toml.workspace = true
+tracing.workspace = true
+midir = "0.10"
+wmidi = "4"
+
+[lib]
+doctest = false

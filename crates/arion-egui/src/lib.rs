@@ -126,6 +126,24 @@ pub struct EguiView {
     rigctld_handle: Option<arion_rigctld::RigctldHandle>,
     /// Last-known rigctld status string for the Setup UI.
     rigctld_status: String,
+    /// MIDI action sender — cloned per listener restart.
+    midi_action_tx: mpsc::Sender<arion_midi::MidiAction>,
+    /// MIDI action receiver (drained every frame).
+    midi_action_rx: mpsc::Receiver<arion_midi::MidiAction>,
+    /// MIDI raw-event sender — cloned per listener restart.
+    midi_event_tx:  mpsc::Sender<arion_midi::MidiEvent>,
+    /// MIDI raw-event receiver (drained into `midi_last_event` each frame).
+    midi_event_rx:  mpsc::Receiver<arion_midi::MidiEvent>,
+    /// Hot-swappable mapping shared with the midir callback thread.
+    midi_mapping:   arion_midi::SharedMapping,
+    /// Active MIDI listener handle. Dropping it closes the port.
+    midi_listener:  Option<arion_midi::MidiListener>,
+    /// Last raw event seen — displayed in the Setup MIDI tab.
+    midi_last_event: Option<arion_midi::MidiEvent>,
+    /// Status string for the Setup MIDI tab.
+    midi_status:    String,
+    /// Devices enumerated on the last refresh.
+    midi_devices:   Vec<String>,
     /// Web-frontend state snapshot — republished each frame and
     /// read by the web server thread to push JSON to browsers.
     web_snapshot:     arion_web::SharedSnapshot,
@@ -208,6 +226,21 @@ impl EguiView {
 
         let (rigctld_tx, rigctld_rx) = mpsc::channel::<arion_rigctld::RigRequest>();
 
+        // MIDI bridge: an optional listener pushes resolved actions on
+        // `midi_action_tx`; the UI thread drains it each frame. The
+        // mapping is behind an ArcSwap so the Setup tab can swap
+        // bindings without restarting the backend thread.
+        let (midi_action_tx, midi_action_rx) = mpsc::channel::<arion_midi::MidiAction>();
+        let (midi_event_tx, midi_event_rx) = mpsc::channel::<arion_midi::MidiEvent>();
+        let persisted = arion_midi::persist::load();
+        let initial_mapping = if persisted.bindings.is_empty() {
+            arion_midi::default_mapping()
+        } else {
+            persisted
+        };
+        let midi_mapping = arion_midi::shared(initial_mapping);
+        let midi_devices = arion_midi::device::enum_inputs().unwrap_or_default();
+
         // Web bridge: snapshot + action channel + telemetry mirror +
         // audio tap. The server runs in its own thread with its own
         // tokio runtime. Gated behind `ARION_WEB_LISTEN=<addr>` — if
@@ -265,6 +298,15 @@ impl EguiView {
             rigctld_rx,
             rigctld_handle:     None,
             rigctld_status:     "stopped".into(),
+            midi_action_tx,
+            midi_action_rx,
+            midi_event_tx,
+            midi_event_rx,
+            midi_mapping,
+            midi_listener:      None,
+            midi_last_event:    None,
+            midi_status:        "stopped".into(),
+            midi_devices,
             web_snapshot,
             web_telemetry,
             web_action_rx,
@@ -274,6 +316,15 @@ impl EguiView {
         // Auto-start rigctld if enabled in settings.
         if view.app.network_settings().rigctld_enabled {
             view.start_rigctld();
+        }
+        // Auto-start MIDI if enabled in settings, or if the legacy
+        // ARION_MIDI_DEVICE env var is set (kept for CI / scripted runs).
+        if let Ok(needle) = std::env::var("ARION_MIDI_DEVICE") {
+            view.app.midi_settings_mut().enabled = true;
+            view.app.midi_settings_mut().device_name = Some(needle);
+        }
+        if view.app.midi_settings().enabled {
+            view.start_midi();
         }
         view
     }
@@ -315,6 +366,12 @@ impl eframe::App for EguiView {
 
         // Drain rigctld requests arriving from session threads.
         arion_rigctld::drain(&mut self.app, &self.rigctld_rx);
+        // Drain MIDI actions arriving from the midir callback thread.
+        arion_midi::drain(&mut self.app, &self.midi_action_rx);
+        // Drain raw MIDI events into the Setup-tab "last event" slot.
+        while let Ok(ev) = self.midi_event_rx.try_recv() {
+            self.midi_last_event = Some(ev);
+        }
 
         // Drain web actions from browser clients.
         while let Ok(action) = self.web_action_rx.try_recv() {
@@ -1440,7 +1497,7 @@ impl EguiView {
             .show(ctx, |ui| {
                 // Tab row
                 ui.horizontal(|ui| {
-                    for (i, label) in ["General", "Audio", "Display", "DSP", "Calibration", "Network"].iter().enumerate() {
+                    for (i, label) in ["General", "Audio", "Display", "DSP", "Calibration", "Network", "MIDI"].iter().enumerate() {
                         if ui.selectable_label(self.setup_tab == i, *label).clicked() {
                             self.setup_tab = i;
                         }
@@ -1455,6 +1512,7 @@ impl EguiView {
                     3 => self.draw_setup_dsp(ui),
                     4 => self.draw_setup_calibration(ui),
                     5 => self.draw_setup_network(ui),
+                    6 => self.draw_setup_midi(ui),
                     _ => {}
                 }
             });
@@ -1754,6 +1812,166 @@ impl EguiView {
         if let Some(h) = self.rigctld_handle.take() {
             h.stop();
             self.rigctld_status = "stopped".into();
+        }
+    }
+
+    fn start_midi(&mut self) {
+        if self.midi_listener.is_some() {
+            return;
+        }
+        let Some(needle) = self.app.midi_settings().device_name.clone() else {
+            self.midi_status = "no device selected".into();
+            return;
+        };
+        match arion_midi::start(
+            &needle,
+            self.midi_mapping.clone(),
+            self.midi_action_tx.clone(),
+            self.midi_event_tx.clone(),
+        ) {
+            Ok(l) => {
+                self.midi_status = format!("connected to {}", l.port_name());
+                self.midi_listener = Some(l);
+            }
+            Err(e) => {
+                self.midi_status = format!("failed: {e}");
+                tracing::warn!(error = %e, needle = %needle, "midi start failed");
+            }
+        }
+    }
+
+    fn stop_midi(&mut self) {
+        if self.midi_listener.take().is_some() {
+            self.midi_status = "stopped".into();
+        }
+    }
+
+    fn refresh_midi_devices(&mut self) {
+        match arion_midi::device::enum_inputs() {
+            Ok(v) => self.midi_devices = v,
+            Err(e) => tracing::warn!(error = %e, "midi enum failed"),
+        }
+    }
+
+    fn draw_setup_midi(&mut self, ui: &mut egui::Ui) {
+        use arion_midi::Trigger;
+
+        ui.label(egui::RichText::new("MIDI controller").strong());
+        ui.add_space(4.0);
+        ui.weak("Map MIDI CC / Note messages to Arion actions. Encoder 'Relative' scale works for endless encoders using the Mackie 2's-complement convention (1..63 = CW, 65..127 = CCW).");
+        ui.add_space(6.0);
+
+        let midi = self.app.midi_settings().clone();
+
+        let mut enabled = midi.enabled;
+        if ui.checkbox(&mut enabled, "Enable MIDI input").changed() {
+            self.app.midi_settings_mut().enabled = enabled;
+            if enabled {
+                self.start_midi();
+            } else {
+                self.stop_midi();
+            }
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Device:");
+            let running = self.midi_listener.is_some();
+            let mut selected = midi.device_name.clone().unwrap_or_default();
+            let resp = egui::ComboBox::from_id_salt("midi-device")
+                .selected_text(if selected.is_empty() {
+                    "(pick a device)".to_string()
+                } else {
+                    selected.clone()
+                })
+                .show_ui(ui, |ui| {
+                    let mut changed = false;
+                    for name in &self.midi_devices {
+                        if ui.selectable_value(&mut selected, name.clone(), name).changed() {
+                            changed = true;
+                        }
+                    }
+                    changed
+                });
+            let changed = resp.inner.unwrap_or(false);
+            if changed {
+                self.app.midi_settings_mut().device_name = Some(selected);
+                if running {
+                    self.stop_midi();
+                    self.start_midi();
+                }
+            }
+            if ui.button("Rescan").clicked() {
+                self.refresh_midi_devices();
+            }
+        });
+
+        ui.add_space(6.0);
+        ui.label(format!("Status: {}", self.midi_status));
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.label(egui::RichText::new("Last event (learn)").strong());
+        match self.midi_last_event {
+            Some(arion_midi::MidiEvent { trigger: Trigger::Cc { channel, controller }, value }) => {
+                ui.monospace(format!("CC  ch={channel:<2} ctrl={controller:<3} val={value}"));
+            }
+            Some(arion_midi::MidiEvent { trigger: Trigger::Note { channel, note }, value }) => {
+                ui.monospace(format!("Note ch={channel:<2} note={note:<3} vel={value}"));
+            }
+            None => {
+                ui.weak("(move a control on your MIDI device)");
+            }
+        }
+
+        ui.add_space(8.0);
+        ui.separator();
+        ui.label(egui::RichText::new("Bindings").strong());
+        let snap = self.midi_mapping.load_full();
+        egui::Grid::new("midi-bindings").striped(true).show(ui, |ui| {
+            ui.label(egui::RichText::new("Trigger").strong());
+            ui.label(egui::RichText::new("Scale").strong());
+            ui.label(egui::RichText::new("Target").strong());
+            ui.end_row();
+            for b in &snap.bindings {
+                let trig = match b.trigger {
+                    Trigger::Cc { channel, controller } => format!("CC ch={channel} ctrl={controller}"),
+                    Trigger::Note { channel, note } => format!("Note ch={channel} n={note}"),
+                };
+                let scale = match b.scale {
+                    arion_midi::Scale::Absolute { min, max } => format!("Abs [{min}, {max}]"),
+                    arion_midi::Scale::Relative { step } => format!("Rel step={step}"),
+                    arion_midi::Scale::Trigger => "Trigger".into(),
+                };
+                ui.monospace(trig);
+                ui.monospace(scale);
+                ui.monospace(format!("{:?}", b.target));
+                ui.end_row();
+            }
+        });
+
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            if ui.button("Reset to default mapping").clicked() {
+                self.midi_mapping.store(std::sync::Arc::new(arion_midi::default_mapping()));
+                self.save_midi_mapping();
+            }
+            if ui.button("Save mapping").clicked() {
+                self.save_midi_mapping();
+            }
+        });
+        ui.weak(format!(
+            "Mapping file: {}",
+            arion_midi::persist::midi_config_path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|| "(no config dir)".into())
+        ));
+    }
+
+    fn save_midi_mapping(&self) {
+        let table = self.midi_mapping.load_full();
+        match arion_midi::persist::save(&table) {
+            Ok(()) => tracing::info!("midi: mapping saved"),
+            Err(e) => tracing::warn!(error = %e, "midi: save failed"),
         }
     }
 

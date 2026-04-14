@@ -8,6 +8,7 @@ description = "Safe Rust wrapper around wdsp-sys"
 [dependencies]
 wdsp-sys.workspace = true
 thiserror.workspace = true
+serde.workspace = true
 tracing.workspace = true
 directories.workspace = true
 

@@ -126,7 +126,7 @@ impl Default for RxState {
 /// AGC speed presets matching Arion upstream's combo. Wire-level
 /// binding to `wdsp::AgcMode` happens in phase E; for now this is
 /// UI state only.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 pub enum AgcPreset {
     Off,
     Long,
@@ -140,7 +140,7 @@ pub enum AgcPreset {
 /// row (Filter1..Filter10). Values are passband width in Hz for
 /// SSB-like modes; the actual low/high depends on mode (USB → positive,
 /// LSB → negative, AM → symmetric).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum FilterPreset {
     F6000,
     F4000,
@@ -254,7 +254,7 @@ pub fn mode_from_serde(m: SerdeMode) -> WdspMode {
 // Amateur bands (HF + 6m) — used by Band buttons + band stack
 // --------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Band {
     M160, M80, M60, M40, M30, M20, M17, M15, M12, M10, M6,
 }
@@ -451,6 +451,7 @@ pub struct App {
     dsp_defaults:     arion_settings::DspDefaults,
     calibration:      arion_settings::Calibration,
     network_settings: arion_settings::NetworkSettings,
+    midi_settings:    arion_settings::MidiSettings,
 
     // --- Persistence (B.5) -----------------------------------------
     memories:  Vec<Memory>,
@@ -516,6 +517,7 @@ impl App {
             dsp_defaults:     settings.dsp,
             calibration:      settings.calibration,
             network_settings: settings.network,
+            midi_settings:    settings.midi,
             memories:     settings.memories,
             open_windows: std::collections::HashMap::new(),
             last_save:    Instant::now(),
@@ -585,6 +587,13 @@ impl App {
     pub fn network_settings_mut(&mut self) -> &mut arion_settings::NetworkSettings {
         self.mark_dirty();
         &mut self.network_settings
+    }
+    pub fn midi_settings(&self) -> &arion_settings::MidiSettings {
+        &self.midi_settings
+    }
+    pub fn midi_settings_mut(&mut self) -> &mut arion_settings::MidiSettings {
+        self.mark_dirty();
+        &mut self.midi_settings
     }
 
     // --- Write API (mut self, dispatched from frontends) ------------
@@ -995,6 +1004,7 @@ impl App {
         s.dsp          = self.dsp_defaults.clone();
         s.calibration  = self.calibration.clone();
         s.network      = self.network_settings.clone();
+        s.midi         = self.midi_settings.clone();
         s.memories     = self.memories.clone();
         s
     }

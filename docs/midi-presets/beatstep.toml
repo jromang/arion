@@ -1,0 +1,82 @@
+# Arturia BeatStep (original) — Control mode.
+# 16 small encoders (CC 10..25 by default), 16 pads (Note 36..51),
+# plus the larger Rate/Fine encoder (CC 28) in the top-right corner.
+# Factory defaults vary; reshape via Arturia MIDI Control Center.
+#
+# Copy this file to ~/.config/arion/midi.toml and set device_name
+# "Arturia BeatStep" in Setup → MIDI.
+
+# Big Rate/Fine knob → RX0 VFO (Relative encoder, 10 Hz / tick).
+[[bindings]]
+trigger = { kind = "cc", channel = 0, controller = 28 }
+scale   = { kind = "relative", step = 10.0 }
+target  = { kind = "frequency", rx = 0 }
+
+# Encoder 1 → RX0 AF gain
+[[bindings]]
+trigger = { kind = "cc", channel = 0, controller = 10 }
+scale   = { kind = "absolute", min = 0.0, max = 1.0 }
+target  = { kind = "volume", rx = 0 }
+
+# Encoder 2 → RX0 RIT delta
+[[bindings]]
+trigger = { kind = "cc", channel = 0, controller = 11 }
+scale   = { kind = "relative", step = 10.0 }
+target  = { kind = "rit", rx = 0 }
+
+# Pads (bottom row) → band jump
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 36 }
+scale   = { kind = "trigger" }
+target  = { kind = "band", band = "M160" }
+
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 37 }
+scale   = { kind = "trigger" }
+target  = { kind = "band", band = "M80" }
+
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 38 }
+scale   = { kind = "trigger" }
+target  = { kind = "band", band = "M40" }
+
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 39 }
+scale   = { kind = "trigger" }
+target  = { kind = "band", band = "M20" }
+
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 40 }
+scale   = { kind = "trigger" }
+target  = { kind = "band", band = "M15" }
+
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 41 }
+scale   = { kind = "trigger" }
+target  = { kind = "band", band = "M10" }
+
+# Pads (top row) → mode selection
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 44 }
+scale   = { kind = "trigger" }
+target  = { kind = "mode", rx = 0, mode = "Lsb" }
+
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 45 }
+scale   = { kind = "trigger" }
+target  = { kind = "mode", rx = 0, mode = "Usb" }
+
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 46 }
+scale   = { kind = "trigger" }
+target  = { kind = "mode", rx = 0, mode = "Am" }
+
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 47 }
+scale   = { kind = "trigger" }
+target  = { kind = "mode", rx = 0, mode = "Fm" }
+
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 48 }
+scale   = { kind = "trigger" }
+target  = { kind = "mode", rx = 0, mode = "CwU" }

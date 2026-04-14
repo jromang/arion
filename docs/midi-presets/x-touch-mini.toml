@@ -1,0 +1,57 @@
+# Behringer X-Touch Mini (standard / CC mode).
+# 8 rotary encoders → CC 1..8 (channel 0), 16 buttons → Note 8..23,
+# 1 fader → CC 9. Encoders default to Absolute on the X-Touch; switch
+# them to Relative via Mackie MC mode in MIDI Control Editor if you
+# want to use the VFO / freq-delta bindings.
+#
+# Copy this file to ~/.config/arion/midi.toml and set device_name
+# "X-TOUCH MINI" in Setup → MIDI.
+
+# Encoder 1 → RX0 AF gain
+[[bindings]]
+trigger = { kind = "cc", channel = 0, controller = 1 }
+scale   = { kind = "absolute", min = 0.0, max = 1.0 }
+target  = { kind = "volume", rx = 0 }
+
+# Encoder 2 → RX0 RIT delta (requires Relative mode on the encoder)
+[[bindings]]
+trigger = { kind = "cc", channel = 0, controller = 2 }
+scale   = { kind = "relative", step = 10.0 }
+target  = { kind = "rit", rx = 0 }
+
+# Fader → RX0 volume (backup)
+[[bindings]]
+trigger = { kind = "cc", channel = 0, controller = 9 }
+scale   = { kind = "absolute", min = 0.0, max = 1.0 }
+target  = { kind = "volume", rx = 0 }
+
+# Buttons (top row) → band jump
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 8 }
+scale   = { kind = "trigger" }
+target  = { kind = "band", band = "M160" }
+
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 9 }
+scale   = { kind = "trigger" }
+target  = { kind = "band", band = "M80" }
+
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 10 }
+scale   = { kind = "trigger" }
+target  = { kind = "band", band = "M40" }
+
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 11 }
+scale   = { kind = "trigger" }
+target  = { kind = "band", band = "M20" }
+
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 12 }
+scale   = { kind = "trigger" }
+target  = { kind = "band", band = "M15" }
+
+[[bindings]]
+trigger = { kind = "note", channel = 0, note = 13 }
+scale   = { kind = "trigger" }
+target  = { kind = "band", band = "M10" }

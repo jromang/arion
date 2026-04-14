@@ -15,6 +15,7 @@ description = "Headless view-model for Arion (frontend-agnostic)"
 arion-core.workspace = true
 arion-settings.workspace = true
 arc-swap.workspace = true
+serde.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
 

@@ -11,6 +11,7 @@ arion-core.workspace = true
 arion-audio.workspace = true
 arion-script.workspace = true
 arion-rigctld.workspace = true
+arion-midi.workspace = true
 arion-web.workspace = true
 arion-settings.workspace = true
 arc-swap.workspace = true

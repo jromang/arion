@@ -50,7 +50,7 @@ pub enum WdspError {
 
 /// RXA demodulation mode. Wire values match the integers WDSP expects in
 /// `SetRXAMode` and the `RXA_MODE_*` constants from `wdsp-sys`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Mode {
     Lsb,
     Usb,

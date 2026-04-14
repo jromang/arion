@@ -221,6 +221,17 @@ impl Default for NetworkSettings {
     }
 }
 
+/// MIDI controller integration. The binding table itself lives in
+/// a separate file (`~/.config/arion/midi.toml`) because it's owned
+/// by `arion-midi` and those types can't be referenced from here
+/// without creating a dependency cycle with `arion-app`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MidiSettings {
+    pub enabled:     bool,
+    pub device_name: Option<String>,
+}
+
 /// Per-band S-meter calibration offset in dBm. Stored as a map
 /// keyed by band label ("160", "80", …). Missing entries → 0.0 dBm
 /// offset (no correction).
@@ -240,6 +251,7 @@ pub struct Settings {
     pub dsp:         DspDefaults,
     pub calibration: Calibration,
     pub network:     NetworkSettings,
+    pub midi:        MidiSettings,
     /// Per-RX state, ordered by RX index. Always at least 2 entries
     /// after a load — `Settings::ensure_rx_slots` pads with defaults
     /// so the UI can index without bounds-checking.
