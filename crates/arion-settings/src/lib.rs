@@ -129,6 +129,35 @@ impl WaterfallPalette {
     }
 }
 
+/// IARU region the bandplan overlay is drawn for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum BandplanRegion {
+    #[default]
+    Region1, // Europe, Africa, Middle East, Northern Asia
+    Region2, // Americas
+    Region3, // Asia-Pacific, Oceania
+    Off,
+}
+
+impl BandplanRegion {
+    pub const ALL: &'static [BandplanRegion] = &[
+        BandplanRegion::Off,
+        BandplanRegion::Region1,
+        BandplanRegion::Region2,
+        BandplanRegion::Region3,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            BandplanRegion::Off     => "Off",
+            BandplanRegion::Region1 => "Region 1 (EU/AF)",
+            BandplanRegion::Region2 => "Region 2 (AM)",
+            BandplanRegion::Region3 => "Region 3 (AP)",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DisplaySettings {
@@ -136,6 +165,7 @@ pub struct DisplaySettings {
     pub spectrum_max_db:    f32,
     pub waterfall_speed:    u8,
     pub waterfall_palette:  WaterfallPalette,
+    pub bandplan_region:    BandplanRegion,
     pub auto_connect:       bool,
 }
 
@@ -146,6 +176,7 @@ impl Default for DisplaySettings {
             spectrum_max_db:      0.0,
             waterfall_speed:      1,
             waterfall_palette:    WaterfallPalette::Enhanced,
+            bandplan_region:      BandplanRegion::Region1,
             auto_connect:         false,
         }
     }

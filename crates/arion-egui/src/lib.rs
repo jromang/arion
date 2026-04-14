@@ -31,6 +31,7 @@ use arion_settings::WaterfallPalette;
 use arion_core::{WdspMode, MAX_RX, SPECTRUM_BINS};
 use arion_script::{FnHandle, ReplLineKind, ScriptEngine};
 
+mod bandplan;
 mod script_ui;
 use arion_settings::Memory;
 
@@ -1502,6 +1503,21 @@ impl EguiView {
         });
 
         ui.horizontal(|ui| {
+            ui.label("Bandplan region:");
+            let mut region = ds.bandplan_region;
+            egui::ComboBox::from_id_salt("bandplan_region")
+                .selected_text(region.label())
+                .show_ui(ui, |ui| {
+                    for &r in arion_settings::BandplanRegion::ALL {
+                        ui.selectable_value(&mut region, r, r.label());
+                    }
+                });
+            if region != ds.bandplan_region {
+                self.app.display_settings_mut().bandplan_region = region;
+            }
+        });
+
+        ui.horizontal(|ui| {
             ui.label("Waterfall speed:");
             let mut speed = ds.waterfall_speed;
             if ui.add(egui::Slider::new(&mut speed, 1..=8)
@@ -2096,6 +2112,13 @@ impl EguiView {
                         ui, spec_rect, vis_bins,
                         ds.spectrum_min_db, ds.spectrum_max_db,
                         false, // fill disabled — convex_polygon glitches on non-convex shapes
+                    );
+                    // Bandplan painted AFTER the spectrum background/grid so the
+                    // semi-transparent tints are visible, but before the trace
+                    // overlays so the curve still reads clearly on top.
+                    bandplan::draw(
+                        &ui.painter_at(spec_rect), spec_rect,
+                        lo_hz, hi_hz, ds.bandplan_region,
                     );
                 }
 
