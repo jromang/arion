@@ -2148,6 +2148,20 @@ impl EguiView {
                     );
                 }
 
+                // Notch / TNF markers — placeholder ±1 kHz demo notches when TNF is on.
+                // Real positions come from WDSP once the TNF binding is exposed.
+                if show_spec && self.app.rx(r).is_some_and(|v| v.tnf) {
+                    let c = center_hz as f32;
+                    let markers = [
+                        NotchMarker { freq_hz: c - 1000.0, enabled: true },
+                        NotchMarker { freq_hz: c + 1000.0, enabled: true },
+                    ];
+                    draw_notch_markers(
+                        &ui.painter_at(spec_rect), spec_rect,
+                        &markers, lo_hz, hi_hz,
+                    );
+                }
+
                 // Passband overlay with hover/drag feedback
                 if show_spec && visible_span > 0.0 && x_fhi > x_flo + 1.0 {
                     let band_rect = Rect::from_min_max(
@@ -2520,6 +2534,45 @@ fn draw_trace_range(ui: &egui::Ui, rect: Rect, bins: &[f32], color: Color32, min
 }
 
 // --- Spectrum (immediate-mode line draw) --------------------------------
+
+/// Display-only notch marker. Until the WDSP TNF binding is exposed, the
+/// egui frontend constructs placeholder markers from `rx.tnf` + center_hz.
+#[derive(Clone, Copy)]
+struct NotchMarker {
+    /// Absolute Hz (not offset from center).
+    freq_hz: f32,
+    enabled: bool,
+}
+
+/// Vertical lines + "N" label at each notch. Olive when active, gray when
+/// disabled — matches Thetis. Skips notches outside the visible window.
+fn draw_notch_markers(
+    painter: &egui::Painter,
+    rect: Rect,
+    markers: &[NotchMarker],
+    lo_hz: f32,
+    hi_hz: f32,
+) {
+    let span = hi_hz - lo_hz;
+    if span <= 0.0 { return; }
+    for m in markers {
+        let x = rect.left() + (m.freq_hz - lo_hz) / span * rect.width();
+        if x < rect.left() || x > rect.right() { continue; }
+        let color = if m.enabled {
+            Color32::from_rgb(128, 128, 0) // Olive
+        } else {
+            Color32::from_gray(128)
+        };
+        painter.vline(x, rect.y_range(), Stroke::new(1.0, color));
+        painter.text(
+            Pos2::new(x + 2.0, rect.top() + 2.0),
+            egui::Align2::LEFT_TOP,
+            "N",
+            egui::FontId::proportional(9.0),
+            color,
+        );
+    }
+}
 
 /// Horizontal orange line at the AGC threshold dBFS. Skipped when AGC is Off.
 /// Thresholds are WDSP defaults (Long/Slow -100, Med -90, Fast -80).
