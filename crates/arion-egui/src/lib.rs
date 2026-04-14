@@ -129,6 +129,10 @@ pub struct EguiView {
     view_states: Vec<RxViewState>,
     /// Per-RX passband drag state (which edge/center is being dragged).
     passband_drags: Vec<PassbandDrag>,
+    /// Per-RX display layout (Panafall / Spectrum / Waterfall / Split).
+    display_modes: Vec<DisplayMode>,
+    /// Per-RX split fraction in Split mode — height fraction for the spectrum ∈ [0.15, 0.85].
+    split_fractions: Vec<f32>,
 }
 
 /// One script editor tab: a buffer that may or may not be backed by
@@ -186,6 +190,8 @@ impl EguiView {
         let overlays        = (0..MAX_RX).map(|_| SpectrumOverlay::new()).collect();
         let view_states     = (0..MAX_RX).map(|_| RxViewState::default()).collect();
         let passband_drags  = (0..MAX_RX).map(|_| PassbandDrag::None).collect();
+        let display_modes   = (0..MAX_RX).map(|_| DisplayMode::default()).collect();
+        let split_fractions = (0..MAX_RX).map(|_| 0.5_f32).collect();
 
         let (rigctld_tx, rigctld_rx) = mpsc::channel::<arion_rigctld::RigRequest>();
 
@@ -195,6 +201,8 @@ impl EguiView {
             overlays,
             view_states,
             passband_drags,
+            display_modes,
+            split_fractions,
             new_memory_name:    String::new(),
             new_memory_tag:     String::new(),
             setup_tab:          0,
@@ -1914,10 +1922,27 @@ impl EguiView {
                 let uv_lo = lo_bin as f32 / n_bins as f32;
                 let uv_hi = hi_bin as f32 / n_bins as f32;
 
-                // Layout: spectrum | 18px axis | 4px gap | waterfall
+                // Layout: depends on DisplayMode.
+                // Panafall: spec 35% + axis + waterfall; Split: same but draggable divider;
+                // Spectrum: full-band spec + axis only; Waterfall: axis + full-band waterfall.
                 let axis_h  = 18.0_f32;
-                let spec_h  = (band_rect.height() * 0.35).max(80.0);
-                let water_h = (band_rect.height() - spec_h - axis_h - 4.0).max(60.0);
+                let gap     = 4.0_f32;
+                let mode    = self.display_modes[r];
+                let (show_spec, show_water) = match mode {
+                    DisplayMode::Panafall  | DisplayMode::Split => (true, true),
+                    DisplayMode::Spectrum  => (true,  false),
+                    DisplayMode::Waterfall => (false, true),
+                };
+                let inner_gap = if show_spec && show_water { gap } else { 0.0 };
+                let usable    = (band_rect.height() - axis_h - inner_gap).max(40.0);
+                let spec_frac = match mode {
+                    DisplayMode::Panafall  => 0.35,
+                    DisplayMode::Split     => self.split_fractions[r].clamp(0.15, 0.85),
+                    DisplayMode::Spectrum  => 1.0,
+                    DisplayMode::Waterfall => 0.0,
+                };
+                let spec_h  = if show_spec  { (usable * spec_frac).max(0.0) } else { 0.0 };
+                let water_h = if show_water { usable - spec_h }              else { 0.0 };
                 let spec_rect = Rect::from_min_size(
                     band_rect.min,
                     Vec2::new(band_rect.width(), spec_h),
@@ -1927,7 +1952,7 @@ impl EguiView {
                     Vec2::new(band_rect.width(), axis_h),
                 );
                 let water_rect = Rect::from_min_size(
-                    Pos2::new(band_rect.min.x, band_rect.min.y + spec_h + axis_h + 4.0),
+                    Pos2::new(band_rect.min.x, band_rect.min.y + spec_h + axis_h + inner_gap),
                     Vec2::new(band_rect.width(), water_h),
                 );
 
@@ -2066,14 +2091,16 @@ impl EguiView {
                 let vis_bins = &snapshot.rx[r].spectrum_bins_db
                     [lo_bin.min(n_bins)..hi_bin.min(n_bins)];
                 let ds = self.app.display_settings();
-                draw_spectrum_ex(
-                    ui, spec_rect, vis_bins,
-                    ds.spectrum_min_db, ds.spectrum_max_db,
-                    false, // fill disabled — convex_polygon glitches on non-convex shapes
-                );
+                if show_spec {
+                    draw_spectrum_ex(
+                        ui, spec_rect, vis_bins,
+                        ds.spectrum_min_db, ds.spectrum_max_db,
+                        false, // fill disabled — convex_polygon glitches on non-convex shapes
+                    );
+                }
 
                 // Peak hold trace (white, 1px)
-                if self.overlays[r].show_peak {
+                if show_spec && self.overlays[r].show_peak {
                     let peak_slice = &self.overlays[r].peak_bins
                         [lo_bin.min(n_bins)..hi_bin.min(n_bins)];
                     draw_trace_range(ui, spec_rect, peak_slice,
@@ -2081,7 +2108,7 @@ impl EguiView {
                         ds.spectrum_min_db, ds.spectrum_max_db);
                 }
                 // Average trace (cyan, 1px)
-                if self.overlays[r].show_avg {
+                if show_spec && self.overlays[r].show_avg {
                     let avg_slice = &self.overlays[r].avg_bins
                         [lo_bin.min(n_bins)..hi_bin.min(n_bins)];
                     draw_trace_range(ui, spec_rect, avg_slice,
@@ -2090,7 +2117,7 @@ impl EguiView {
                 }
 
                 // Passband overlay with hover/drag feedback
-                if visible_span > 0.0 && x_fhi > x_flo + 1.0 {
+                if show_spec && visible_span > 0.0 && x_fhi > x_flo + 1.0 {
                     let band_rect = Rect::from_min_max(
                         egui::pos2(x_flo, spec_rect.top()),
                         egui::pos2(x_fhi, spec_rect.bottom()),
@@ -2135,8 +2162,10 @@ impl EguiView {
                 } else {
                     String::new()
                 };
-                ui.painter_at(spec_rect).text(
-                    spec_rect.min + Vec2::new(6.0, 4.0),
+                // RX label: on spectrum if shown, otherwise on waterfall top-left.
+                let label_rect = if show_spec { spec_rect } else { water_rect };
+                ui.painter_at(label_rect).text(
+                    label_rect.min + Vec2::new(6.0, 4.0),
                     egui::Align2::LEFT_TOP,
                     format!("{}RX{}  {:.3} MHz  {:?}{}",
                         prefix,
@@ -2149,7 +2178,9 @@ impl EguiView {
                 );
 
                 // Waterfall (UV-cropped for zoom)
-                self.waterfalls[r].draw(ui, ctx, water_rect, uv_lo, uv_hi);
+                if show_water {
+                    self.waterfalls[r].draw(ui, ctx, water_rect, uv_lo, uv_hi);
+                }
 
                 // VFO marker at correct position within the visible window
                 let vfo_frac = if (hi_hz - lo_hz).abs() > 0.1 {
@@ -2157,10 +2188,14 @@ impl EguiView {
                 } else {
                     0.5
                 };
-                let vfo_spec_x  = spec_rect.left()  + vfo_frac * spec_rect.width();
-                let vfo_water_x = water_rect.left() + vfo_frac * water_rect.width();
-                draw_vfo_marker(&ui.painter_at(spec_rect),  spec_rect,  vfo_spec_x);
-                draw_vfo_marker(&ui.painter_at(water_rect), water_rect, vfo_water_x);
+                if show_spec {
+                    let vfo_spec_x = spec_rect.left() + vfo_frac * spec_rect.width();
+                    draw_vfo_marker(&ui.painter_at(spec_rect), spec_rect, vfo_spec_x);
+                }
+                if show_water {
+                    let vfo_water_x = water_rect.left() + vfo_frac * water_rect.width();
+                    draw_vfo_marker(&ui.painter_at(water_rect), water_rect, vfo_water_x);
+                }
 
                 // --- Tune interaction + context menu (skipped during passband drag) ---
                 spec_resp.context_menu(|ui| {
@@ -2171,7 +2206,7 @@ impl EguiView {
                         ui.close();
                     }
                 });
-                if !passband_active {
+                if show_spec && !passband_active {
                     let (new_freq, clicked) = tune_from_response(
                         &spec_resp, ui, spec_rect, center_hz, lo_hz, hi_hz,
                     );
@@ -2179,13 +2214,90 @@ impl EguiView {
                     if clicked { newly_active = Some(r); }
                 }
 
-                let (new_freq, clicked) = handle_tune_input(
-                    ui, water_rect,
-                    egui::Id::new(("water-tune", r)),
-                    center_hz, lo_hz, hi_hz,
-                );
-                if let Some(f) = new_freq { pending_tunes.push((r, f)); }
-                if clicked { newly_active = Some(r); }
+                if show_water {
+                    let (new_freq, clicked) = handle_tune_input(
+                        ui, water_rect,
+                        egui::Id::new(("water-tune", r)),
+                        center_hz, lo_hz, hi_hz,
+                    );
+                    if let Some(f) = new_freq { pending_tunes.push((r, f)); }
+                    if clicked { newly_active = Some(r); }
+                }
+
+                // --- Split-mode draggable divider ---
+                if matches!(mode, DisplayMode::Split) {
+                    let divider = Rect::from_min_size(
+                        Pos2::new(band_rect.min.x, band_rect.min.y + spec_h - 2.0),
+                        Vec2::new(band_rect.width(), axis_h + 4.0),
+                    );
+                    let div_resp = ui.interact(
+                        divider,
+                        egui::Id::new(("split-divider", r)),
+                        Sense::click_and_drag(),
+                    );
+                    if div_resp.hovered() || div_resp.dragged() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+                    }
+                    if div_resp.dragged() {
+                        let dy = div_resp.drag_delta().y;
+                        let frac = self.split_fractions[r]
+                            + dy / (band_rect.height() - axis_h).max(1.0);
+                        self.split_fractions[r] = frac.clamp(0.15, 0.85);
+                    }
+                }
+
+                // --- 4-icon mode toggle strip (top-right corner) ---
+                {
+                    let modes_btn: [(DisplayMode, &str, &str); 4] = [
+                        (DisplayMode::Panafall,  "P", "Panafall (spectrum + waterfall)"),
+                        (DisplayMode::Spectrum,  "S", "Spectrum only"),
+                        (DisplayMode::Waterfall, "W", "Waterfall only"),
+                        (DisplayMode::Split,     "≡", "Split with draggable divider"),
+                    ];
+                    let btn_w = 18.0_f32;
+                    let btn_h = 16.0_f32;
+                    let pad   = 2.0_f32;
+                    let total_w = btn_w * modes_btn.len() as f32 + pad * (modes_btn.len() - 1) as f32;
+                    let strip_x = band_rect.right() - total_w - 4.0;
+                    let strip_y = band_rect.top() + 2.0;
+                    for (i, (m, glyph, tip)) in modes_btn.iter().enumerate() {
+                        let x = strip_x + (btn_w + pad) * i as f32;
+                        let btn = Rect::from_min_size(
+                            Pos2::new(x, strip_y),
+                            Vec2::new(btn_w, btn_h),
+                        );
+                        let resp = ui.interact(
+                            btn,
+                            egui::Id::new(("disp-mode-btn", r, i)),
+                            Sense::click(),
+                        ).on_hover_text(*tip);
+                        let selected = *m == mode;
+                        let bg = if selected {
+                            Color32::from_rgb(60, 110, 60)
+                        } else if resp.hovered() {
+                            Color32::from_rgba_unmultiplied(70, 70, 70, 220)
+                        } else {
+                            Color32::from_rgba_unmultiplied(30, 30, 30, 200)
+                        };
+                        let painter = ui.painter_at(btn);
+                        painter.rect_filled(btn, 2.0, bg);
+                        painter.rect_stroke(
+                            btn, 2.0,
+                            Stroke::new(1.0, Color32::from_gray(90)),
+                            egui::StrokeKind::Inside,
+                        );
+                        painter.text(
+                            btn.center(),
+                            egui::Align2::CENTER_CENTER,
+                            *glyph,
+                            egui::FontId::proportional(11.0),
+                            Color32::WHITE,
+                        );
+                        if resp.clicked() {
+                            self.display_modes[r] = *m;
+                        }
+                    }
+                }
             }
         });
 
@@ -2464,6 +2576,17 @@ enum PassbandDrag {
     LoEdge,
     HiEdge,
     Center,
+}
+
+/// Per-RX display layout. Panafall is the classic spectrum+waterfall view
+/// with a fixed 35/65 split; Split lets the user drag the divider.
+#[derive(Default, Clone, Copy, PartialEq)]
+enum DisplayMode {
+    #[default]
+    Panafall,
+    Spectrum,
+    Waterfall,
+    Split,
 }
 
 /// Per-RX display zoom + pan state. Pure display — never moves the VFO.
