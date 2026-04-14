@@ -13,12 +13,13 @@ tracing.workspace = true
 serde.workspace = true
 serde_json = "1"
 arc-swap.workspace = true
+rtrb.workspace = true
 tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "time"] }
 axum = { version = "0.7", features = ["ws"] }
 tower-http = { version = "0.6", features = ["trace"] }
 rust-embed = { version = "8", features = ["debug-embed"] }
 mime_guess = "2"
-str0m = "0.7"
+str0m = "0.18"
 opus = "0.3"
 
 [dev-dependencies]

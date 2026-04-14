@@ -16,7 +16,8 @@ use std::time::Duration;
 use anyhow::Result;
 use arc_swap::ArcSwap;
 use arion_app::App;
-use arion_core::Telemetry;
+use arion_core::{StereoFrame, Telemetry};
+use rtrb::Consumer;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -41,18 +42,28 @@ const SPECTRUM_PUSH_INTERVAL: Duration = Duration::from_millis(50);
 
 pub type SharedApp = Arc<Mutex<App>>;
 pub type SharedTelemetry = Arc<ArcSwap<Telemetry>>;
+/// Consumer side of the RX audio ring. Owned by the server until
+/// the first WebRTC peer takes it; if absent or `None`, the peer
+/// falls back to a synthetic tone generator.
+pub type SharedAudioTap = Arc<Mutex<Option<Consumer<StereoFrame>>>>;
 
 #[derive(Clone)]
 struct AppState {
     app:       SharedApp,
     telemetry: SharedTelemetry,
+    audio_tap: SharedAudioTap,
     /// Fallback ICE host candidate IP when we can't derive one from
     /// the client's remote address.
     advertise_ip: IpAddr,
 }
 
 /// Run the web server on `addr` until the process exits.
-pub fn serve_blocking(addr: SocketAddr, app: SharedApp, telemetry: SharedTelemetry) -> Result<()> {
+pub fn serve_blocking(
+    addr: SocketAddr,
+    app: SharedApp,
+    telemetry: SharedTelemetry,
+    audio_tap: SharedAudioTap,
+) -> Result<()> {
     let advertise_ip = if addr.ip().is_unspecified() {
         IpAddr::V4(Ipv4Addr::LOCALHOST)
     } else {
@@ -63,7 +74,7 @@ pub fn serve_blocking(addr: SocketAddr, app: SharedApp, telemetry: SharedTelemet
         .thread_name("arion-web")
         .build()?;
     rt.block_on(async move {
-        let state = AppState { app, telemetry, advertise_ip };
+        let state = AppState { app, telemetry, audio_tap, advertise_ip };
         let router = Router::new()
             .route("/ws", get(ws_upgrade))
             .fallback(get(assets::serve_asset))
@@ -178,18 +189,20 @@ async fn handle_client_text(
             None
         }
         ClientEnvelope::Webrtc(WebrtcClient::Offer { sdp }) => {
-            handle_offer(advertise_ip, peer, sdp).await
+            handle_offer(state, advertise_ip, peer, sdp).await
         }
     }
 }
 
 async fn handle_offer(
+    state: &AppState,
     advertise_ip: IpAddr,
     peer: &mut Option<webrtc::PeerHandle>,
     sdp: String,
 ) -> Option<String> {
     if peer.is_none() {
-        match webrtc::spawn(advertise_ip) {
+        let audio = state.audio_tap.lock().unwrap_or_else(|p| p.into_inner()).take();
+        match webrtc::spawn(advertise_ip, audio) {
             Ok(h) => *peer = Some(h),
             Err(e) => {
                 return serde_json::to_string(&Envelope::Webrtc(WebrtcServer::Error {

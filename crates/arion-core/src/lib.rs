@@ -52,13 +52,13 @@ use hpsdr_net::{Session, SessionConfig, SessionStatus};
 use hpsdr_protocol::IqSample;
 use rtrb::Consumer;
 use rustfft::{num_complex::Complex32, Fft, FftPlanner};
-use arion_audio::{AudioConfig, AudioOutput, AudioSink, StereoFrame};
+use arion_audio::{AudioConfig, AudioOutput, AudioSink};
 use wdsp::{Channel as WdspChannel, Mode, RxConfig as WdspRxConfig};
 
 // Re-exports so downstream crates only need to depend on `arion-core`.
 pub use hpsdr_net::{discover, DiscoveryOptions, RadioInfo};
 pub use hpsdr_net::session::MAX_SESSION_RX as MAX_RX;
-pub use arion_audio::{list_output_devices, AudioStats};
+pub use arion_audio::{list_output_devices, AudioStats, StereoFrame};
 pub use wdsp::Mode as WdspMode;
 
 /// Per-receiver configuration passed to [`Radio::start`].
@@ -230,6 +230,11 @@ pub struct Radio {
     dsp_thread:  Option<JoinHandle<()>>,
     shutdown:    Arc<AtomicBool>,
     commands:    MpscTx<DspCommand>,
+    /// Side-channel for the secondary audio tap producer. Kept
+    /// separate from [`DspCommand`] because `rtrb::Producer` is
+    /// `!Sync` and can't ride through the main command channel
+    /// without breaking other `anyhow` callsites.
+    audio_tap_tx: MpscTx<Option<rtrb::Producer<StereoFrame>>>,
     samples_dsp: Arc<std::sync::atomic::AtomicU64>,
     telemetry:   Arc<ArcSwap<Telemetry>>,
     /// One atomic u32 per RX so the UI can read the live tuned
@@ -317,6 +322,8 @@ impl Radio {
         let shutdown = Arc::new(AtomicBool::new(false));
         let samples_dsp = Arc::new(std::sync::atomic::AtomicU64::new(0));
         let (command_tx, command_rx) = mpsc::channel::<DspCommand>();
+        let (audio_tap_tx, audio_tap_rx) =
+            mpsc::channel::<Option<rtrb::Producer<StereoFrame>>>();
 
         let center_freqs: [Arc<std::sync::atomic::AtomicU32>; MAX_RX] =
             std::array::from_fn(|r| {
@@ -358,6 +365,7 @@ impl Radio {
                         initial_rx,
                         audio_sink,
                         command_rx,
+                        audio_tap_rx,
                         shutdown,
                         samples_dsp,
                         telemetry,
@@ -373,6 +381,7 @@ impl Radio {
             dsp_thread:  Some(dsp_thread),
             shutdown,
             commands:    command_tx,
+            audio_tap_tx,
             samples_dsp,
             telemetry,
             center_freqs,
@@ -481,6 +490,23 @@ impl Radio {
 
     pub fn set_rx_binaural(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
         self.commands.send(DspCommand::SetRxBinaural { rx, enabled })?;
+        Ok(())
+    }
+
+    /// Attach or detach a secondary stereo audio tap. The DSP thread
+    /// mirrors every frame it sends to the cpal output into `producer`
+    /// using a non-blocking push — drops samples silently if the ring
+    /// fills up. Pass `None` to detach the current tap.
+    ///
+    /// Intended for out-of-band consumers like `arion-web` (WebRTC
+    /// Opus encoder); does not affect the primary audio path.
+    pub fn set_audio_tap(
+        &self,
+        producer: Option<rtrb::Producer<StereoFrame>>,
+    ) -> anyhow::Result<()> {
+        self.audio_tap_tx
+            .send(producer)
+            .map_err(|_| anyhow::anyhow!("DSP thread is gone; cannot attach audio tap"))?;
         Ok(())
     }
 
@@ -662,6 +688,7 @@ fn dsp_loop(
     initial_rx: [RxRuntime; MAX_RX],
     mut audio: AudioSink,
     commands:  MpscRx<DspCommand>,
+    audio_tap_rx: MpscRx<Option<rtrb::Producer<StereoFrame>>>,
     shutdown:  Arc<AtomicBool>,
     samples_dsp: Arc<std::sync::atomic::AtomicU64>,
     telemetry:   Arc<ArcSwap<Telemetry>>,
@@ -697,6 +724,12 @@ fn dsp_loop(
 
     let mut smoothed_s_meter_db: [f32; MAX_RX] = [-140.0; MAX_RX];
     let mut last_spectrum_push = Instant::now() - SPECTRUM_UPDATE_INTERVAL;
+
+    // Secondary stereo tap (e.g. arion-web → WebRTC). None by default;
+    // swapped in/out via `DspCommand::SetAudioTap`. Non-blocking push,
+    // drops samples if the consumer side falls behind rather than
+    // stalling DSP.
+    let mut audio_tap: Option<rtrb::Producer<StereoFrame>> = None;
 
     while !shutdown.load(Ordering::Acquire) {
         // 1. Apply any pending commands before starting a new buffer.
@@ -779,6 +812,12 @@ fn dsp_loop(
                     }
                 }
             }
+        }
+
+        // Drain audio-tap updates (separate channel because Producer is !Sync).
+        while let Ok(new_tap) = audio_tap_rx.try_recv() {
+            tracing::info!(attached = new_tap.is_some(), "DSP: audio tap set");
+            audio_tap = new_tap;
         }
 
         // 2. Pull `in_size` IQ samples from *each* consumer, in
@@ -869,6 +908,16 @@ fn dsp_loop(
                 dropped = audio_burst.len() - pushed,
                 "audio ring full, dropping samples"
             );
+        }
+
+        // Mirror to the optional secondary tap (WebRTC). Non-blocking:
+        // if the consumer side is slow or absent, we drop silently.
+        if let Some(tap) = audio_tap.as_mut() {
+            for frame in audio_burst.iter() {
+                if tap.push(*frame).is_err() {
+                    break;
+                }
+            }
         }
 
         // 5. Per-RX S-meter smoothing (200 ms time constant).

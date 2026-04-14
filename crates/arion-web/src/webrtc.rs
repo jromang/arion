@@ -15,6 +15,8 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Result};
+use arion_core::StereoFrame;
+use rtrb::Consumer;
 use str0m::change::SdpOffer;
 use str0m::media::MediaTime;
 use str0m::net::Receive;
@@ -36,7 +38,11 @@ pub struct PeerHandle {
 
 /// Spawn a new peer, returning a handle and the local bind address
 /// (the address the browser will see as the ICE host candidate).
-pub fn spawn(local_ip: IpAddr) -> Result<PeerHandle> {
+///
+/// `audio_source` is the consumer end of a stereo ring the DSP
+/// thread pushes into. If `None`, the peer falls back to the
+/// synthetic 440 Hz tone (useful for testing without a live radio).
+pub fn spawn(local_ip: IpAddr, audio_source: Option<Consumer<StereoFrame>>) -> Result<PeerHandle> {
     let socket = UdpSocket::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0))?;
     let local_port = socket.local_addr()?.port();
     let advertise = SocketAddr::new(local_ip, local_port);
@@ -45,15 +51,20 @@ pub fn spawn(local_ip: IpAddr) -> Result<PeerHandle> {
     thread::Builder::new()
         .name(format!("arion-web-peer-{local_port}"))
         .spawn(move || {
-            if let Err(e) = run(socket, advertise, rx) {
+            if let Err(e) = run(socket, advertise, rx, audio_source) {
                 tracing::warn!(error = %e, "peer thread exiting with error");
             }
         })?;
     Ok(PeerHandle { tx })
 }
 
-fn run(socket: UdpSocket, advertise: SocketAddr, rx: mpsc::Receiver<PeerCmd>) -> Result<()> {
-    let mut rtc = Rtc::new();
+fn run(
+    socket: UdpSocket,
+    advertise: SocketAddr,
+    rx: mpsc::Receiver<PeerCmd>,
+    mut audio_source: Option<Consumer<StereoFrame>>,
+) -> Result<()> {
+    let mut rtc = Rtc::new(Instant::now());
 
     // Advertise ourselves as an ICE host candidate.
     let candidate = Candidate::host(advertise, "udp")
@@ -109,14 +120,20 @@ fn run(socket: UdpSocket, advertise: SocketAddr, rx: mpsc::Receiver<PeerCmd>) ->
                     let _ = socket.send_to(&t.contents, t.destination);
                 }
                 Ok(Output::Event(ev)) => {
+                    tracing::info!(event = ?ev, "str0m event");
                     if let Event::MediaAdded(m) = &ev {
                         if matches!(m.kind, str0m::media::MediaKind::Audio) {
                             audio_mid = Some(m.mid);
                             tracing::info!(mid = ?m.mid, "audio track negotiated");
                         }
                     }
-                    if matches!(ev, Event::IceConnectionStateChange(str0m::IceConnectionState::Disconnected)) {
-                        tracing::info!("ice disconnected");
+                    if matches!(
+                        ev,
+                        Event::IceConnectionStateChange(
+                            str0m::IceConnectionState::Disconnected
+                        )
+                    ) {
+                        tracing::info!("ice disconnected — exiting peer thread");
                         return Ok(());
                     }
                 }
@@ -132,7 +149,11 @@ fn run(socket: UdpSocket, advertise: SocketAddr, rx: mpsc::Receiver<PeerCmd>) ->
         }
         while now >= next_audio_tick {
             if let Some(mid) = audio_mid {
-                let pcm = tone.next_20ms();
+                let pcm = if let Some(src) = audio_source.as_mut() {
+                    drain_into_20ms(src, &mut tone)
+                } else {
+                    tone.next_20ms()
+                };
                 let mut out = [0u8; 1500];
                 match encoder.encode_float(&pcm, &mut out) {
                     Ok(n) => {
@@ -172,7 +193,7 @@ fn run(socket: UdpSocket, advertise: SocketAddr, rx: mpsc::Receiver<PeerCmd>) ->
                     Receive {
                         proto:       str0m::net::Protocol::Udp,
                         source:      src,
-                        destination: socket.local_addr()?,
+                        destination: advertise,
                         contents,
                     },
                 ))
@@ -185,6 +206,35 @@ fn run(socket: UdpSocket, advertise: SocketAddr, rx: mpsc::Receiver<PeerCmd>) ->
             Err(e) => return Err(anyhow!("udp recv: {e}")),
         }
     }
+}
+
+/// Pull exactly 960 stereo frames (20 ms at 48 kHz) from the ring.
+/// If the ring is short on samples, pad with silence — dropping an
+/// Opus frame would be worse than a brief gap. If we see zero samples
+/// at all (tap not yet producing, radio disconnected), fall back to
+/// the tone so the peer stays alive and audible.
+fn drain_into_20ms(src: &mut Consumer<StereoFrame>, tone: &mut ToneGenerator) -> Vec<f32> {
+    const N: usize = 960;
+    let available = src.slots();
+    if available == 0 {
+        return tone.next_20ms();
+    }
+    let mut out = Vec::with_capacity(N * 2);
+    let take = available.min(N);
+    for _ in 0..take {
+        match src.pop() {
+            Ok(frame) => {
+                out.push(frame[0]);
+                out.push(frame[1]);
+            }
+            Err(_) => break,
+        }
+    }
+    // Pad with silence if the DSP is behind.
+    while out.len() < N * 2 {
+        out.push(0.0);
+    }
+    out
 }
 
 /// 440 Hz stereo sine at 48 kHz, 20 ms chunks (= 960 frames).
@@ -205,7 +255,7 @@ impl ToneGenerator {
     fn next_20ms(&mut self) -> Vec<f32> {
         let mut v = Vec::with_capacity(960 * 2);
         for _ in 0..960 {
-            let s = (self.phase.sin()) * 0.2;
+            let s = self.phase.sin() * 0.9;
             v.push(s);
             v.push(s);
             self.phase += self.inc;

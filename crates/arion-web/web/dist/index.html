@@ -36,7 +36,7 @@
 <div style="margin-bottom: 0.6rem;">
   <button id="listen">🔊 Listen</button>
   <span id="audio-status" class="meta" style="margin-left: 0.5rem;"></span>
-  <audio id="audio" autoplay></audio>
+  <audio id="audio" autoplay controls style="vertical-align: middle;"></audio>
 </div>
 <div id="rxs"></div>
 
@@ -310,7 +310,12 @@
     setAudioStatus('negotiating…');
     pc = new RTCPeerConnection();
     pc.addTransceiver('audio', { direction: 'recvonly' });
-    pc.ontrack = (e) => { audioEl.srcObject = e.streams[0]; setAudioStatus('playing'); };
+    pc.ontrack = (e) => {
+      console.log('ontrack fired', e.track.kind, 'streams:', e.streams.length, 'readyState:', e.track.readyState);
+      audioEl.srcObject = e.streams[0];
+      audioEl.volume = 1.0;
+      audioEl.play().then(() => setAudioStatus('playing')).catch(err => setAudioStatus('play blocked: ' + err.message));
+    };
     pc.oniceconnectionstatechange = () => setAudioStatus('ice: ' + pc.iceConnectionState);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);

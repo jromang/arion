@@ -25,13 +25,16 @@ fn main() -> anyhow::Result<()> {
 
     let app = Arc::new(Mutex::new(App::new(AppOptions::default())));
     let telemetry = Arc::new(ArcSwap::new(Arc::new(Telemetry::default())));
+    // No audio tap in the demo — the WebRTC peer falls back to a
+    // synthetic 440 Hz tone so the plumbing is testable.
+    let audio_tap = Arc::new(Mutex::new(None));
 
     let app_for_synth = app.clone();
     let tel_for_synth = telemetry.clone();
     thread::spawn(move || synth_loop(app_for_synth, tel_for_synth));
 
     let addr: SocketAddr = "0.0.0.0:8080".parse()?;
-    arion_web::serve_blocking(addr, app, telemetry)
+    arion_web::serve_blocking(addr, app, telemetry, audio_tap)
 }
 
 fn synth_loop(app: Arc<Mutex<App>>, telemetry: Arc<ArcSwap<Telemetry>>) {
