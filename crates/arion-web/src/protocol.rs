@@ -17,7 +17,7 @@ pub enum Envelope<'a> {
     Webrtc(WebrtcServer<'a>),
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone, Default)]
 pub struct StateSnapshot {
     pub num_rx: u8,
     pub active_rx: usize,
@@ -25,7 +25,7 @@ pub struct StateSnapshot {
     pub rx: Vec<RxSnapshot>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct RxSnapshot {
     pub enabled:      bool,
     pub frequency_hz: u32,

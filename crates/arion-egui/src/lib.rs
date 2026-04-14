@@ -126,6 +126,18 @@ pub struct EguiView {
     rigctld_handle: Option<arion_rigctld::RigctldHandle>,
     /// Last-known rigctld status string for the Setup UI.
     rigctld_status: String,
+    /// Web-frontend state snapshot — republished each frame and
+    /// read by the web server thread to push JSON to browsers.
+    web_snapshot:     arion_web::SharedSnapshot,
+    /// Telemetry mirror for the web server. Updated each frame from
+    /// `app.telemetry_snapshot()` (if a radio is live).
+    web_telemetry:    arion_web::SharedTelemetry,
+    /// Receives actions dispatched from browser clients.
+    web_action_rx:    mpsc::Receiver<arion_web::Action>,
+    /// Pre-allocated audio-tap producer, attached to the live `Radio`
+    /// on the first successful `connect()`. `None` once attached, or
+    /// if the tap was never instantiated.
+    web_audio_producer: Option<rtrb::Producer<arion_core::StereoFrame>>,
     /// Per-RX zoom/pan state for the spectrum display.
     view_states: Vec<RxViewState>,
     /// Per-RX passband drag state (which edge/center is being dragged).
@@ -196,6 +208,45 @@ impl EguiView {
 
         let (rigctld_tx, rigctld_rx) = mpsc::channel::<arion_rigctld::RigRequest>();
 
+        // Web bridge: snapshot + action channel + telemetry mirror +
+        // audio tap. The server runs in its own thread with its own
+        // tokio runtime. Gated behind `ARION_WEB_LISTEN=<addr>` — if
+        // the env var is absent, the web frontend is disabled and no
+        // thread is spawned.
+        let web_snapshot: arion_web::SharedSnapshot =
+            std::sync::Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(
+                arion_web::StateSnapshot::default(),
+            )));
+        let web_telemetry: arion_web::SharedTelemetry =
+            std::sync::Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(
+                arion_core::Telemetry::default(),
+            )));
+        let (web_action_tx, web_action_rx) = mpsc::channel::<arion_web::Action>();
+        let (web_audio_producer, web_audio_consumer) =
+            rtrb::RingBuffer::<arion_core::StereoFrame>::new(48_000 / 2); // ~500 ms buffer
+        let web_audio_tap: arion_web::SharedAudioTap =
+            std::sync::Arc::new(std::sync::Mutex::new(Some(web_audio_consumer)));
+        if let Ok(addr_str) = std::env::var("ARION_WEB_LISTEN") {
+            match addr_str.parse::<std::net::SocketAddr>() {
+                Ok(addr) => {
+                    let snap = web_snapshot.clone();
+                    let tel = web_telemetry.clone();
+                    let tap = web_audio_tap.clone();
+                    std::thread::Builder::new()
+                        .name("arion-web".into())
+                        .spawn(move || {
+                            if let Err(e) =
+                                arion_web::serve_blocking(addr, snap, web_action_tx, tel, tap)
+                            {
+                                tracing::warn!(error = %e, "arion-web server exited");
+                            }
+                        })
+                        .ok();
+                }
+                Err(e) => tracing::warn!(error = %e, "ARION_WEB_LISTEN invalid, web disabled"),
+            }
+        }
+
         let mut view = EguiView {
             app,
             waterfalls,
@@ -214,6 +265,10 @@ impl EguiView {
             rigctld_rx,
             rigctld_handle:     None,
             rigctld_status:     "stopped".into(),
+            web_snapshot,
+            web_telemetry,
+            web_action_rx,
+            web_audio_producer: Some(web_audio_producer),
         };
         view.load_startup_script();
         // Auto-start rigctld if enabled in settings.
@@ -260,6 +315,35 @@ impl eframe::App for EguiView {
 
         // Drain rigctld requests arriving from session threads.
         arion_rigctld::drain(&mut self.app, &self.rigctld_rx);
+
+        // Drain web actions from browser clients.
+        while let Ok(action) = self.web_action_rx.try_recv() {
+            action.apply(&mut self.app);
+        }
+
+        // Attach the audio tap to the live radio on the first frame
+        // after connect. Consumed once — disconnect+reconnect won't
+        // re-attach; restart arion if you need audio again over the
+        // web after a disconnect.
+        if self.web_audio_producer.is_some() && self.app.radio().is_some() {
+            let producer = self.web_audio_producer.take().unwrap();
+            if let Some(radio) = self.app.radio() {
+                if let Err(e) = radio.set_audio_tap(Some(producer)) {
+                    tracing::warn!(error = %e, "failed to attach web audio tap");
+                }
+            }
+        }
+
+        // Publish snapshot + telemetry for the web server.
+        if let Some(tel) = self.app.telemetry_snapshot() {
+            self.web_telemetry.store(tel.clone());
+            let snap = arion_web::StateSnapshot::from_app_and_telemetry(&self.app, &tel);
+            self.web_snapshot.store(std::sync::Arc::new(snap));
+        } else {
+            let tel = arion_core::Telemetry::default();
+            let snap = arion_web::StateSnapshot::from_app_and_telemetry(&self.app, &tel);
+            self.web_snapshot.store(std::sync::Arc::new(snap));
+        }
 
         // --- Arion-style panel layout (D.1) ---
         //

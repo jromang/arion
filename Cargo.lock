@@ -281,17 +281,20 @@ name = "arion-egui"
 version = "0.0.2"
 dependencies = [
  "anyhow",
+ "arc-swap",
  "arion-app",
  "arion-audio",
  "arion-core",
  "arion-rigctld",
  "arion-script",
  "arion-settings",
+ "arion-web",
  "eframe",
  "egui",
  "egui_code_editor",
  "rfd",
  "rhai",
+ "rtrb",
  "tracing",
  "wgpu",
 ]
