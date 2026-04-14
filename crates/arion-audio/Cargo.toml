@@ -10,7 +10,7 @@ cpal.workspace = true
 rtrb.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-rubato = "0.16"
+rubato = "2"
 
 [dev-dependencies]
 anyhow.workspace = true

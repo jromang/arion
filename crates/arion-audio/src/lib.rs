@@ -41,7 +41,8 @@ use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{BufferSize, Device, SampleFormat, SupportedStreamConfigRange, StreamConfig};
-use rubato::{FftFixedIn, Resampler};
+use rubato::audioadapter_buffers::direct::SequentialSliceOfVecs;
+use rubato::{Fft, FixedSync, Resampler};
 
 #[derive(Debug, thiserror::Error)]
 pub enum AudioError {
@@ -462,12 +463,13 @@ fn resample_bridge(
 ) {
     const CHUNK_IN_FRAMES: usize = 1024;
 
-    let mut resampler = match FftFixedIn::<f32>::new(
+    let mut resampler = match Fft::<f32>::new(
         dsp_rate as usize,
         device_rate as usize,
         CHUNK_IN_FRAMES,
-        1, // 1 sub-chunk is fine for our latency budget
-        2, // stereo: two rubato "channels"
+        1,                   // 1 sub-chunk
+        2,                   // stereo channels
+        FixedSync::Input,    // chunk size fixed on the input side (like FftFixedIn)
     ) {
         Ok(r) => r,
         Err(e) => {
@@ -477,10 +479,11 @@ fn resample_bridge(
     };
 
     // Pre-allocated de-interleaved buffers so the loop never touches
-    // the allocator.
-    let mut input_l:  Vec<f32> = vec![0.0; CHUNK_IN_FRAMES];
-    let mut input_r:  Vec<f32> = vec![0.0; CHUNK_IN_FRAMES];
-    let mut output_chunks: Vec<Vec<f32>> = resampler.output_buffer_allocate(true);
+    // the allocator. rubato 2.x adapters require `&[Vec<f32>]`, so we
+    // keep both channels inside one outer Vec.
+    let mut input_chunks: Vec<Vec<f32>> = vec![vec![0.0; CHUNK_IN_FRAMES]; 2];
+    let output_cap = resampler.output_frames_max();
+    let mut output_chunks: Vec<Vec<f32>> = vec![vec![0.0; output_cap]; 2];
 
     while !shutdown.load(Ordering::Acquire) {
         // Gather one full input chunk of stereo frames.
@@ -491,23 +494,25 @@ fn resample_bridge(
             }
             match outer_consumer.pop() {
                 Ok([l, r]) => {
-                    input_l[filled] = l;
-                    input_r[filled] = r;
+                    input_chunks[0][filled] = l;
+                    input_chunks[1][filled] = r;
                     filled += 1;
                 }
                 Err(_) => thread::sleep(Duration::from_micros(500)),
             }
         }
 
-        // Process one chunk — rubato takes two separate channel
-        // slices and writes into two separate output slices.
-        let input_slices: [&[f32]; 2] = [&input_l[..], &input_r[..]];
-        let (left_out, right_out) = output_chunks.split_at_mut(1);
-        let mut output_slices: [&mut [f32]; 2] =
-            [&mut left_out[0][..], &mut right_out[0][..]];
+        // Wrap the pre-allocated de-interleaved buffers in rubato 2.x
+        // adapters. Construction is a thin struct wrapper and does not
+        // allocate, so rebuilding per chunk keeps us no-alloc.
+        let input_adapter = SequentialSliceOfVecs::new(&input_chunks, 2, CHUNK_IN_FRAMES)
+            .expect("adapter shape matches chunk size");
+        let mut output_adapter =
+            SequentialSliceOfVecs::new_mut(&mut output_chunks, 2, output_cap)
+                .expect("adapter shape matches output capacity");
         let (_in_frames, out_frames) = match resampler.process_into_buffer(
-            &input_slices,
-            &mut output_slices,
+            &input_adapter,
+            &mut output_adapter,
             None,
         ) {
             Ok(x) => x,
