@@ -31,7 +31,7 @@ repository = "https://github.com/jromang/arion"
 anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
-directories = "5"
+directories = "6"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 arc-swap = "1"
 rtrb = "0.3"
@@ -65,8 +65,8 @@ bytes = "1"
 rhai = "1"
 egui_code_editor = "0.2"
 rfd = "0.15"
-ratatui = "0.29"
-crossterm = "0.28"
+ratatui = "0.30"
+crossterm = "0.29"
 
 # Internal crates
 wdsp-sys = { path = "crates/wdsp-sys" }

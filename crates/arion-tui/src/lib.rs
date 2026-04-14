@@ -559,7 +559,8 @@ impl TuiView {
         let gauge = LineGauge::default()
             .block(Block::default().borders(Borders::ALL).title("S-Meter"))
             .ratio(ratio)
-            .line_set(symbols::line::THICK)
+            .filled_symbol(symbols::line::THICK.horizontal)
+            .unfilled_symbol(symbols::line::THICK.horizontal)
             .filled_style(Style::default().fg(color))
             .unfilled_style(Style::default().fg(Color::DarkGray))
             .label(readout);
