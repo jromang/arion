@@ -223,7 +223,7 @@ dependencies = [
 
 [[package]]
 name = "arion"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "arion-core",
@@ -235,7 +235,7 @@ dependencies = [
 
 [[package]]
 name = "arion-app"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "arc-swap",
  "arion-core",
@@ -246,7 +246,7 @@ dependencies = [
 
 [[package]]
 name = "arion-audio"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "cpal",
@@ -259,7 +259,7 @@ dependencies = [
 
 [[package]]
 name = "arion-core"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -278,7 +278,7 @@ dependencies = [
 
 [[package]]
 name = "arion-egui"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "arion-app",
@@ -298,7 +298,7 @@ dependencies = [
 
 [[package]]
 name = "arion-rigctld"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "arion-app",
  "arion-core",
@@ -308,7 +308,7 @@ dependencies = [
 
 [[package]]
 name = "arion-script"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "arion-app",
  "arion-core",
@@ -321,7 +321,7 @@ dependencies = [
 
 [[package]]
 name = "arion-settings"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "directories",
  "serde",
@@ -332,7 +332,7 @@ dependencies = [
 
 [[package]]
 name = "arion-tui"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "arion-app",
@@ -345,7 +345,7 @@ dependencies = [
 
 [[package]]
 name = "arion-tui-bin"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "arion-app",
@@ -1824,7 +1824,7 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
 name = "hpsdr-net"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "anyhow",
  "ctrlc",
@@ -1838,7 +1838,7 @@ dependencies = [
 
 [[package]]
 name = "hpsdr-protocol"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "thiserror 2.0.18",
 ]
@@ -4394,7 +4394,7 @@ dependencies = [
 
 [[package]]
 name = "wdsp"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "directories",
  "thiserror 2.0.18",
@@ -4405,7 +4405,7 @@ dependencies = [
 
 [[package]]
 name = "wdsp-sys"
-version = "0.0.1"
+version = "0.0.2"
 dependencies = [
  "cc",
  "cmake",
