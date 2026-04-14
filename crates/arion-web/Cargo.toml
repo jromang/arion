@@ -1,0 +1,32 @@
+[package]
+name = "arion-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Browser frontend + WebRTC audio bridge for Arion"
+
+[dependencies]
+arion-app.workspace = true
+arion-core.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json = "1"
+arc-swap.workspace = true
+tokio = { version = "1", features = ["rt-multi-thread", "net", "sync", "macros", "time"] }
+axum = { version = "0.7", features = ["ws"] }
+tower-http = { version = "0.6", features = ["trace"] }
+rust-embed = { version = "8", features = ["debug-embed"] }
+mime_guess = "2"
+str0m = "0.7"
+opus = "0.3"
+
+[dev-dependencies]
+tracing-subscriber.workspace = true
+
+[lib]
+doctest = false
+
+[[example]]
+name = "serve_hello"
+path = "examples/serve_hello.rs"

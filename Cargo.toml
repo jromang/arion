@@ -13,6 +13,7 @@ members = [
     "crates/arion-rigctld",
     "crates/arion-egui",
     "crates/arion-tui",
+    "crates/arion-web",
     "apps/arion",
     "apps/arion-tui",
 ]
@@ -78,6 +79,7 @@ arion-script = { path = "crates/arion-script" }
 arion-rigctld = { path = "crates/arion-rigctld" }
 arion-egui = { path = "crates/arion-egui" }
 arion-tui = { path = "crates/arion-tui" }
+arion-web = { path = "crates/arion-web" }
 
 [profile.release]
 lto = "thin"

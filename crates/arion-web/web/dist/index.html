@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Arion Web</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font: 14px/1.4 system-ui, sans-serif; margin: 1.5rem; background: #0d0d0d; color: #eee; }
+  h1 { margin: 0 0 0.8rem; font-size: 1.1rem; }
+  .rx { border: 1px solid #333; border-radius: 6px; padding: 0.8rem; margin-bottom: 0.8rem; background: #181818; }
+  .rx header { display: flex; gap: 1rem; align-items: baseline; margin-bottom: 0.4rem; flex-wrap: wrap; }
+  .freq { font: 600 1.6rem/1 ui-monospace, monospace; letter-spacing: 0.02em; cursor: ns-resize; user-select: none; }
+  .mode { font: 600 0.85rem/1 system-ui; padding: 0.25rem 0.5rem; background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 3px; }
+  .bar { height: 0.5rem; background: #222; border-radius: 3px; overflow: hidden; margin-bottom: 0.4rem; }
+  .bar > div { height: 100%; background: linear-gradient(90deg, #2a8, #ec6); transition: width 0.1s linear; }
+  .meta { color: #888; font-size: 0.85rem; }
+  .status { color: #888; font-size: 0.85rem; margin-bottom: 0.5rem; }
+  .controls { display: flex; gap: 0.4rem; flex-wrap: wrap; align-items: center; margin-top: 0.4rem; }
+  .controls button { font: inherit; padding: 0.25rem 0.6rem; background: #222; color: #ccc; border: 1px solid #444; border-radius: 3px; cursor: pointer; }
+  .controls button.on { background: #2a5; color: #000; border-color: #2a5; }
+  .controls button:hover { background: #333; }
+  .vol { display: flex; align-items: center; gap: 0.4rem; }
+  .vol input { width: 8rem; }
+  .step { display: inline-flex; gap: 0.15rem; margin-left: 0.5rem; }
+  .step button { padding: 0.15rem 0.4rem; font-size: 0.75rem; }
+  .spec { position: relative; background: #000; border: 1px solid #222; border-radius: 3px; }
+  .spec canvas { display: block; width: 100%; height: auto; image-rendering: pixelated; }
+  .spec .pan { height: 100px; }
+  .spec .fall { height: 240px; }
+</style>
+</head>
+<body>
+<h1>Arion Web</h1>
+<div id="status" class="status">connecting…</div>
+<div style="margin-bottom: 0.6rem;">
+  <button id="listen">🔊 Listen</button>
+  <span id="audio-status" class="meta" style="margin-left: 0.5rem;"></span>
+  <audio id="audio" autoplay></audio>
+</div>
+<div id="rxs"></div>
+
+<script>
+  // ---------- constants ----------
+  const MODES = ['LSB', 'USB', 'CWL', 'CWU', 'AM', 'SAM', 'FM', 'DIGU', 'DIGL'];
+  const FLAGS = ['nb', 'nb2', 'anf', 'bin', 'tnf'];
+  const DB_MIN = -140, DB_MAX = -20, DB_SPAN = DB_MAX - DB_MIN;
+  const WATERFALL_ROWS = 256;
+
+  // ---------- websocket ----------
+  let ws;
+  const send = (msg) => { if (ws && ws.readyState === 1) ws.send(JSON.stringify(msg)); };
+
+  // ---------- formatting ----------
+  const fmtHz = (hz) => (hz / 1_000_000).toFixed(6).replace(/(\d{3})(?=\d)/g, '$1\u2009');
+  const smeterPct = (db) => (Math.max(-140, Math.min(-20, db)) + 140) / 120 * 100;
+  const STEPS = [1000, 100, 10];
+
+  // ---------- WebGL spectrum/waterfall per RX ----------
+  class SpectrumView {
+    constructor(panCanvas, fallCanvas, nbins) {
+      this.nbins = nbins;
+      this.pan = initPanadapter(panCanvas, nbins);
+      this.fall = initWaterfall(fallCanvas, nbins, WATERFALL_ROWS);
+    }
+    push(binsF32) {
+      this.pan.draw(binsF32);
+      this.fall.push(binsF32);
+    }
+  }
+
+  function initPanadapter(canvas, nbins) {
+    const gl = canvas.getContext('webgl2', { antialias: true, preserveDrawingBuffer: false });
+    const resize = () => { canvas.width = nbins; canvas.height = 128; gl.viewport(0, 0, canvas.width, canvas.height); };
+    resize();
+    const vs = `#version 300 es
+      in float a_db;
+      uniform float u_n;
+      uniform vec2 u_range;
+      out float v_db;
+      void main() {
+        float x = float(gl_VertexID) / (u_n - 1.0) * 2.0 - 1.0;
+        float y = (a_db - u_range.x) / (u_range.y - u_range.x) * 2.0 - 1.0;
+        v_db = a_db;
+        gl_Position = vec4(x, y, 0.0, 1.0);
+      }`;
+    const fs = `#version 300 es
+      precision mediump float;
+      in float v_db;
+      out vec4 o;
+      void main() { o = vec4(0.4, 1.0, 0.6, 1.0); }`;
+    const prog = linkProgram(gl, vs, fs);
+    gl.useProgram(prog);
+    gl.uniform1f(gl.getUniformLocation(prog, 'u_n'), nbins);
+    gl.uniform2f(gl.getUniformLocation(prog, 'u_range'), DB_MIN, DB_MAX);
+    const vao = gl.createVertexArray();
+    gl.bindVertexArray(vao);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, nbins * 4, gl.DYNAMIC_DRAW);
+    const loc = gl.getAttribLocation(prog, 'a_db');
+    gl.enableVertexAttribArray(loc);
+    gl.vertexAttribPointer(loc, 1, gl.FLOAT, false, 0, 0);
+    return {
+      draw(binsF32) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+        gl.bufferSubData(gl.ARRAY_BUFFER, 0, binsF32);
+        gl.clearColor(0, 0, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        gl.useProgram(prog);
+        gl.bindVertexArray(vao);
+        gl.drawArrays(gl.LINE_STRIP, 0, nbins);
+      }
+    };
+  }
+
+  function initWaterfall(canvas, nbins, nrows) {
+    const gl = canvas.getContext('webgl2', { antialias: false, preserveDrawingBuffer: false });
+    canvas.width = nbins; canvas.height = nrows;
+    gl.viewport(0, 0, canvas.width, canvas.height);
+
+    const vs = `#version 300 es
+      const vec2 pos[4] = vec2[4](vec2(-1,-1), vec2(1,-1), vec2(-1,1), vec2(1,1));
+      out vec2 v_uv;
+      void main() {
+        v_uv = pos[gl_VertexID] * 0.5 + 0.5;
+        gl_Position = vec4(pos[gl_VertexID], 0.0, 1.0);
+      }`;
+    const fs = `#version 300 es
+      precision mediump float;
+      in vec2 v_uv;
+      uniform sampler2D u_tex;
+      uniform float u_cursor;
+      uniform float u_nrows;
+      out vec4 o;
+      vec3 colormap(float t) {
+        t = clamp(t, 0.0, 1.0);
+        vec3 c = vec3(0.0);
+        c.r = smoothstep(0.4, 1.0, t);
+        c.g = smoothstep(0.15, 0.75, t) - 0.3 * smoothstep(0.85, 1.0, t);
+        c.b = smoothstep(0.0, 0.55, t) - smoothstep(0.55, 0.95, t);
+        return c;
+      }
+      void main() {
+        // v_uv.y = 0 top, 1 bottom. Newest row at top.
+        float row = (1.0 - v_uv.y) * u_nrows;
+        float y = mod(u_cursor - 1.0 - row + u_nrows, u_nrows) / u_nrows;
+        float db = texture(u_tex, vec2(v_uv.x, y)).r;
+        o = vec4(colormap(db), 1.0);
+      }`;
+    const prog = linkProgram(gl, vs, fs);
+    gl.useProgram(prog);
+
+    // R32F texture: nbins wide, nrows tall. Normalized 0..1 (db normalized).
+    const tex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, tex);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.R32F, nbins, nrows);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    // clear to zero
+    const zero = new Float32Array(nbins * nrows);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, nbins, nrows, gl.RED, gl.FLOAT, zero);
+
+    const uCursor = gl.getUniformLocation(prog, 'u_cursor');
+    const uNrows = gl.getUniformLocation(prog, 'u_nrows');
+    gl.uniform1f(uNrows, nrows);
+    gl.uniform1i(gl.getUniformLocation(prog, 'u_tex'), 0);
+
+    const vao = gl.createVertexArray();
+    let cursor = 0;
+    const normBuf = new Float32Array(nbins);
+    return {
+      push(binsF32) {
+        for (let i = 0; i < nbins; i++) normBuf[i] = (binsF32[i] - DB_MIN) / DB_SPAN;
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, cursor, nbins, 1, gl.RED, gl.FLOAT, normBuf);
+        cursor = (cursor + 1) % nrows;
+        gl.useProgram(prog);
+        gl.uniform1f(uCursor, cursor);
+        gl.bindVertexArray(vao);
+        gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+      }
+    };
+  }
+
+  function linkProgram(gl, vsSrc, fsSrc) {
+    const compile = (type, src) => {
+      const sh = gl.createShader(type);
+      gl.shaderSource(sh, src); gl.compileShader(sh);
+      if (!gl.getShaderParameter(sh, gl.COMPILE_STATUS)) {
+        console.error(gl.getShaderInfoLog(sh), src);
+        throw new Error('shader compile');
+      }
+      return sh;
+    };
+    const p = gl.createProgram();
+    gl.attachShader(p, compile(gl.VERTEX_SHADER, vsSrc));
+    gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsSrc));
+    gl.linkProgram(p);
+    if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+      console.error(gl.getProgramInfoLog(p));
+      throw new Error('program link');
+    }
+    return p;
+  }
+
+  // ---------- per-RX UI card ----------
+  const spectrumViews = {};
+  const currentFreq = {};
+
+  const buildRxCard = (i) => {
+    const d = document.createElement('div');
+    d.className = 'rx';
+    d.innerHTML = `
+      <header>
+        <span class="freq" data-rx="${i}" tabindex="0" title="scroll to tune — shift=1kHz, alt=10Hz"></span>
+        <span class="step">
+          ${STEPS.map(s => `<button data-step="+${s}">+${s}</button><button data-step="-${s}">-${s}</button>`).join('')}
+        </span>
+        <select class="mode" data-rx="${i}">
+          ${MODES.map(m => `<option>${m}</option>`).join('')}
+        </select>
+        <span class="meta"></span>
+      </header>
+      <div class="bar"><div></div></div>
+      <div class="spec"><canvas class="pan"></canvas></div>
+      <div class="spec"><canvas class="fall"></canvas></div>
+      <div class="controls">
+        <label class="vol">vol <input type="range" min="0" max="1" step="0.01" data-vol="${i}"></label>
+        ${FLAGS.map(f => `<button data-flag="${f}">${f.toUpperCase()}</button>`).join('')}
+      </div>`;
+
+    d.querySelector('.freq').addEventListener('wheel', (e) => {
+      e.preventDefault();
+      const step = e.shiftKey ? 1000 : (e.altKey ? 10 : 100);
+      const delta = -Math.sign(e.deltaY) * step;
+      send({ type: 'action', payload: { kind: 'set_rx_frequency', rx: i, hz: Math.max(0, (currentFreq[i] || 0) + delta) } });
+    }, { passive: false });
+
+    d.querySelectorAll('.step button').forEach(b => {
+      b.onclick = () => {
+        const step = parseInt(b.dataset.step, 10);
+        send({ type: 'action', payload: { kind: 'set_rx_frequency', rx: i, hz: Math.max(0, (currentFreq[i] || 0) + step) } });
+      };
+    });
+    d.querySelector('select.mode').addEventListener('change', (e) =>
+      send({ type: 'action', payload: { kind: 'set_rx_mode', rx: i, mode: e.target.value } }));
+    d.querySelector('input[data-vol]').addEventListener('input', (e) =>
+      send({ type: 'action', payload: { kind: 'set_rx_volume', rx: i, volume: parseFloat(e.target.value) } }));
+    d.querySelectorAll('button[data-flag]').forEach(b => {
+      b.onclick = () =>
+        send({ type: 'action', payload: { kind: 'toggle_rx_flag', rx: i, flag: b.dataset.flag } });
+    });
+
+    return d;
+  };
+
+  const renderState = (state) => {
+    const root = document.getElementById('rxs');
+    while (root.children.length < state.num_rx) root.appendChild(buildRxCard(root.children.length));
+    while (root.children.length > state.num_rx) root.lastChild.remove();
+    state.rx.forEach((r, i) => {
+      currentFreq[i] = r.frequency_hz;
+      const el = root.children[i];
+      el.querySelector('.freq').textContent = fmtHz(r.frequency_hz) + ' MHz';
+      el.querySelector('.meta').textContent = `RX${i} · ${r.enabled ? 'live' : 'idle'} · ${r.s_meter_db.toFixed(1)} dB`;
+      el.querySelector('.bar > div').style.width = smeterPct(r.s_meter_db) + '%';
+      const modeSel = el.querySelector('select.mode');
+      if (document.activeElement !== modeSel && modeSel.value !== r.mode) modeSel.value = r.mode;
+      const volInp = el.querySelector('input[data-vol]');
+      if (document.activeElement !== volInp) volInp.value = r.volume;
+      FLAGS.forEach(f => el.querySelector(`button[data-flag="${f}"]`).classList.toggle('on', !!r[f]));
+    });
+  };
+
+  // ---------- binary spectrum decode ----------
+  const TAG_SPECTRUM = 0x01;
+  const handleBinary = (buf) => {
+    const dv = new DataView(buf);
+    const tag = dv.getUint8(0);
+    if (tag !== TAG_SPECTRUM) return;
+    const rxIdx = dv.getUint8(1);
+    // center_freq_hz, span_hz currently unused for rendering — reserved for axis labels.
+    const nbins = dv.getUint16(10, true);
+    const bins = new Float32Array(buf, 12, nbins);
+
+    const root = document.getElementById('rxs');
+    if (rxIdx >= root.children.length) return;
+    const el = root.children[rxIdx];
+    let view = spectrumViews[rxIdx];
+    if (!view) {
+      view = new SpectrumView(el.querySelector('canvas.pan'), el.querySelector('canvas.fall'), nbins);
+      spectrumViews[rxIdx] = view;
+    }
+    view.push(bins);
+  };
+
+  // ---------- WebRTC audio ----------
+  let pc = null;
+  const audioEl = document.getElementById('audio');
+  const audioStatus = document.getElementById('audio-status');
+  const setAudioStatus = (s) => { audioStatus.textContent = s; };
+  let pendingOffer = null;
+
+  const startListen = async () => {
+    if (pc) return;
+    setAudioStatus('negotiating…');
+    pc = new RTCPeerConnection();
+    pc.addTransceiver('audio', { direction: 'recvonly' });
+    pc.ontrack = (e) => { audioEl.srcObject = e.streams[0]; setAudioStatus('playing'); };
+    pc.oniceconnectionstatechange = () => setAudioStatus('ice: ' + pc.iceConnectionState);
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    // Wait for ICE gathering to finish (non-trickle for simplicity).
+    await new Promise((resolve) => {
+      if (pc.iceGatheringState === 'complete') return resolve();
+      const check = () => { if (pc.iceGatheringState === 'complete') { pc.removeEventListener('icegatheringstatechange', check); resolve(); } };
+      pc.addEventListener('icegatheringstatechange', check);
+    });
+    send({ type: 'webrtc', payload: { kind: 'offer', sdp: pc.localDescription.sdp } });
+  };
+
+  const handleWebrtcMsg = async (m) => {
+    if (m.kind === 'answer') {
+      try { await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp }); }
+      catch (e) { setAudioStatus('error: ' + e.message); }
+    } else if (m.kind === 'error') {
+      setAudioStatus('server error: ' + m.message);
+    }
+  };
+
+  document.getElementById('listen').onclick = startListen;
+
+  // ---------- connection ----------
+  const connect = () => {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    ws = new WebSocket(`${proto}://${location.host}/ws`);
+    ws.binaryType = 'arraybuffer';
+    const status = document.getElementById('status');
+    ws.onopen = () => status.textContent = 'connected';
+    ws.onclose = () => { status.textContent = 'disconnected — retrying…'; setTimeout(connect, 1000); };
+    ws.onerror = () => status.textContent = 'error';
+    ws.onmessage = (e) => {
+      if (typeof e.data === 'string') {
+        const env = JSON.parse(e.data);
+        if (env.type === 'state') renderState(env.payload);
+        else if (env.type === 'webrtc') handleWebrtcMsg(env.payload);
+      } else {
+        handleBinary(e.data);
+      }
+    };
+  };
+  connect();
+</script>
+</body>
+</html>
