@@ -115,6 +115,7 @@ It is the only gateway to the application's state.
 | `.anf`          | `bool`     | R/W | Auto notch filter                     |
 | `.bin`          | `bool`     | R/W | Binaural                              |
 | `.tnf`          | `bool`     | R/W | Tracking notch filter                 |
+| `.rit`          | `int`      | R/W | Receiver Incremental Tuning (Hz, ±10 kHz), display-only |
 | `.eq_enabled`   | `bool`     | R/W |                                       |
 | `.eq_gains`     | `Array<i>` | R/W | 11 integer gains                      |
 | `.s_meter`      | `float`    | R   | dB                                    |
@@ -155,6 +156,19 @@ anf(rx, true);   bin(rx, true);       tnf(rx, true);
 
 ```rhai
 agc(rx, "Fast");
+```
+
+### 4.4b RIT (Receiver Incremental Tuning)
+
+Shifts the receive frequency by ±hz without moving the VFO. Drawn as a
+yellow vertical marker on the spectrum at `center_freq + rit_hz`. Set
+to `0` to hide the marker. Clamped to ±10 kHz. Display-only for now —
+the WDSP wiring will follow once the TX path lands.
+
+```rhai
+radio[0].rit = 500;       // receive 500 Hz above the VFO
+rit(radio.rx(0), -250);   // free-function form
+radio[0].rit = 0;         // clear
 ```
 
 ### 4.5 EQ
@@ -354,6 +368,7 @@ See `examples/scripts/`:
 | `filter`          | `(Rx, float, float)`                  |
 | `filter_preset`   | `(Rx, String)`                        |
 | `nr3`/`nr4`/`nb`/`nb2`/`anf`/`bin`/`tnf` | `(Rx, bool)`           |
+| `rit`             | `(Rx, int)`                           |
 | `agc`             | `(Rx, String)`                        |
 | `eq`              | `(Rx, Array)`                         |
 | `eq_band`         | `(Rx, int, int)`                      |
