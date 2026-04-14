@@ -208,15 +208,23 @@ impl Default for DspDefaults {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct NetworkSettings {
-    pub rigctld_enabled: bool,
-    pub rigctld_port:    u16,
+    pub rigctld_enabled:   bool,
+    pub rigctld_port:      u16,
+    pub api_enabled:       bool,
+    pub api_port:          u16,
+    pub api_bind_loopback: bool,
+    pub api_allow_scripts: bool,
 }
 
 impl Default for NetworkSettings {
     fn default() -> Self {
         NetworkSettings {
-            rigctld_enabled: false,
-            rigctld_port:    4532,
+            rigctld_enabled:   false,
+            rigctld_port:      4532,
+            api_enabled:       false,
+            api_port:          8081,
+            api_bind_loopback: true,
+            api_allow_scripts: false,
         }
     }
 }

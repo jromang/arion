@@ -152,6 +152,18 @@ pub struct EguiView {
     web_telemetry:    arion_web::SharedTelemetry,
     /// Receives actions dispatched from browser clients.
     web_action_rx:    mpsc::Receiver<arion_web::Action>,
+    /// arion-api action channel (shared with any external HTTP client).
+    api_action_tx:    mpsc::Sender<arion_app::protocol::Action>,
+    api_action_rx:    mpsc::Receiver<arion_app::protocol::Action>,
+    /// arion-api script eval queue (UI thread runs Rhai on demand).
+    api_script_tx:    mpsc::Sender<arion_api::ScriptRequest>,
+    api_script_rx:    mpsc::Receiver<arion_api::ScriptRequest>,
+    /// Shared ArcSwap for the last MIDI event (used by REST /midi/last-event).
+    api_midi_last_event: std::sync::Arc<arc_swap::ArcSwap<Option<arion_midi::MidiEvent>>>,
+    /// Active API server handle. Dropping it shuts the server down.
+    api_handle:       Option<arion_api::ApiHandle>,
+    /// Human-readable status for the Setup API tab.
+    api_status:       String,
     /// Pre-allocated audio-tap producer, attached to the live `Radio`
     /// on the first successful `connect()`. `None` once attached, or
     /// if the tap was never instantiated.
@@ -225,6 +237,10 @@ impl EguiView {
         let split_fractions = (0..MAX_RX).map(|_| 0.5_f32).collect();
 
         let (rigctld_tx, rigctld_rx) = mpsc::channel::<arion_rigctld::RigRequest>();
+        let (api_action_tx, api_action_rx) = mpsc::channel::<arion_app::protocol::Action>();
+        let (api_script_tx, api_script_rx) = mpsc::channel::<arion_api::ScriptRequest>();
+        let api_midi_last_event: std::sync::Arc<arc_swap::ArcSwap<Option<arion_midi::MidiEvent>>> =
+            std::sync::Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(None)));
 
         // MIDI bridge: an optional listener pushes resolved actions on
         // `midi_action_tx`; the UI thread drains it each frame. The
@@ -307,6 +323,13 @@ impl EguiView {
             midi_last_event:    None,
             midi_status:        "stopped".into(),
             midi_devices,
+            api_action_tx,
+            api_action_rx,
+            api_script_tx,
+            api_script_rx,
+            api_midi_last_event,
+            api_handle: None,
+            api_status: "stopped".into(),
             web_snapshot,
             web_telemetry,
             web_action_rx,
@@ -316,6 +339,9 @@ impl EguiView {
         // Auto-start rigctld if enabled in settings.
         if view.app.network_settings().rigctld_enabled {
             view.start_rigctld();
+        }
+        if view.app.network_settings().api_enabled {
+            view.start_api();
         }
         // Auto-start MIDI if enabled in settings, or if the legacy
         // ARION_MIDI_DEVICE env var is set (kept for CI / scripted runs).
@@ -366,11 +392,49 @@ impl eframe::App for EguiView {
 
         // Drain rigctld requests arriving from session threads.
         arion_rigctld::drain(&mut self.app, &self.rigctld_rx);
+        // Drain REST API actions.
+        for _ in 0..64 {
+            match self.api_action_rx.try_recv() {
+                Ok(a) => a.apply(&mut self.app),
+                Err(_) => break,
+            }
+        }
+        // Drain REST API script requests (limit one per frame to
+        // avoid starving the UI if a client spams /scripts/eval).
+        if let Ok(req) = self.api_script_rx.try_recv() {
+            let reply = self.evaluate_api_script(&req.source);
+            let _ = req.reply.send(reply);
+        }
+        // Reconcile API server lifecycle against settings.
+        let want_api = self.app.network_settings().api_enabled;
+        let have_api = self.api_handle.is_some();
+        if want_api && !have_api {
+            self.start_api();
+        } else if !want_api && have_api {
+            self.stop_api();
+        }
+        // Reconcile rigctld server lifecycle against settings.
+        let want_rig = self.app.network_settings().rigctld_enabled;
+        let have_rig = self.rigctld_handle.is_some();
+        if want_rig && !have_rig {
+            self.start_rigctld();
+        } else if !want_rig && have_rig {
+            self.stop_rigctld();
+        }
+        // Reconcile MIDI listener against settings.
+        let want_midi = self.app.midi_settings().enabled;
+        let have_midi = self.midi_listener.is_some();
+        if want_midi && !have_midi {
+            self.start_midi();
+        } else if !want_midi && have_midi {
+            self.stop_midi();
+        }
         // Drain MIDI actions arriving from the midir callback thread.
         arion_midi::drain(&mut self.app, &self.midi_action_rx);
         // Drain raw MIDI events into the Setup-tab "last event" slot.
         while let Ok(ev) = self.midi_event_rx.try_recv() {
             self.midi_last_event = Some(ev);
+            self.api_midi_last_event.store(std::sync::Arc::new(Some(ev)));
         }
 
         // Drain web actions from browser clients.
@@ -1779,6 +1843,60 @@ impl EguiView {
 
         ui.add_space(6.0);
         ui.label(format!("Status: {}", self.rigctld_status));
+
+        ui.add_space(12.0);
+        ui.separator();
+        ui.label(egui::RichText::new("REST API server").strong());
+        ui.add_space(4.0);
+        ui.weak(
+            "HTTP/JSON control surface under /api/v1/* — consumable from curl, Python, Home \
+             Assistant, Prometheus, etc. Localhost binding only by default.",
+        );
+        ui.add_space(6.0);
+
+        let net2 = self.app.network_settings().clone();
+        let api_running = self.api_handle.is_some();
+
+        let mut api_enabled = net2.api_enabled;
+        if ui.checkbox(&mut api_enabled, "Enable REST API").changed() {
+            self.app.network_settings_mut().api_enabled = api_enabled;
+        }
+
+        ui.horizontal(|ui| {
+            ui.label("Port:");
+            let mut port = net2.api_port as u32;
+            let resp = ui.add_enabled(
+                !api_running,
+                egui::DragValue::new(&mut port).range(1u32..=65535u32).speed(1.0),
+            );
+            if resp.changed() {
+                self.app.network_settings_mut().api_port = port.clamp(1, 65535) as u16;
+            }
+            if api_running {
+                ui.weak("(stop to edit)");
+            }
+        });
+
+        let mut loopback = net2.api_bind_loopback;
+        if ui.add_enabled(!api_running, egui::Checkbox::new(&mut loopback, "Bind to loopback only (127.0.0.1)")).changed() {
+            self.app.network_settings_mut().api_bind_loopback = loopback;
+        }
+        if !loopback {
+            ui.colored_label(egui::Color32::YELLOW,
+                "⚠ Non-loopback binding with no auth is unsafe on shared networks.");
+        }
+
+        let mut allow_scripts = net2.api_allow_scripts;
+        if ui.checkbox(&mut allow_scripts, "Allow /scripts/eval (Rhai execution)").changed() {
+            self.app.network_settings_mut().api_allow_scripts = allow_scripts;
+        }
+        if allow_scripts {
+            ui.colored_label(egui::Color32::YELLOW,
+                "⚠ Scripts have full access to the radio state. Keep loopback only.");
+        }
+
+        ui.add_space(6.0);
+        ui.label(format!("Status: {}", self.api_status));
     }
 
     /// Spawn the rigctld server on the configured port. Updates
@@ -1813,6 +1931,75 @@ impl EguiView {
             h.stop();
             self.rigctld_status = "stopped".into();
         }
+    }
+
+    /// Spawn the REST API on the configured port. No-op if already running.
+    fn start_api(&mut self) {
+        if self.api_handle.is_some() {
+            return;
+        }
+        let net = self.app.network_settings().clone();
+        let host: std::net::IpAddr = if net.api_bind_loopback {
+            std::net::Ipv4Addr::LOCALHOST.into()
+        } else {
+            std::net::Ipv4Addr::UNSPECIFIED.into()
+        };
+        let addr = std::net::SocketAddr::new(host, net.api_port);
+        let ctx = arion_api::ApiContext {
+            snapshot:       self.web_snapshot.clone(),
+            telemetry:      self.web_telemetry.clone(),
+            action_tx:      self.api_action_tx.clone(),
+            script_tx:      net.api_allow_scripts.then(|| self.api_script_tx.clone()),
+            midi_mapping:   Some(self.midi_mapping.clone()),
+            midi_last_event: self.api_midi_last_event.clone(),
+            midi_persist:   true,
+            midi_persist_path: arion_midi::persist::midi_config_path(),
+            started_at:     std::time::Instant::now(),
+            build_version:  env!("CARGO_PKG_VERSION"),
+        };
+        match arion_api::start(addr, ctx) {
+            Ok(h) => {
+                self.api_status = format!("running on {}", h.addr());
+                self.api_handle = Some(h);
+            }
+            Err(e) => {
+                self.api_status = format!("failed: {e}");
+                tracing::warn!(error = %e, "arion-api start failed");
+            }
+        }
+    }
+
+    fn stop_api(&mut self) {
+        if let Some(h) = self.api_handle.take() {
+            h.stop();
+            self.api_status = "stopped".into();
+        }
+    }
+
+    /// Evaluate a Rhai source fragment submitted via the REST API.
+    /// Runs on the UI thread so it has full access to `App` via the
+    /// scripting engine. Errors are captured and returned in the
+    /// reply instead of panicking the server.
+    fn evaluate_api_script(&mut self, source: &str) -> arion_api::ScriptReply {
+        use arion_script::engine::ReplLineKind;
+        let before = self.script_engine.output().len();
+        self.script_engine.run_line(source, &mut self.app);
+        let after = self.script_engine.output();
+        let mut output = String::new();
+        let mut error: Option<String> = None;
+        for line in &after[before..] {
+            match line.kind {
+                ReplLineKind::Error => error = Some(line.text.clone()),
+                ReplLineKind::Result | ReplLineKind::Print => {
+                    if !output.is_empty() {
+                        output.push('\n');
+                    }
+                    output.push_str(&line.text);
+                }
+                _ => {}
+            }
+        }
+        arion_api::ScriptReply { output, error }
     }
 
     fn start_midi(&mut self) {

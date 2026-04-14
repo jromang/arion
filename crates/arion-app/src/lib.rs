@@ -17,6 +17,8 @@
 //! and otherwise render whatever's in scope. The single-source-of-truth
 //! for "what should the screen look like" lives here.
 
+pub mod protocol;
+
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};

@@ -12,7 +12,7 @@ use crate::mapping::{MappingTable, Trigger};
 /// A raw MIDI event captured for "learn" mode. Emitted for every
 /// CC / Note-On event regardless of whether a binding matched, so
 /// the UI can show the user what their controller is sending.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize)]
 pub struct MidiEvent {
     pub trigger: Trigger,
     pub value:   u8,
