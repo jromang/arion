@@ -16,6 +16,7 @@ members = [
     "crates/arion-web",
     "apps/arion",
     "apps/arion-tui",
+    "apps/arion-web",
 ]
 
 [workspace.package]

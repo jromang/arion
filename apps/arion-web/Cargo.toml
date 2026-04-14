@@ -1,0 +1,20 @@
+[package]
+name = "arion-web-bin"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Arion headless binary — radio + browser frontend over WebRTC"
+
+[[bin]]
+name = "arion-web"
+path = "src/main.rs"
+
+[dependencies]
+arion-web.workspace = true
+arion-app.workspace = true
+arion-core.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+arc-swap.workspace = true
+rtrb.workspace = true

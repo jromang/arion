@@ -381,6 +381,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "arion-web-bin"
+version = "0.0.2"
+dependencies = [
+ "anyhow",
+ "arc-swap",
+ "arion-app",
+ "arion-core",
+ "arion-web",
+ "rtrb",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "arrayvec"
 version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
