@@ -105,7 +105,7 @@ impl ScriptModule for RxModule {
             });
         });
 
-        // --- nr3 / nr4 ---
+        // --- noise reduction booleans (4 independent variants) ---
         reg_bool_rx(engine, ctx, "nr3",
             |app, i| app.rx(i).map(|r| r.nr3).unwrap_or(false),
             |app, i, b| app.set_rx_nr3(i, b),
@@ -113,6 +113,80 @@ impl ScriptModule for RxModule {
         reg_bool_rx(engine, ctx, "nr4",
             |app, i| app.rx(i).map(|r| r.nr4).unwrap_or(false),
             |app, i, b| app.set_rx_nr4(i, b),
+        );
+        reg_bool_rx(engine, ctx, "anr",
+            |app, i| app.rx(i).map(|r| r.anr).unwrap_or(false),
+            |app, i, b| app.set_rx_anr(i, b),
+        );
+        reg_bool_rx(engine, ctx, "emnr",
+            |app, i| app.rx(i).map(|r| r.emnr).unwrap_or(false),
+            |app, i, b| app.set_rx_emnr(i, b),
+        );
+
+        // --- squelch (on/off + threshold) ---
+        reg_bool_rx(engine, ctx, "squelch",
+            |app, i| app.rx(i).map(|r| r.squelch).unwrap_or(false),
+            |app, i, b| app.set_rx_squelch(i, b),
+        );
+        reg_f32_rx(engine, ctx, "squelch_db",
+            |app, i| app.rx(i).map(|r| r.squelch_db).unwrap_or(0.0),
+            |app, i, v| app.set_rx_squelch_threshold(i, v),
+        );
+
+        // --- APF (CW audio peak filter) ---
+        reg_bool_rx(engine, ctx, "apf",
+            |app, i| app.rx(i).map(|r| r.apf).unwrap_or(false),
+            |app, i, b| app.set_rx_apf(i, b),
+        );
+        reg_f32_rx(engine, ctx, "apf_freq_hz",
+            |app, i| app.rx(i).map(|r| r.apf_freq_hz).unwrap_or(0.0),
+            |app, i, v| app.set_rx_apf_freq(i, v),
+        );
+        reg_f32_rx(engine, ctx, "apf_bw_hz",
+            |app, i| app.rx(i).map(|r| r.apf_bw_hz).unwrap_or(0.0),
+            |app, i, v| app.set_rx_apf_bandwidth(i, v),
+        );
+        reg_f32_rx(engine, ctx, "apf_gain_db",
+            |app, i| app.rx(i).map(|r| r.apf_gain_db).unwrap_or(0.0),
+            |app, i, v| app.set_rx_apf_gain(i, v),
+        );
+
+        // --- AGC fine controls ---
+        reg_f32_rx(engine, ctx, "agc_top_dbm",
+            |app, i| app.rx(i).map(|r| r.agc_top_dbm).unwrap_or(0.0),
+            |app, i, v| app.set_rx_agc_top(i, v),
+        );
+        reg_f32_rx(engine, ctx, "agc_hang_level",
+            |app, i| app.rx(i).map(|r| r.agc_hang_level).unwrap_or(0.0),
+            |app, i, v| app.set_rx_agc_hang_level(i, v),
+        );
+        reg_i32_rx(engine, ctx, "agc_decay_ms",
+            |app, i| app.rx(i).map(|r| r.agc_decay_ms).unwrap_or(0),
+            |app, i, v| app.set_rx_agc_decay(i, v),
+        );
+        reg_f32_rx(engine, ctx, "agc_fixed_gain",
+            |app, i| app.rx(i).map(|r| r.agc_fixed_gain).unwrap_or(0.0),
+            |app, i, v| app.set_rx_agc_fixed_gain(i, v),
+        );
+
+        // --- FM parameters + CTCSS ---
+        reg_f32_rx(engine, ctx, "fm_deviation_hz",
+            |app, i| app.rx(i).map(|r| r.fm_deviation_hz).unwrap_or(0.0),
+            |app, i, v| app.set_rx_fm_deviation(i, v),
+        );
+        reg_bool_rx(engine, ctx, "ctcss",
+            |app, i| app.rx(i).map(|r| r.ctcss_on).unwrap_or(false),
+            |app, i, b| app.set_rx_ctcss(i, b),
+        );
+        reg_f32_rx(engine, ctx, "ctcss_hz",
+            |app, i| app.rx(i).map(|r| r.ctcss_hz).unwrap_or(0.0),
+            |app, i, v| app.set_rx_ctcss_freq(i, v),
+        );
+
+        // --- SAM sub-mode (0=DSB 1=LSB 2=USB) ---
+        reg_i32_rx(engine, ctx, "sam_submode",
+            |app, i| app.rx(i).map(|r| r.sam_submode as i32).unwrap_or(0),
+            |app, i, v| app.set_rx_sam_submode(i, v.clamp(0, 2) as u8),
         );
 
         // --- agc (string) ---
@@ -277,5 +351,49 @@ fn reg_bool_rx<G, S>(
     let s = setter;
     engine.register_set(name, move |rx: &mut Rx, b: bool| {
         let _ = c.with_app(|app| s(app, rx.index, b));
+    });
+}
+
+fn reg_f32_rx<G, S>(
+    engine: &mut Engine,
+    ctx: &ApiCtx,
+    name: &'static str,
+    getter: G,
+    setter: S,
+) where
+    G: Fn(&arion_app::App, usize) -> f32 + Clone + 'static,
+    S: Fn(&mut arion_app::App, u8, f32) + Clone + 'static,
+{
+    let c = ctx.clone();
+    let g = getter.clone();
+    engine.register_get(name, move |rx: &mut Rx| -> f64 {
+        c.with_app(|app| g(app, rx.index as usize) as f64).unwrap_or(0.0)
+    });
+    let c = ctx.clone();
+    let s = setter;
+    engine.register_set(name, move |rx: &mut Rx, v: f64| {
+        let _ = c.with_app(|app| s(app, rx.index, v as f32));
+    });
+}
+
+fn reg_i32_rx<G, S>(
+    engine: &mut Engine,
+    ctx: &ApiCtx,
+    name: &'static str,
+    getter: G,
+    setter: S,
+) where
+    G: Fn(&arion_app::App, usize) -> i32 + Clone + 'static,
+    S: Fn(&mut arion_app::App, u8, i32) + Clone + 'static,
+{
+    let c = ctx.clone();
+    let g = getter.clone();
+    engine.register_get(name, move |rx: &mut Rx| -> i64 {
+        c.with_app(|app| g(app, rx.index as usize) as i64).unwrap_or(0)
+    });
+    let c = ctx.clone();
+    let s = setter;
+    engine.register_set(name, move |rx: &mut Rx, v: i64| {
+        let _ = c.with_app(|app| s(app, rx.index, v as i32));
     });
 }

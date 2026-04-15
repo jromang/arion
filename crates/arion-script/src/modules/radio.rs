@@ -115,21 +115,25 @@ impl ScriptModule for RadioModule {
 
         // Flag toggles
         for (fname, flag) in [
-            ("nr3", "nr3"),
-            ("nr4", "nr4"),
-            ("nb",  "nb"),
-            ("nb2", "nb2"),
-            ("anf", "anf"),
-            ("bin", "bin"),
-            ("tnf", "tnf"),
+            ("nr3",  "nr3"),
+            ("nr4",  "nr4"),
+            ("anr",  "anr"),
+            ("emnr", "emnr"),
+            ("nb",   "nb"),
+            ("nb2",  "nb2"),
+            ("anf",  "anf"),
+            ("bin",  "bin"),
+            ("tnf",  "tnf"),
         ] {
             let c = ctx.clone();
             let flg = flag.to_string();
             engine.register_fn(fname, move |rx: Rx, on: bool| {
                 let flg = flg.clone();
                 let _ = c.with_app(|app| match flg.as_str() {
-                    "nr3" => app.set_rx_nr3(rx.index, on),
-                    "nr4" => app.set_rx_nr4(rx.index, on),
+                    "nr3"  => app.set_rx_nr3(rx.index, on),
+                    "nr4"  => app.set_rx_nr4(rx.index, on),
+                    "anr"  => app.set_rx_anr(rx.index, on),
+                    "emnr" => app.set_rx_emnr(rx.index, on),
                     "nb" | "nb2" | "anf" | "bin" | "tnf" => {
                         let rxi = rx.index;
                         let cur = app.rx(rxi as usize).map(|r| match flg.as_str() {
@@ -148,6 +152,42 @@ impl ScriptModule for RadioModule {
                 });
             });
         }
+
+        // Squelch
+        let c = ctx.clone();
+        engine.register_fn("squelch", move |rx: Rx, on: bool| {
+            let _ = c.with_app(|app| app.set_rx_squelch(rx.index, on));
+        });
+        let c = ctx.clone();
+        engine.register_fn("squelch_db", move |rx: Rx, db: f64| {
+            let _ = c.with_app(|app| app.set_rx_squelch_threshold(rx.index, db as f32));
+        });
+
+        // APF
+        let c = ctx.clone();
+        engine.register_fn("apf", move |rx: Rx, on: bool| {
+            let _ = c.with_app(|app| app.set_rx_apf(rx.index, on));
+        });
+
+        // CTCSS
+        let c = ctx.clone();
+        engine.register_fn("ctcss", move |rx: Rx, on: bool| {
+            let _ = c.with_app(|app| app.set_rx_ctcss(rx.index, on));
+        });
+        let c = ctx.clone();
+        engine.register_fn("ctcss_hz", move |rx: Rx, hz: f64| {
+            let _ = c.with_app(|app| app.set_rx_ctcss_freq(rx.index, hz as f32));
+        });
+
+        // TNF notch CRUD
+        let c = ctx.clone();
+        engine.register_fn("tnf_add", move |rx: Rx, freq_hz: f64, width_hz: f64| {
+            let _ = c.with_app(|app| app.add_rx_tnf_notch(rx.index, freq_hz, width_hz, true));
+        });
+        let c = ctx.clone();
+        engine.register_fn("tnf_delete", move |rx: Rx, nidx: i64| {
+            let _ = c.with_app(|app| app.delete_rx_tnf_notch(rx.index, nidx.max(0) as u32));
+        });
 
         let c = ctx.clone();
         engine.register_fn("agc", move |rx: Rx, preset: &str| -> Result<(), Box<rhai::EvalAltResult>> {

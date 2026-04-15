@@ -110,11 +110,26 @@ It is the only gateway to the application's state.
 | `.filter_lo`    | `float`    | R/W | Hz                                    |
 | `.filter_hi`    | `float`    | R/W | Hz                                    |
 | `.nr3`, `.nr4`  | `bool`     | R/W | RNNoise / specbleach                  |
+| `.anr`, `.emnr` | `bool`     | R/W | LMS adaptive NR / enhanced spectral NR |
 | `.agc`          | `String`   | R/W | `"Off"`, `"Long"`, `"Slow"`, `"Med"`, `"Fast"` |
+| `.agc_top_dbm`  | `float`    | R/W | AGC top level in dBm                  |
+| `.agc_hang_level` | `float`  | R/W | AGC hang level                        |
+| `.agc_decay_ms` | `int`      | R/W | AGC decay time constant (ms)          |
+| `.agc_fixed_gain` | `float`  | R/W | Gain when AGC=Off (dB)                |
 | `.nb`, `.nb2`   | `bool`     | R/W | Noise blankers                        |
 | `.anf`          | `bool`     | R/W | Auto notch filter                     |
 | `.bin`          | `bool`     | R/W | Binaural                              |
-| `.tnf`          | `bool`     | R/W | Tracking notch filter                 |
+| `.tnf`          | `bool`     | R/W | Tracking notch master switch          |
+| `.squelch`      | `bool`     | R/W | Mode-dispatched squelch toggle        |
+| `.squelch_db`   | `float`    | R/W | Threshold (dB for SSB/AM, 0..1 level for FM) |
+| `.apf`          | `bool`     | R/W | Audio Peak Filter (CW)                |
+| `.apf_freq_hz`  | `float`    | R/W | APF centre Hz                         |
+| `.apf_bw_hz`    | `float`    | R/W | APF bandwidth Hz                      |
+| `.apf_gain_db`  | `float`    | R/W | APF gain dB                           |
+| `.fm_deviation_hz` | `float` | R/W | 2500 (narrow) or 5000 (wide) typical  |
+| `.ctcss`        | `bool`     | R/W | FM CTCSS tone squelch                 |
+| `.ctcss_hz`     | `float`    | R/W | CTCSS frequency 67.0..254.1           |
+| `.sam_submode`  | `int`      | R/W | SAM: 0=DSB, 1=LSB, 2=USB              |
 | `.rit`          | `int`      | R/W | Receiver Incremental Tuning (Hz, ±10 kHz), display-only |
 | `.eq_enabled`   | `bool`     | R/W |                                       |
 | `.eq_gains`     | `Array<i>` | R/W | 11 integer gains                      |
@@ -146,18 +161,42 @@ filter_preset(rx, "2.4K");            // see §5
 
 ### 4.3 Noise reduction
 
+Four independent reducers, combinable:
+
 ```rhai
-nr3(rx, true);   nr4(rx, false);
-nb(rx, true);    nb2(rx, false);
-anf(rx, true);   bin(rx, true);       tnf(rx, true);
+nr3(rx, true);    nr4(rx, false);     // RNNoise / specbleach
+anr(rx, true);    emnr(rx, false);    // ANR (Thetis NR) / EMNR (Thetis NR2)
+nb(rx, true);     nb2(rx, false);     // time-domain blankers
+anf(rx, true);    bin(rx, true);      // auto notch, binaural
+tnf(rx, true);                        // tracking notch master switch
+tnf_add(rx, 1500.0, 50.0);            // add a notch @1500 Hz, 50 Hz wide
+tnf_delete(rx, 0);                    // remove notch index 0
 ```
 
-**Note** — Arion also supports **NR (ANR)**, **NR2 (EMNR)**,
-**squelch**, **APF** (CW peak filter), **fine AGC controls**,
-**FM CTCSS + deviation**, **SAM sub-mode** and **BPSNBA tuning**.
-These are not yet exposed as Rhai free functions; use the REST
-API (`PATCH /api/v1/rx/{idx}`) or direct `App::set_rx_*` from Rust
-for now. Binding them to scripting is a small, mechanical follow-up.
+### 4.3b Squelch (mode-dispatched: SSB / AM / FM)
+
+```rhai
+squelch(rx, true);
+squelch_db(rx, -30.0);      // dB threshold (FM: 0..1 level)
+```
+
+### 4.3c APF (CW Audio Peak Filter)
+
+```rhai
+apf(rx, true);
+// Fine-tune via Rx properties:
+radio[0].apf_freq_hz = 600.0;
+radio[0].apf_bw_hz   = 50.0;
+radio[0].apf_gain_db = 6.0;
+```
+
+### 4.3d FM + CTCSS
+
+```rhai
+ctcss(rx, true);
+ctcss_hz(rx, 67.0);
+radio[0].fm_deviation_hz = 2500.0;   // narrow; 5000.0 = wide
+```
 
 ### 4.4 AGC
 
