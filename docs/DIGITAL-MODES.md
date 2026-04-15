@@ -124,13 +124,22 @@ Digital settings persist across sessions in
 
 ### WSPR
 
-- **Decoder integration is WIP** (phase G.1 decoder step). The
-  mode selector, slot timing (120-s UTC-aligned), resampling
-  (48 → 375 Hz) and pipeline plumbing are in place; what is
-  still missing is the Fano-decoded payload extraction from
-  WSJT-X's `wsprd`. The scaffold in `crates/wsprd-sys/` vendors
-  the C sources; see `crates/arion-core/src/digital/wspr.rs`
-  for the stub site.
+- **Real Fano decoder.** `crates/wsprd-sys` compiles the FFTW-free
+  subset of WSJT-X's `lib/wsprd/` (Fano sequential decoder, metric
+  tables, callsign hash, unpacker, encoder utilities) — full
+  file-scanner `wsprd.c` is skipped because our Rust side already
+  does the spectral search + 4-FSK demod via `rustfft`. The pure
+  Rust demod extracts the top bit of each 4-FSK decision as the
+  data bit, deinterleaves, and hands 162 soft bytes to `fano()`.
+- Decoding triggers at each UTC 120-s slot boundary (xx:00, xx:02,
+  …). A decode emits `CALLSIGN LOCATOR POWER` as text (e.g.
+  `AA0AA EM15 37`).
+- No frequency/time sweep yet — we lock onto the spectral peak
+  detected in the first FFT and assume symbol timing starts at
+  sample 0 of the buffered slot. This works perfectly for
+  self-generated signals; real off-air signals with arbitrary
+  start offsets will want a small search loop around `decode_slot`
+  in `crates/arion-core/src/digital/wspr.rs`.
 
 ## External digital-mode clients
 

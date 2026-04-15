@@ -26,6 +26,12 @@ use rustfft::{num_complex::Complex, Fft, FftPlanner};
 
 use super::DigitalDecode;
 
+/// WSPR parameters. Symbol rate equals tone spacing (Mueller-Müller
+/// property), both exactly `WSPR_RATE_HZ / 256`.
+const N_SYMBOLS: usize = wsprd::N_SYMBOLS;
+const SAMPLES_PER_SYMBOL: usize = 256;
+const TONE_SPACING_HZ: f32 = WSPR_RATE_HZ / SAMPLES_PER_SYMBOL as f32;
+
 /// Canonical WSPR baseband rate. 12 kHz input is decimated to this
 /// before any symbol-level processing.
 pub const WSPR_RATE_HZ: f32 = 375.0;
@@ -113,13 +119,19 @@ impl WsprDecoder {
 /// Decode a full 120-s WSPR slot from downsampled (375 Hz complex)
 /// baseband samples.
 ///
-/// **Detector, not decoder.** Until `wsprd-sys` exposes a library
-/// API for WSJT-X's wsprd (see `todo/other_modes.md`), this scans
-/// the slot spectrum for a narrow peak (characteristic of the
-/// ~6 Hz-wide WSPR signal). When a peak stands clear of the noise
-/// floor we emit a `WsprDecode` with `callsign = "SIGNAL"` and the
-/// detected frequency / SNR — enough to confirm the pipeline is
-/// hearing something while we wait on real Fano decoding.
+/// Pipeline:
+/// 1. Spectral peak detection to find the carrier frequency.
+/// 2. 4-FSK non-coherent energy demod at 162 symbol positions.
+/// 3. Extract the data bit (top bit of each hard 4-FSK decision),
+///    deinterleave, run the Fano K=32 r=1/2 decoder, and unpack
+///    the 50-bit payload into `"CALLSIGN LOCATOR POWER"`.
+///
+/// A decode is only returned when the Fano decoder and `unpk_()`
+/// both succeed. For weak / noisy signals (normal off-air SNRs
+/// around –28 dB) a small freq/time sweep would help; today we
+/// only try the peak-detected frequency with symbol timing at
+/// the buffer origin, which is sufficient for self-generated
+/// round-trip signals.
 fn decode_slot(samples: &[Complex32]) -> Vec<WsprDecode> {
     const FFT_LEN: usize = 32_768;
     // White noise of length 32 768 routinely shows a max/10%-ile
@@ -175,10 +187,69 @@ fn decode_slot(samples: &[Complex32]) -> Vec<WsprDecode> {
     };
     let freq_hz = signed_bin as f32 * bin_hz;
 
+    // --- Stage 2: 4-FSK non-coherent demod over 162 symbols ---
+    if samples.len() < N_SYMBOLS * SAMPLES_PER_SYMBOL {
+        return Vec::new();
+    }
+    let mut hard = [0u8; N_SYMBOLS];
+    for (k, out) in hard.iter_mut().enumerate() {
+        let start = k * SAMPLES_PER_SYMBOL;
+        let end = start + SAMPLES_PER_SYMBOL;
+        let seg = &samples[start..end];
+        let mut energies = [0.0_f32; 4];
+        for (t, energy) in energies.iter_mut().enumerate() {
+            // Tone t lives at freq_hz + (t - 1.5) · spacing so the
+            // 4 tones straddle the detected peak symmetrically.
+            let tone_hz = freq_hz + (t as f32 - 1.5) * TONE_SPACING_HZ;
+            let dphi = 2.0 * std::f32::consts::PI * tone_hz / WSPR_RATE_HZ;
+            let (mut re, mut im) = (0.0_f32, 0.0_f32);
+            let mut phi = 0.0_f32;
+            for s in seg {
+                let c = phi.cos();
+                let si = phi.sin();
+                re += s.re * c + s.im * si;
+                im += s.im * c - s.re * si;
+                phi += dphi;
+                if phi > std::f32::consts::TAU {
+                    phi -= std::f32::consts::TAU;
+                }
+            }
+            *energy = re * re + im * im;
+        }
+        let (best, _) = energies
+            .iter()
+            .enumerate()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+            .unwrap();
+        *out = best as u8;
+    }
+
+    // --- Stage 3: data bits → Fano → unpack ---
+    // Channel symbol t = 2 · data_bit + sync_bit, so data bit = t >> 1.
+    let mut soft = [0u8; N_SYMBOLS];
+    for (i, &t) in hard.iter().enumerate() {
+        soft[i] = if t >> 1 == 1 { 255 } else { 0 };
+    }
+    wsprd::deinterleave(&mut soft);
+    let Ok(decdata) = wsprd::fano_decode(&mut soft) else {
+        return Vec::new();
+    };
+    let Ok(text) = wsprd::unpack(&decdata) else {
+        return Vec::new();
+    };
+
+    let mut parts = text.split_whitespace();
+    let callsign = parts.next().unwrap_or("?").to_string();
+    let locator = parts.next().unwrap_or("").to_string();
+    let power_dbm = parts
+        .next()
+        .and_then(|s| s.parse::<i8>().ok())
+        .unwrap_or(0);
+
     vec![WsprDecode {
-        callsign: "SIGNAL".into(),
-        locator: "?".into(),
-        power_dbm: 0,
+        callsign,
+        locator,
+        power_dbm,
         snr_db,
         freq_hz,
         time_offset_s: 0.0,
@@ -196,39 +267,54 @@ pub fn to_digital_decode(d: &WsprDecode) -> DigitalDecode {
     }
 }
 
+/// Generate a synthetic WSPR baseband signal at 375 Hz complex for
+/// the given message text. Exposed as `#[cfg(test)]` — the test
+/// path is the only caller.
+#[cfg(test)]
+fn synth_baseband(message: &str, freq_hz: f32) -> Vec<Complex32> {
+    let symbols = wsprd::channel_symbols(message).unwrap();
+    let mut out = Vec::with_capacity(N_SYMBOLS * SAMPLES_PER_SYMBOL);
+    let mut phase = 0.0_f32;
+    for &t in &symbols {
+        let tone_hz = freq_hz + (t as f32 - 1.5) * TONE_SPACING_HZ;
+        let dphi = 2.0 * std::f32::consts::PI * tone_hz / WSPR_RATE_HZ;
+        for _ in 0..SAMPLES_PER_SYMBOL {
+            out.push(Complex32 {
+                re: phase.cos(),
+                im: phase.sin(),
+            });
+            phase += dphi;
+            if phase > std::f32::consts::TAU {
+                phase -= std::f32::consts::TAU;
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// Synthetic 5 Hz tone buried in white noise should be detected
-    /// (SNR ~ +40 dB in the FFT bin).
     #[test]
-    fn detects_narrow_tone_above_noise() {
-        let n = 32_768;
-        let tone_hz = 5.0_f32;
-        let amp = 1.0_f32;
-        let noise_amp = 0.02_f32; // PSD floor way below the tone bin
-        // Cheap LCG for deterministic "noise" without adding a dep.
-        let mut seed: u64 = 0x1234_5678_9abc_def0;
-        let mut rng = || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-            (((seed >> 33) as u32 as f32) / (1u32 << 30) as f32) - 1.0
-        };
-        let samples: Vec<Complex32> = (0..n)
-            .map(|k| {
-                let t = k as f32 / WSPR_RATE_HZ;
-                let phi = 2.0 * std::f32::consts::PI * tone_hz * t;
-                Complex32 {
-                    re: amp * phi.cos() + noise_amp * rng(),
-                    im: amp * phi.sin() + noise_amp * rng(),
-                }
-            })
-            .collect();
+    fn decode_synthetic_wspr_signal() {
+        // Encode "AA0AA EM15 37" into a clean 375 Hz baseband
+        // signal at 50 Hz offset, feed it through decode_slot,
+        // expect the full message back.
+        let samples = synth_baseband("AA0AA EM15 37", 50.0);
         let decodes = decode_slot(&samples);
         assert_eq!(decodes.len(), 1);
-        let d = &decodes[0];
-        assert!((d.freq_hz - tone_hz).abs() < 0.5, "freq={}", d.freq_hz);
-        assert!(d.snr_db > 20.0, "snr={}", d.snr_db);
+        assert_eq!(decodes[0].callsign, "AA0AA");
+        assert_eq!(decodes[0].locator, "EM15");
+        assert_eq!(decodes[0].power_dbm, 37);
+        // Detected frequency should land near the injected tone
+        // (within one 375/32768 ≈ 0.011 Hz bin, plus FFT binning
+        // for the "center" of the 4-tone group).
+        assert!(
+            (decodes[0].freq_hz - 50.0).abs() < 3.0,
+            "freq_hz = {}",
+            decodes[0].freq_hz
+        );
     }
 
     #[test]

@@ -56,13 +56,14 @@ namesake, Arion transforms waves into music — radio waves into audio.
   gain), FM CTCSS + deviation, 10-band graphic EQ, variable
   passband filter
 - **Digital modes** — PSK31, PSK63, RTTY (Baudot ITA2), APRS
-  (AFSK Bell 202 + HDLC + AX.25 UI frames), and FT8 (via vendored
-  `ft8_lib`); WSPR scaffolding in place (decoder WIP). Full
-  round-trip tested encoders + demodulators, UTC-aligned 15 s
-  slots for FT8, Ctrl+click signal browser on the spectrum,
+  (AFSK Bell 202 + HDLC + AX.25 UI frames), FT8 (via vendored
+  `ft8_lib`), and WSPR (Fano K=32 r=1/2 decoder from WSJT-X, Rust
+  demod + 375 Hz baseband resampler). Full round-trip tested
+  encoders + demodulators, UTC-aligned slots (15 s for FT8, 120 s
+  for WSPR), Ctrl+click signal browser on the spectrum,
   constellation diagram for PSK-family modes. See
   [`docs/DIGITAL-MODES.md`](docs/DIGITAL-MODES.md) for the user
-  guide and the `liquid` / `ft8` / `wsprd-sys` crates below.
+  guide and the `liquid` / `ft8` / `wsprd` crates below.
 - **Spectrum & Waterfall** — real-time display with peak hold,
   averaging, configurable dB range, spectrum fill
 - **S-Meter** — S-units display with per-band calibration
@@ -161,7 +162,8 @@ crates/
   liquid/            Safe Rust wrapper (Modem, MsResamp, Nco, SymSync)
   ft8-sys/           Raw FFI to vendored ft8_lib (KGoba) — Monitor + LDPC
   ft8/               Safe Rust wrapper (encode_to_audio + Monitor::decode)
-  wsprd-sys/         Vendored WSJT-X wsprd C sources (skeleton; decoder WIP)
+  wsprd-sys/         Raw FFI to the FFTW-free subset of WSJT-X's wsprd (Fano, unpk)
+  wsprd/             Safe Rust wrapper around wsprd-sys (channel_symbols, fano_decode, unpack)
   hpsdr-protocol/    HPSDR Protocol 1 wire types
   hpsdr-net/         UDP discovery + multi-RX session
   arion-audio/       cpal output + ring buffer + rubato resampling

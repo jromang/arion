@@ -12,6 +12,7 @@ arion-audio.workspace = true
 wdsp.workspace = true
 liquid.workspace = true
 ft8.workspace = true
+wsprd.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

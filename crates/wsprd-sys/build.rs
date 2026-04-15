@@ -1,33 +1,46 @@
-//! wsprd-sys build script — placeholder.
-//!
-//! Actually compiling WSJT-X's wsprd from `vendor/wsprd/` needs two
-//! pieces of work not done yet:
-//!
-//! 1. A library entry point. `wsprd.c` is a CLI with `main()` that
-//!    reads a WAV / .c2 file. We need to extract the core decode
-//!    loop into e.g. `wsprd_decode_samples(const float *samples,
-//!    int nsamples, float dial_hz, WsprDecode *out, int max_out)`
-//!    so the shim can call it with a buffer instead of a file.
-//! 2. FFTW linking. wsprd uses `fftwf_*` (single-precision). Arion
-//!    already vendors FFTW via `wdsp-sys`, so we want to reuse
-//!    that rather than ship a second copy. Either expose
-//!    `DEP_WDSP_SYS_FFTW_DIR` from `wdsp-sys` and read it here, or
-//!    ship a tiny `fftwf_* → kiss_fft` shim (kiss_fft is already
-//!    vendored under `ft8-sys/vendor/ft8_lib/fft/`).
-//!
-//! Meanwhile this crate is a *source vendor only*: the sources are
-//! checked in so a future session can touch them with no download
-//! step, and the skeleton gives the Rust side a stable name
-//! (`wsprd-sys`) to depend on once the C work is done.
+use std::path::PathBuf;
 
 fn main() {
+    let vendor = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/wsprd");
     println!("cargo:rerun-if-changed=vendor/wsprd");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=shim.c");
 
-    if cfg!(feature = "build-c") {
-        panic!(
-            "wsprd-sys 'build-c' feature is not implemented yet; \
-             see build.rs for the remaining work."
-        );
+    let mut build = cc::Build::new();
+    build
+        .include(&vendor)
+        .flag_if_supported("-std=c99")
+        .flag_if_supported("-Wno-unused-function")
+        .flag_if_supported("-Wno-unused-variable")
+        .flag_if_supported("-Wno-unused-but-set-variable")
+        .flag_if_supported("-Wno-unused-parameter")
+        .flag_if_supported("-Wno-unused-result")
+        .flag_if_supported("-Wno-unused-value")
+        .flag_if_supported("-Wno-sign-compare")
+        .flag_if_supported("-Wno-implicit-function-declaration")
+        .flag_if_supported("-Wno-parentheses")
+        .flag_if_supported("-Wno-pointer-sign")
+        .flag_if_supported("-Wno-format-overflow")
+        .flag_if_supported("-Wno-format-truncation")
+        .flag_if_supported("-Wno-stringop-truncation");
+
+    // The FFTW-free subset: Fano decoder, metric tables, callsign
+    // hash, and unpk_. wsprd.c itself (file I/O + spectral search)
+    // is skipped — Rust side does that with rustfft. wsprsim / gran
+    // / jelinek aren't needed for the decode-only path.
+    for f in [
+        "fano.c",
+        "tab.c",
+        "mettab.c",
+        "metric_tables.c",
+        "nhash.c",
+        "wsprd_utils.c",
+        "wsprsim_utils.c", // get_wspr_channel_symbols: text → 162-tone message
+        "gran.c",          // Gaussian noise (called from wsprsim_utils)
+    ] {
+        build.file(vendor.join(f));
     }
+    build.file(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shim.c"));
+    build.compile("wsprd");
+    println!("cargo:rustc-link-lib=m");
 }
