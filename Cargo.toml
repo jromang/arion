@@ -28,7 +28,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.5"
+version = "0.0.6"
 edition = "2021"
 rust-version = "1.82"
 license = "GPL-3.0-or-later"
@@ -97,4 +97,4 @@ arion-web = { path = "crates/arion-web" }
 [profile.release]
 lto = "thin"
 codegen-units = 1
-debug = 1
+strip = "symbols"

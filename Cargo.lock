@@ -235,7 +235,7 @@ dependencies = [
 
 [[package]]
 name = "arion"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "arion-core",
@@ -247,7 +247,7 @@ dependencies = [
 
 [[package]]
 name = "arion-api"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "arc-swap",
  "arion-app",
@@ -265,7 +265,7 @@ dependencies = [
 
 [[package]]
 name = "arion-app"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "arc-swap",
  "arion-core",
@@ -277,7 +277,7 @@ dependencies = [
 
 [[package]]
 name = "arion-audio"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "cpal",
@@ -290,7 +290,7 @@ dependencies = [
 
 [[package]]
 name = "arion-core"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -312,7 +312,7 @@ dependencies = [
 
 [[package]]
 name = "arion-egui"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -337,7 +337,7 @@ dependencies = [
 
 [[package]]
 name = "arion-midi"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "arc-swap",
  "arion-app",
@@ -353,7 +353,7 @@ dependencies = [
 
 [[package]]
 name = "arion-rigctld"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "arion-app",
  "arion-core",
@@ -363,7 +363,7 @@ dependencies = [
 
 [[package]]
 name = "arion-script"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "arion-app",
  "arion-core",
@@ -376,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "arion-settings"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "directories",
  "serde",
@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "arion-tui"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "arion-app",
@@ -400,7 +400,7 @@ dependencies = [
 
 [[package]]
 name = "arion-tui-bin"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "arion-app",
@@ -412,7 +412,7 @@ dependencies = [
 
 [[package]]
 name = "arion-web"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -434,7 +434,7 @@ dependencies = [
 
 [[package]]
 name = "arion-web-bin"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -2138,7 +2138,7 @@ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
 
 [[package]]
 name = "ft8"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "ft8-sys",
  "thiserror 2.0.18",
@@ -2146,7 +2146,7 @@ dependencies = [
 
 [[package]]
 name = "ft8-sys"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "cc",
 ]
@@ -2486,7 +2486,7 @@ checksum = "dfa686283ad6dd069f105e5ab091b04c62850d3e4cf5d67debad1933f55023df"
 
 [[package]]
 name = "hpsdr-net"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "ctrlc",
@@ -2500,7 +2500,7 @@ dependencies = [
 
 [[package]]
 name = "hpsdr-protocol"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "thiserror 2.0.18",
 ]
@@ -3051,7 +3051,7 @@ checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
 name = "liquid"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "liquid-sys",
  "thiserror 2.0.18",
@@ -3059,7 +3059,7 @@ dependencies = [
 
 [[package]]
 name = "liquid-sys"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "cc",
 ]
@@ -6420,7 +6420,7 @@ dependencies = [
 
 [[package]]
 name = "wdsp"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "directories",
  "serde",
@@ -6432,7 +6432,7 @@ dependencies = [
 
 [[package]]
 name = "wdsp-sys"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "cc",
  "cmake",
@@ -7434,7 +7434,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "wsprd"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "thiserror 2.0.18",
  "wsprd-sys",
@@ -7442,7 +7442,7 @@ dependencies = [
 
 [[package]]
 name = "wsprd-sys"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "cc",
 ]
