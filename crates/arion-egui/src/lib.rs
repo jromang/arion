@@ -112,6 +112,8 @@ pub struct EguiView {
     new_memory_tag:  String,
     /// Active tab index in the Setup window.
     setup_tab: usize,
+    /// Selected RX index inside the Setup → DSP per-RX fine-tuning panel.
+    setup_dsp_rx: usize,
     /// Rhai scripting engine + REPL state.
     script_engine: ScriptEngine,
     /// Script editor tabs (one per open file or scratch buffer).
@@ -307,6 +309,7 @@ impl EguiView {
             new_memory_name:    String::new(),
             new_memory_tag:     String::new(),
             setup_tab:          0,
+            setup_dsp_rx:       0,
             script_engine:      ScriptEngine::default(),
             script_tabs:        vec![ScriptTab::scratch(1)],
             active_script_tab:  0,
@@ -1779,6 +1782,145 @@ impl EguiView {
                 self.app.dsp_defaults_mut().nr4_reduction = red;
             }
         });
+
+        ui.add_space(10.0);
+        ui.separator();
+        ui.label(egui::RichText::new("Per-RX fine tuning").strong());
+        ui.weak("Changes apply immediately and are persisted per RX.");
+        ui.add_space(4.0);
+
+        // Per-RX selector — only one receiver's knobs are displayed at a
+        // time to keep the panel compact.
+        let num_rx = self.app.num_rx() as usize;
+        let selected = self.setup_dsp_rx.min(num_rx.saturating_sub(1));
+        ui.horizontal(|ui| {
+            ui.label("Receiver:");
+            for r in 0..num_rx {
+                let label = format!("RX{}", r + 1);
+                if ui.selectable_label(selected == r, label).clicked() {
+                    self.setup_dsp_rx = r;
+                }
+            }
+        });
+        let rx_idx = self.setup_dsp_rx.min(num_rx.saturating_sub(1));
+        let Some(state) = self.app.rx(rx_idx).cloned() else { return };
+        let rx = rx_idx as u8;
+
+        ui.add_space(6.0);
+        egui::CollapsingHeader::new("Squelch")
+            .default_open(true)
+            .show(ui, |ui| {
+                let mut on = state.squelch;
+                if ui.checkbox(&mut on, "Enable squelch (mode-dispatched)").changed() {
+                    self.app.set_rx_squelch(rx, on);
+                }
+                let mut th = state.squelch_db;
+                ui.horizontal(|ui| {
+                    ui.label("Threshold:");
+                    if ui.add(egui::Slider::new(&mut th, -100.0..=0.0).suffix(" dB"))
+                        .changed()
+                    {
+                        self.app.set_rx_squelch_threshold(rx, th);
+                    }
+                });
+            });
+
+        egui::CollapsingHeader::new("APF — CW audio peak filter")
+            .show(ui, |ui| {
+                let mut on = state.apf;
+                if ui.checkbox(&mut on, "Enable APF").changed() {
+                    self.app.set_rx_apf(rx, on);
+                }
+                ui.horizontal(|ui| {
+                    ui.label("Centre:");
+                    let mut f = state.apf_freq_hz;
+                    if ui.add(egui::Slider::new(&mut f, 200.0..=1500.0).suffix(" Hz"))
+                        .changed() { self.app.set_rx_apf_freq(rx, f); }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Bandwidth:");
+                    let mut b = state.apf_bw_hz;
+                    if ui.add(egui::Slider::new(&mut b, 10.0..=500.0).suffix(" Hz"))
+                        .changed() { self.app.set_rx_apf_bandwidth(rx, b); }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Gain:");
+                    let mut g = state.apf_gain_db;
+                    if ui.add(egui::Slider::new(&mut g, 0.0..=20.0).suffix(" dB"))
+                        .changed() { self.app.set_rx_apf_gain(rx, g); }
+                });
+            });
+
+        egui::CollapsingHeader::new("AGC fine tuning")
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Top level:");
+                    let mut v = state.agc_top_dbm;
+                    if ui.add(egui::Slider::new(&mut v, -120.0..=0.0).suffix(" dBm"))
+                        .changed() { self.app.set_rx_agc_top(rx, v); }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Hang level:");
+                    let mut v = state.agc_hang_level;
+                    if ui.add(egui::Slider::new(&mut v, -100.0..=0.0).suffix(" dB"))
+                        .changed() { self.app.set_rx_agc_hang_level(rx, v); }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Decay:");
+                    let mut v = state.agc_decay_ms;
+                    if ui.add(egui::Slider::new(&mut v, 50..=5000).suffix(" ms"))
+                        .changed() { self.app.set_rx_agc_decay(rx, v); }
+                });
+                ui.horizontal(|ui| {
+                    ui.label("Fixed gain (when AGC Off):");
+                    let mut v = state.agc_fixed_gain;
+                    if ui.add(egui::Slider::new(&mut v, 0.0..=100.0).suffix(" dB"))
+                        .changed() { self.app.set_rx_agc_fixed_gain(rx, v); }
+                });
+            });
+
+        if matches!(state.mode, WdspMode::Fm) {
+            egui::CollapsingHeader::new("FM parameters")
+                .default_open(true)
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Deviation:");
+                        let mut narrow = state.fm_deviation_hz <= 3000.0;
+                        if ui.selectable_label(narrow, "Narrow (2.5 kHz)").clicked() {
+                            self.app.set_rx_fm_deviation(rx, 2500.0);
+                            narrow = true;
+                        }
+                        if ui.selectable_label(!narrow, "Wide (5 kHz)").clicked() {
+                            self.app.set_rx_fm_deviation(rx, 5000.0);
+                        }
+                    });
+                    let mut ct_on = state.ctcss_on;
+                    if ui.checkbox(&mut ct_on, "CTCSS tone squelch").changed() {
+                        self.app.set_rx_ctcss(rx, ct_on);
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("CTCSS freq:");
+                        let mut hz = state.ctcss_hz;
+                        if ui.add(egui::Slider::new(&mut hz, 67.0..=254.1).suffix(" Hz"))
+                            .changed() { self.app.set_rx_ctcss_freq(rx, hz); }
+                    });
+                });
+        }
+
+        if matches!(state.mode, WdspMode::Sam) {
+            egui::CollapsingHeader::new("SAM sub-mode")
+                .default_open(true)
+                .show(ui, |ui| {
+                    let labels = [(0u8, "DSB"), (1, "LSB"), (2, "USB")];
+                    ui.horizontal(|ui| {
+                        for (val, lbl) in labels {
+                            if ui.selectable_label(state.sam_submode == val, lbl).clicked() {
+                                self.app.set_rx_sam_submode(rx, val);
+                            }
+                        }
+                    });
+                });
+        }
     }
 
     fn draw_setup_calibration(&mut self, ui: &mut egui::Ui) {
