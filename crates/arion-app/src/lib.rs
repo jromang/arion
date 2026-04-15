@@ -556,6 +556,10 @@ impl App {
                 sam_submode:     serde_rx.sam_submode,
                 filter_lo:    flo,
                 filter_hi:    fhi,
+                digital_mode: serde_rx
+                    .digital_mode
+                    .as_deref()
+                    .and_then(arion_core::DigitalMode::parse),
                 ..RxState::default()
             });
         }
@@ -1266,6 +1270,8 @@ impl App {
             let _ = radio.set_rx_ctcss_freq(rx, view.ctcss_hz as f64);
             // SAM sub-mode.
             let _ = radio.set_rx_sam_submode(rx, view.sam_submode);
+            // Digital decoder layered on top of analog DSP.
+            let _ = radio.set_rx_digital_mode(rx, view.digital_mode);
             // TNF: enable the notch master flag and push each notch. Notch
             // indices must be contiguous from 0 — iterate the persisted
             // list in order.
@@ -1379,6 +1385,7 @@ impl App {
                 ctcss_hz:        view.ctcss_hz,
                 tnf_notches:     view.tnf_notches.clone(),
                 sam_submode:     view.sam_submode,
+                digital_mode:    view.digital_mode.map(|m| m.as_str().to_string()),
             };
         }
         s.band_stacks  = self.band_stack.to_settings();
