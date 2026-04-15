@@ -2,3 +2,4 @@ crates/wdsp-sys/vendor/**         linguist-vendored=true
 crates/wdsp-sys/vendor-nr/**      linguist-vendored=true
 crates/liquid-sys/vendor/**       linguist-vendored=true
 crates/ft8-sys/vendor/**          linguist-vendored=true
+crates/wsprd-sys/vendor/**        linguist-vendored=true
