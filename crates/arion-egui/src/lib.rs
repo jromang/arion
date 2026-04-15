@@ -766,19 +766,27 @@ impl EguiView {
 
             // DSP toggles
             ui.group(|ui| {
-                for (flag, label) in [
-                    ("nb",  "NB"),
-                    ("nb2", "NB2"),
-                    ("anf", "ANF"),
-                    ("bin", "BIN"),
-                    ("tnf", "TNF"),
+                for (flag, label, tip) in [
+                    ("nb",      "NB",   "Noise Blanker"),
+                    ("nb2",     "NB2",  "Noise Blanker 2"),
+                    ("anr",     "ANR",  "LMS Adaptive NR (Thetis \"NR\")"),
+                    ("emnr",    "EMNR", "Enhanced Spectral NR (Thetis \"NR2\")"),
+                    ("anf",     "ANF",  "Auto Notch Filter"),
+                    ("squelch", "SQL",  "Squelch (FM/AM/SSB auto)"),
+                    ("apf",     "APF",  "Audio Peak Filter (CW)"),
+                    ("bin",     "BIN",  "Binaural audio"),
+                    ("tnf",     "TNF",  "Tunable Notch Filter"),
                 ] {
                     let on = match flag {
-                        "nb"  => state.nb,
-                        "nb2" => state.nb2,
-                        "anf" => state.anf,
-                        "bin" => state.bin,
-                        "tnf" => state.tnf,
+                        "nb"      => state.nb,
+                        "nb2"     => state.nb2,
+                        "anr"     => state.anr,
+                        "emnr"    => state.emnr,
+                        "anf"     => state.anf,
+                        "squelch" => state.squelch,
+                        "apf"     => state.apf,
+                        "bin"     => state.bin,
+                        "tnf"     => state.tnf,
                         _ => false,
                     };
                     let text = if on {
@@ -788,17 +796,16 @@ impl EguiView {
                         egui::RichText::new(label).color(Color32::from_gray(120))
                     };
                     if ui.selectable_label(on, text)
-                        .on_hover_text(match flag {
-                            "nb"  => "Noise Blanker",
-                            "nb2" => "Noise Blanker 2",
-                            "anf" => "Auto Notch Filter",
-                            "bin" => "Binaural audio",
-                            "tnf" => "Tunable Notch Filter",
-                            _ => "",
-                        })
+                        .on_hover_text(tip)
                         .clicked()
                     {
-                        self.app.toggle_rx_flag(rx_u8, flag);
+                        // squelch and apf have dedicated setters; the rest
+                        // flip through toggle_rx_flag.
+                        match flag {
+                            "squelch" => self.app.set_rx_squelch(rx_u8, !on),
+                            "apf"     => self.app.set_rx_apf(rx_u8, !on),
+                            _         => self.app.toggle_rx_flag(rx_u8, flag),
+                        }
                     }
                 }
             });
