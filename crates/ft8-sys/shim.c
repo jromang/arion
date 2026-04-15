@@ -4,7 +4,19 @@
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include "common/monitor.h"
+
+/* mingw's libc doesn't ship stpcpy (GNU/POSIX extension) but
+ * ft8_lib's message.c calls it unconditionally. Provide the tiny
+ * replacement here when building for Windows. */
+#if defined(_WIN32) || defined(__MINGW32__) || defined(__MINGW64__)
+char *stpcpy(char *dst, const char *src) {
+    size_t n = strlen(src);
+    memcpy(dst, src, n + 1);
+    return dst + n;
+}
+#endif
 
 size_t arion_ft8_monitor_sizeof(void) { return sizeof(monitor_t); }
 

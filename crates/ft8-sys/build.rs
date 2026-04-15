@@ -6,6 +6,9 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=shim.c");
 
+    let target = std::env::var("TARGET").unwrap_or_default();
+    let is_windows = target.contains("windows");
+
     let mut build = cc::Build::new();
     build
         .include(&vendor)
@@ -21,8 +24,19 @@ fn main() {
         // disables anyway; silence the noise.
         .flag_if_supported("-Wno-format")
         .flag_if_supported("-Wno-discarded-qualifiers")
-        .define("HAVE_STPCPY", None)
+        .flag_if_supported("-Wno-implicit-function-declaration")
         .define("_GNU_SOURCE", None);
+
+    // stpcpy is a GNU/POSIX extension that mingw's libc doesn't
+    // provide; force-include a prototype stub on Windows targets
+    // and ship the implementation in shim.c. Non-Windows uses the
+    // libc function directly.
+    if is_windows {
+        let hdr = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("mingw_compat.h");
+        build.flag_if_supported(&format!("-include{}", hdr.display()));
+    } else {
+        build.define("HAVE_STPCPY", None);
+    }
 
     for sub in ["ft8", "common", "fft"] {
         collect_c(&vendor.join(sub), &mut build);
