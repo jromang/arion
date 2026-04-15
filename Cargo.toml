@@ -28,7 +28,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.0.3"
+version = "0.0.4"
 edition = "2021"
 rust-version = "1.82"
 license = "GPL-3.0-or-later"
@@ -68,7 +68,6 @@ eframe = { version = "0.34", default-features = false, features = [
 egui = "0.34"
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
-bytes = "1"
 rhai = "1"
 egui_code_editor = "0.2"
 rfd = "0.15"
@@ -78,11 +77,8 @@ crossterm = "0.29"
 # Internal crates
 wdsp-sys = { path = "crates/wdsp-sys" }
 wdsp = { path = "crates/wdsp" }
-liquid-sys = { path = "crates/liquid-sys" }
 liquid = { path = "crates/liquid" }
-ft8-sys = { path = "crates/ft8-sys" }
 ft8 = { path = "crates/ft8" }
-wsprd-sys = { path = "crates/wsprd-sys" }
 wsprd = { path = "crates/wsprd" }
 hpsdr-protocol = { path = "crates/hpsdr-protocol" }
 hpsdr-net = { path = "crates/hpsdr-net" }

@@ -33,7 +33,7 @@ fn main() {
     // libc function directly.
     if is_windows {
         let hdr = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("mingw_compat.h");
-        build.flag_if_supported(&format!("-include{}", hdr.display()));
+        build.flag_if_supported(format!("-include{}", hdr.display()));
     } else {
         build.define("HAVE_STPCPY", None);
     }

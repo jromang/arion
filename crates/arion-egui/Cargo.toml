@@ -13,7 +13,6 @@ arion-script.workspace = true
 arion-rigctld.workspace = true
 arion-midi.workspace = true
 arion-api.workspace = true
-arion-web.workspace = true
 arion-settings.workspace = true
 arc-swap.workspace = true
 rtrb.workspace = true
@@ -25,6 +24,15 @@ egui.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
 directories.workspace = true
+
+# arion-web pulls in `opus` (audiopus_sys → cmake libopus), which does
+# not cross-compile cleanly to x86_64-pc-windows-gnu (cmake leaks
+# MSVC-specific flags into mingw). The WebSocket / WebRTC bridge is
+# therefore Linux-only for now; a Windows equivalent needs a
+# cmake-free opus bundle. Gated via [target.cfg] so the workspace
+# still builds on all hosts without a feature flag.
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+arion-web.workspace = true
 
 # Pulled in with default features so the native backends (vulkan /
 # metal / dx12 / gles) get compiled. eframe only enables the `wgsl`

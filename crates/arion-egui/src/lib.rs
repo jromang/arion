@@ -168,11 +168,15 @@ pub struct EguiView {
     midi_devices:   Vec<String>,
     /// Web-frontend state snapshot — republished each frame and
     /// read by the web server thread to push JSON to browsers.
-    web_snapshot:     arion_web::SharedSnapshot,
+    /// Also consumed by arion-api as its read side. The type is
+    /// spelled out (not aliased via arion_web) so the field
+    /// compiles on Windows targets where arion-web is absent.
+    web_snapshot:     std::sync::Arc<arc_swap::ArcSwap<arion_app::protocol::StateSnapshot>>,
     /// Telemetry mirror for the web server. Updated each frame from
     /// `app.telemetry_snapshot()` (if a radio is live).
-    web_telemetry:    arion_web::SharedTelemetry,
+    web_telemetry:    std::sync::Arc<arc_swap::ArcSwap<arion_core::Telemetry>>,
     /// Receives actions dispatched from browser clients.
+    #[cfg(not(target_os = "windows"))]
     web_action_rx:    mpsc::Receiver<arion_web::Action>,
     /// arion-api action channel (shared with any external HTTP client).
     api_action_tx:    mpsc::Sender<arion_app::protocol::Action>,
@@ -189,6 +193,7 @@ pub struct EguiView {
     /// Pre-allocated audio-tap producer, attached to the live `Radio`
     /// on the first successful `connect()`. `None` once attached, or
     /// if the tap was never instantiated.
+    #[cfg(not(target_os = "windows"))]
     web_audio_producer: Option<rtrb::Producer<arion_core::StereoFrame>>,
     /// Per-RX zoom/pan state for the spectrum display.
     view_states: Vec<RxViewState>,
@@ -284,39 +289,56 @@ impl EguiView {
         // tokio runtime. Gated behind `ARION_WEB_LISTEN=<addr>` — if
         // the env var is absent, the web frontend is disabled and no
         // thread is spawned.
-        let web_snapshot: arion_web::SharedSnapshot =
-            std::sync::Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(
-                arion_web::StateSnapshot::default(),
-            )));
-        let web_telemetry: arion_web::SharedTelemetry =
+        let web_snapshot: std::sync::Arc<
+            arc_swap::ArcSwap<arion_app::protocol::StateSnapshot>,
+        > = std::sync::Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(
+            arion_app::protocol::StateSnapshot::default(),
+        )));
+        let web_telemetry: std::sync::Arc<arc_swap::ArcSwap<arion_core::Telemetry>> =
             std::sync::Arc::new(arc_swap::ArcSwap::new(std::sync::Arc::new(
                 arion_core::Telemetry::default(),
             )));
-        let (web_action_tx, web_action_rx) = mpsc::channel::<arion_web::Action>();
-        let (web_audio_producer, web_audio_consumer) =
-            rtrb::RingBuffer::<arion_core::StereoFrame>::new(48_000 / 2); // ~500 ms buffer
-        let web_audio_tap: arion_web::SharedAudioTap =
-            std::sync::Arc::new(std::sync::Mutex::new(Some(web_audio_consumer)));
-        if let Ok(addr_str) = std::env::var("ARION_WEB_LISTEN") {
-            match addr_str.parse::<std::net::SocketAddr>() {
-                Ok(addr) => {
-                    let snap = web_snapshot.clone();
-                    let tel = web_telemetry.clone();
-                    let tap = web_audio_tap.clone();
-                    std::thread::Builder::new()
-                        .name("arion-web".into())
-                        .spawn(move || {
-                            if let Err(e) =
-                                arion_web::serve_blocking(addr, snap, web_action_tx, tel, tap)
-                            {
-                                tracing::warn!(error = %e, "arion-web server exited");
-                            }
-                        })
-                        .ok();
+
+        // Web server bridge: only compiled on non-Windows targets
+        // because arion-web pulls the opus FFI (cmake) which does
+        // not cross-compile cleanly to mingw. The API / WebSocket
+        // surface is therefore Linux/macOS-only today.
+        #[cfg(not(target_os = "windows"))]
+        let (web_action_rx, web_audio_producer) = {
+            let (web_action_tx, web_action_rx) =
+                mpsc::channel::<arion_web::Action>();
+            let (web_audio_producer, web_audio_consumer) =
+                rtrb::RingBuffer::<arion_core::StereoFrame>::new(48_000 / 2);
+            let web_audio_tap: arion_web::SharedAudioTap =
+                std::sync::Arc::new(std::sync::Mutex::new(Some(web_audio_consumer)));
+            if let Ok(addr_str) = std::env::var("ARION_WEB_LISTEN") {
+                match addr_str.parse::<std::net::SocketAddr>() {
+                    Ok(addr) => {
+                        let snap = web_snapshot.clone();
+                        let tel = web_telemetry.clone();
+                        let tap = web_audio_tap.clone();
+                        std::thread::Builder::new()
+                            .name("arion-web".into())
+                            .spawn(move || {
+                                if let Err(e) = arion_web::serve_blocking(
+                                    addr,
+                                    snap,
+                                    web_action_tx,
+                                    tel,
+                                    tap,
+                                ) {
+                                    tracing::warn!(error = %e, "arion-web server exited");
+                                }
+                            })
+                            .ok();
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "ARION_WEB_LISTEN invalid, web disabled")
+                    }
                 }
-                Err(e) => tracing::warn!(error = %e, "ARION_WEB_LISTEN invalid, web disabled"),
             }
-        }
+            (web_action_rx, web_audio_producer)
+        };
 
         let mut view = EguiView {
             app,
@@ -358,7 +380,9 @@ impl EguiView {
             api_status: "stopped".into(),
             web_snapshot,
             web_telemetry,
+            #[cfg(not(target_os = "windows"))]
             web_action_rx,
+            #[cfg(not(target_os = "windows"))]
             web_audio_producer: Some(web_audio_producer),
         };
         view.load_startup_script();
@@ -463,7 +487,9 @@ impl eframe::App for EguiView {
             self.api_midi_last_event.store(std::sync::Arc::new(Some(ev)));
         }
 
-        // Drain web actions from browser clients.
+        // Drain web actions from browser clients. Compiled out on
+        // Windows because arion-web (opus FFI) is not available.
+        #[cfg(not(target_os = "windows"))]
         while let Ok(action) = self.web_action_rx.try_recv() {
             action.apply(&mut self.app);
         }
@@ -471,7 +497,8 @@ impl eframe::App for EguiView {
         // Attach the audio tap to the live radio on the first frame
         // after connect. Consumed once — disconnect+reconnect won't
         // re-attach; restart arion if you need audio again over the
-        // web after a disconnect.
+        // web after a disconnect. Windows builds skip this entirely.
+        #[cfg(not(target_os = "windows"))]
         if self.web_audio_producer.is_some() && self.app.radio().is_some() {
             let producer = self.web_audio_producer.take().unwrap();
             if let Some(radio) = self.app.radio() {
@@ -481,14 +508,17 @@ impl eframe::App for EguiView {
             }
         }
 
-        // Publish snapshot + telemetry for the web server.
+        // Publish snapshot + telemetry so arion-api (and arion-web
+        // on non-Windows) have the freshest state to serve.
         if let Some(tel) = self.app.telemetry_snapshot() {
             self.web_telemetry.store(tel.clone());
-            let snap = arion_web::StateSnapshot::from_app_and_telemetry(&self.app, &tel);
+            let snap =
+                arion_app::protocol::StateSnapshot::from_app_and_telemetry(&self.app, &tel);
             self.web_snapshot.store(std::sync::Arc::new(snap));
         } else {
             let tel = arion_core::Telemetry::default();
-            let snap = arion_web::StateSnapshot::from_app_and_telemetry(&self.app, &tel);
+            let snap =
+                arion_app::protocol::StateSnapshot::from_app_and_telemetry(&self.app, &tel);
             self.web_snapshot.store(std::sync::Arc::new(snap));
         }
 
