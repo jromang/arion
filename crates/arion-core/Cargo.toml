@@ -10,6 +10,7 @@ hpsdr-protocol.workspace = true
 hpsdr-net.workspace = true
 arion-audio.workspace = true
 wdsp.workspace = true
+liquid.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

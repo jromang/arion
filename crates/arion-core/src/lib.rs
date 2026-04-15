@@ -62,7 +62,7 @@ pub use arion_audio::{list_output_devices, AudioStats, StereoFrame};
 pub use wdsp::Mode as WdspMode;
 
 pub mod digital;
-pub use digital::{DigitalDecode, DigitalMode};
+pub use digital::{DigitalDecode, DigitalMode, DigitalPipeline};
 
 /// Per-receiver configuration passed to [`Radio::start`].
 #[derive(Debug, Clone, Copy)]
@@ -892,6 +892,12 @@ fn dsp_loop(
     // stalling DSP.
     let mut audio_tap: Option<rtrb::Producer<StereoFrame>> = None;
 
+    // Per-RX digital decoder pipelines. `None` = no digital mode
+    // active on that RX. Created/destroyed by SetRxDigitalMode.
+    let mut digital: [Option<DigitalPipeline>; MAX_RX] = std::array::from_fn(|_| None);
+    let mut digital_audio_buf: Vec<f32> = Vec::with_capacity(4096);
+    let mut pending_decodes: [Vec<DigitalDecode>; MAX_RX] = std::array::from_fn(|_| Vec::new());
+
     while !shutdown.load(Ordering::Acquire) {
         // 1. Apply any pending commands before starting a new buffer.
         while let Ok(cmd) = commands.try_recv() {
@@ -1099,11 +1105,9 @@ fn dsp_loop(
                     if r < num_rx {
                         tracing::info!(rx, ?mode, "DSP: digital mode change");
                         rx_state[r].digital_mode = mode;
-                        // Decoder pipeline is a stub in this slice; real
-                        // PSK31/RTTY/APRS demod plugs in here via the
-                        // `liquid` wrapper + a `SubchannelDecoder` trait
-                        // once the arion-core/digital module is fleshed
-                        // out (F.1.2 follow-up).
+                        digital[r] = mode
+                            .and_then(|m| DigitalPipeline::new(m, 48_000));
+                        pending_decodes[r].clear();
                     }
                 }
             }
@@ -1154,6 +1158,23 @@ fn dsp_loop(
             }
         }
         samples_dsp.fetch_add(in_size as u64, Ordering::Relaxed);
+
+        // 3b. Digital decoder tap.
+        //     For any RX with an active DigitalPipeline, push the
+        //     real part of the post-DSP audio (pre-volume, pre-mix)
+        //     through the decoder. Decodes accumulate in
+        //     `pending_decodes[r]` and are drained at telemetry time.
+        for r in 0..num_rx {
+            let Some(pipe) = digital[r].as_mut() else { continue };
+            if !rx_state[r].enabled { continue; }
+            digital_audio_buf.clear();
+            digital_audio_buf.reserve(in_size);
+            for n in 0..in_size {
+                digital_audio_buf.push(wdsp_out[r][2 * n] as f32);
+            }
+            pipe.push_audio(&digital_audio_buf);
+            pending_decodes[r].append(&mut pipe.drain_decodes());
+        }
 
         // 4. Mix into a stereo audio burst.
         //
@@ -1246,7 +1267,7 @@ fn dsp_loop(
                     span_hz:          48_000,
                     mode:             rx_state[r].mode,
                     digital_mode:     rx_state[r].digital_mode,
-                    digital_decodes:  Vec::new(),
+                    digital_decodes:  std::mem::take(&mut pending_decodes[r]),
                 };
             }
             snapshot.last_update = Instant::now();

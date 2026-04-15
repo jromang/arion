@@ -298,6 +298,7 @@ dependencies = [
  "ctrlc",
  "hpsdr-net",
  "hpsdr-protocol",
+ "liquid",
  "rtrb",
  "rustfft",
  "thiserror 2.0.18",
