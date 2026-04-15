@@ -1,0 +1,10 @@
+[package]
+name = "ft8-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "FFI bindings to vendored ft8_lib (KGoba)"
+
+[build-dependencies]
+cc = "1.2"
