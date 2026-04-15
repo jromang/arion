@@ -13,10 +13,13 @@
 //! receives no bits yet. `VaricodeDecoder` itself is tested in
 //! isolation and will produce the expected text once real bits flow.
 
+pub mod baudot;
 pub mod psk31;
+pub mod rtty;
 pub mod varicode;
 
 use psk31::Psk31Demod;
+use rtty::RttyDemod;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum DigitalMode {
@@ -59,6 +62,7 @@ pub struct DigitalPipeline {
     mode: DigitalMode,
     center_hz: f32,
     psk31: Option<Psk31Demod>,
+    rtty: Option<RttyDemod>,
     pending: Vec<DigitalDecode>,
 }
 
@@ -68,15 +72,20 @@ impl DigitalPipeline {
     pub fn new(mode: DigitalMode, _input_rate_hz: u32) -> Option<Self> {
         let psk31 = match mode {
             DigitalMode::Psk31 => Some(Psk31Demod::new(DEFAULT_PSK_CENTER_HZ)),
-            // RTTY/APRS/PSK63 demods land in follow-ups; for now those
-            // modes produce no decodes but the pipeline still exists
-            // so the UI wiring is meaningful.
+            _ => None,
+        };
+        let rtty = match mode {
+            DigitalMode::Rtty => Some(RttyDemod::new(
+                rtty::DEFAULT_MARK_HZ,
+                rtty::DEFAULT_SPACE_HZ,
+            )),
             _ => None,
         };
         Some(Self {
             mode,
             center_hz: DEFAULT_PSK_CENTER_HZ,
             psk31,
+            rtty,
             pending: Vec::new(),
         })
     }
@@ -99,16 +108,21 @@ impl DigitalPipeline {
     /// Push a block of post-AGC real audio at 48 kHz. Decodes
     /// accumulate and drain via `drain_decodes`.
     pub fn push_audio(&mut self, audio: &[f32]) {
-        if let Some(demod) = self.psk31.as_mut() {
+        let text = if let Some(demod) = self.psk31.as_mut() {
             demod.process_block(audio);
-            let text = demod.drain_text();
-            if !text.is_empty() {
-                self.pending.push(DigitalDecode {
-                    mode: self.mode,
-                    text,
-                    snr_db: 0.0,
-                });
-            }
+            demod.drain_text()
+        } else if let Some(demod) = self.rtty.as_mut() {
+            demod.process_block(audio);
+            demod.drain_text()
+        } else {
+            String::new()
+        };
+        if !text.is_empty() {
+            self.pending.push(DigitalDecode {
+                mode: self.mode,
+                text,
+                snr_db: 0.0,
+            });
         }
     }
 
@@ -120,6 +134,18 @@ impl DigitalPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pipeline_decodes_self_generated_rtty() {
+        let audio = rtty::encode_text("TEST 123", rtty::DEFAULT_MARK_HZ, rtty::DEFAULT_SPACE_HZ);
+        let mut pipe = DigitalPipeline::new(DigitalMode::Rtty, 48_000).unwrap();
+        for chunk in audio.chunks(1024) {
+            pipe.push_audio(chunk);
+        }
+        let decodes = pipe.drain_decodes();
+        let text: String = decodes.iter().map(|d| d.text.as_str()).collect();
+        assert!(text.contains("TEST 123"), "got: {text:?}");
+    }
 
     #[test]
     fn pipeline_decodes_self_generated_psk31() {
