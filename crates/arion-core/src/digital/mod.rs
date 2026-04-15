@@ -61,7 +61,15 @@ impl DigitalMode {
 pub struct DigitalDecode {
     pub mode: DigitalMode,
     pub text: String,
+    /// Signal-quality indicator. For FT8 this is ft8_lib's sync score
+    /// (not a true SNR but monotonic with it); for other modes it's 0
+    /// until the demods learn to report one.
     pub snr_db: f32,
+    /// Audio-passband frequency of the detected signal in Hz.
+    /// 0.0 if the mode doesn't report per-decode frequencies.
+    pub freq_hz: f32,
+    /// Time offset within the decoded slot, in seconds.
+    pub time_offset_s: f32,
 }
 
 /// Per-RX digital decoder pipeline.
@@ -136,7 +144,9 @@ impl Ft8Stage {
                 out.push(DigitalDecode {
                     mode: DigitalMode::Ft8,
                     text: d.text,
-                    snr_db: d.snr_db,
+                    snr_db: d.score as f32,
+                    freq_hz: d.freq_hz,
+                    time_offset_s: d.time_offset_s,
                 });
             }
             self.monitor.reset();
@@ -221,6 +231,8 @@ impl DigitalPipeline {
                 mode: self.mode,
                 text,
                 snr_db: 0.0,
+                freq_hz: self.center_hz,
+                time_offset_s: 0.0,
             });
         }
     }

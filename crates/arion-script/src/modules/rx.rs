@@ -365,6 +365,8 @@ impl ScriptModule for RxModule {
                         m.insert("mode".into(), Dynamic::from(d.mode.as_str().to_string()));
                         m.insert("text".into(), Dynamic::from(d.text));
                         m.insert("snr".into(), Dynamic::from(d.snr_db as f64));
+                        m.insert("freq".into(), Dynamic::from(d.freq_hz as f64));
+                        m.insert("dt".into(), Dynamic::from(d.time_offset_s as f64));
                         Dynamic::from_map(m)
                     })
                     .collect::<Array>()

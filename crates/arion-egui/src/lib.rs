@@ -1312,7 +1312,18 @@ impl EguiView {
                         ui.weak("(no decodes yet — decoder pipeline pending)");
                     } else {
                         for d in decodes {
-                            ui.monospace(format!("[{} {:+.0} dB] {}", d.mode.as_str(), d.snr_db, d.text));
+                            // FT8 labels carry useful freq/time/score
+                            // metadata; everything else keeps the
+                            // short 1-line form.
+                            let line = if d.mode == arion_core::DigitalMode::Ft8 {
+                                format!(
+                                    "[ft8 {:+3.0} {:4.0}Hz dt={:+.1}] {}",
+                                    d.snr_db, d.freq_hz, d.time_offset_s, d.text
+                                )
+                            } else {
+                                format!("[{}] {}", d.mode.as_str(), d.text)
+                            };
+                            ui.monospace(line);
                         }
                     }
                 });

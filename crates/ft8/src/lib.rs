@@ -131,11 +131,11 @@ impl Monitor {
         // Sort by score descending so the first decode wins.
         let mut sorted: Vec<_> = heap[..n_found as usize].to_vec();
         sorted.sort_by_key(|c| -(c.score as i32));
+        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
         for cand in &sorted {
             let mut msg = sys::ftx_message_t::default();
             let mut status = sys::ftx_decode_status_t::default();
             let ok = unsafe { sys::ftx_decode_candidate(wf_ptr, cand, 25, &mut msg, &mut status) };
-            if !ok { continue; }
             if !ok {
                 continue;
             }
@@ -150,9 +150,18 @@ impl Monitor {
             let text = unsafe { CStr::from_ptr(buf.as_ptr()) }
                 .to_string_lossy()
                 .into_owned();
+            // Multiple candidates often point at the same message;
+            // dedupe by text so the UI shows each QSO once.
+            if !seen.insert(text.clone()) {
+                continue;
+            }
             out.push(Decode {
                 text,
-                snr_db: status.time,
+                // ft8_lib's ftx_decode_status_t carries no SNR field.
+                // Use the candidate's sync score as a reasonable
+                // proxy (roughly monotonic with SNR for identical
+                // waterfalls).
+                score: cand.score as i32,
                 freq_hz: status.freq,
                 time_offset_s: status.time,
             });
@@ -170,7 +179,10 @@ impl Drop for Monitor {
 #[derive(Debug, Clone)]
 pub struct Decode {
     pub text: String,
-    pub snr_db: f32,
+    /// Sync score reported by ft8_lib's find_candidates. Not a true
+    /// SNR in dB, but monotonic with signal quality — useful as a
+    /// display rank.
+    pub score: i32,
     pub freq_hz: f32,
     pub time_offset_s: f32,
 }
