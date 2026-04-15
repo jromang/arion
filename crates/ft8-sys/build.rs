@@ -15,6 +15,12 @@ fn main() {
         .flag_if_supported("-Wno-unused-but-set-variable")
         .flag_if_supported("-Wno-unused-parameter")
         .flag_if_supported("-Wno-sign-compare")
+        // ft8_lib's debug LOG() macros use %llx for uint64_t, which
+        // is long long on Windows but plain long on 64-bit Linux.
+        // The format mismatch only affects debug prints, which Arion
+        // disables anyway; silence the noise.
+        .flag_if_supported("-Wno-format")
+        .flag_if_supported("-Wno-discarded-qualifiers")
         .define("HAVE_STPCPY", None)
         .define("_GNU_SOURCE", None);
 

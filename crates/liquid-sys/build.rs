@@ -19,6 +19,11 @@ fn main() {
         .flag_if_supported("-Wno-deprecated-non-prototype")
         .flag_if_supported("-Wno-deprecated-declarations")
         .flag_if_supported("-Wno-implicit-function-declaration")
+        // liquid-dsp's gasearch.c passes calloc(element_size, count)
+        // (transposed vs the canonical calloc(count, element_size)).
+        // Harmless — the product is the same — but modern gcc warns.
+        .flag_if_supported("-Wno-calloc-transposed-args")
+        .flag_if_supported("-Wno-implicit-fallthrough")
         .define("HAVE_CONFIG_H", None)
         .define("_GNU_SOURCE", None);
 

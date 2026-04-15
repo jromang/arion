@@ -22,7 +22,12 @@ fn main() {
         .flag_if_supported("-Wno-pointer-sign")
         .flag_if_supported("-Wno-format-overflow")
         .flag_if_supported("-Wno-format-truncation")
-        .flag_if_supported("-Wno-stringop-truncation");
+        .flag_if_supported("-Wno-stringop-truncation")
+        // wsprd_utils.c's strncat(" ", 1) warns that the bound equals
+        // the source length. It's intentional in the vendored code;
+        // not a bug we want to diff-patch upstream over.
+        .flag_if_supported("-Wno-stringop-overflow")
+        .flag_if_supported("-Wno-missing-braces");
 
     // The FFTW-free subset: Fano decoder, metric tables, callsign
     // hash, and unpk_. wsprd.c itself (file I/O + spectral search)
