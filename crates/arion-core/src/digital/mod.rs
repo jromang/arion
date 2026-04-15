@@ -1,17 +1,11 @@
 //! Digital-mode pipeline.
 //!
-//! The DSP thread feeds demodulated audio (48 kHz real) into a
-//! `DigitalPipeline` per RX when the user selects a digital decoder
-//! (PSK31/RTTY/APRS). Pipeline order:
-//!
-//! 1. Resample 48 k → 12 k complex (imaginary part zeroed) via liquid.
-//! 2. Mix the user-selected center frequency down to DC via liquid NCO.
-//! 3. Low-pass filter, symbol-sync, BPSK differential demod **[TODO]**.
-//! 4. Bit stream → `varicode::VaricodeDecoder` → ASCII text.
-//!
-//! Steps 1 and 2 are live; step 3 is stubbed so the varicode decoder
-//! receives no bits yet. `VaricodeDecoder` itself is tested in
-//! isolation and will produce the expected text once real bits flow.
+//! The DSP thread feeds post-AGC audio (48 kHz real) into a
+//! `DigitalPipeline` per RX when the user selects a digital
+//! decoder. A single [`ModeStage`] implementation owns the
+//! mode-specific decoder, so adding a new mode is a matter of
+//! shipping a new `impl ModeStage` — the pipeline itself, the
+//! MVVM plumbing, and the UI don't change.
 
 pub mod aprs;
 pub mod ax25;
@@ -72,20 +66,106 @@ pub struct DigitalDecode {
     pub time_offset_s: f32,
 }
 
+/// A mode-specific decoder plugged into a `DigitalPipeline`. One
+/// instance per active RX. Implementations are private newtypes in
+/// this module so the trait stays inside `arion-core`.
+trait ModeStage: Send {
+    /// Feed a block of post-AGC real audio (48 kHz). Any decoded
+    /// messages are pushed into `out`.
+    fn push_audio(&mut self, audio: &[f32], out: &mut Vec<DigitalDecode>);
+
+    /// Snapshot the latest constellation points (I, Q). Default is
+    /// empty; PSK-family decoders override this.
+    fn constellation(&self) -> Vec<(f32, f32)> {
+        Vec::new()
+    }
+
+    /// Retune the decoder to a new carrier offset in Hz (audio
+    /// passband). Only meaningful for PSK-family modes; other modes
+    /// use fixed tone pairs and ignore this.
+    fn set_center_hz(&mut self, _hz: f32) {}
+}
+
+// --- Stage adapters around the per-mode demods -------------------------
+
+struct Psk31Stage {
+    demod: Psk31Demod,
+    mode: DigitalMode, // Psk31 or Psk63
+}
+
+impl ModeStage for Psk31Stage {
+    fn push_audio(&mut self, audio: &[f32], out: &mut Vec<DigitalDecode>) {
+        self.demod.process_block(audio);
+        let text = self.demod.drain_text();
+        if !text.is_empty() {
+            out.push(DigitalDecode {
+                mode: self.mode,
+                text,
+                snr_db: 0.0,
+                freq_hz: 0.0,
+                time_offset_s: 0.0,
+            });
+        }
+    }
+    fn constellation(&self) -> Vec<(f32, f32)> {
+        self.demod.constellation().to_vec()
+    }
+    fn set_center_hz(&mut self, hz: f32) {
+        self.demod = Psk31Demod::new(hz);
+    }
+}
+
+struct RttyStage {
+    demod: RttyDemod,
+}
+
+impl ModeStage for RttyStage {
+    fn push_audio(&mut self, audio: &[f32], out: &mut Vec<DigitalDecode>) {
+        self.demod.process_block(audio);
+        let text = self.demod.drain_text();
+        if !text.is_empty() {
+            out.push(DigitalDecode {
+                mode: DigitalMode::Rtty,
+                text,
+                snr_db: 0.0,
+                freq_hz: 0.0,
+                time_offset_s: 0.0,
+            });
+        }
+    }
+}
+
+struct AprsStage {
+    demod: AprsDemod,
+}
+
+impl ModeStage for AprsStage {
+    fn push_audio(&mut self, audio: &[f32], out: &mut Vec<DigitalDecode>) {
+        self.demod.process_block(audio);
+        for frame in self.demod.drain() {
+            out.push(DigitalDecode {
+                mode: DigitalMode::Aprs,
+                text: format!("{}: {}", frame.header(), frame.info_str()),
+                snr_db: 0.0,
+                freq_hz: 0.0,
+                time_offset_s: 0.0,
+            });
+        }
+    }
+}
+
 /// Per-RX digital decoder pipeline.
 pub struct DigitalPipeline {
     mode: DigitalMode,
     center_hz: f32,
-    psk31: Option<Psk31Demod>,
-    rtty: Option<RttyDemod>,
-    aprs: Option<AprsDemod>,
-    ft8: Option<Ft8Stage>,
+    stage: Box<dyn ModeStage>,
     pending: Vec<DigitalDecode>,
 }
 
 /// FT8 decoder running inside the DigitalPipeline. Resamples 48 kHz
 /// → 12 kHz, feeds a `ft8::Monitor` in 1920-sample (one-symbol)
-/// blocks, and runs a decode every ~14 s of accumulated audio.
+/// blocks, and runs a decode every ~14 s of accumulated audio or at
+/// each UTC 15-second slot boundary.
 struct Ft8Stage {
     resampler: MsResamp,
     monitor: ft8::Monitor,
@@ -127,7 +207,7 @@ impl Ft8Stage {
         })
     }
 
-    fn push_audio(&mut self, audio: &[f32], out: &mut Vec<DigitalDecode>) {
+    fn drive(&mut self, audio: &[f32], out: &mut Vec<DigitalDecode>) {
         // Real-valued 48 k → complex; the monitor only uses the real
         // part of the mix-down internally, so feeding im=0 is fine.
         self.scratch_in.clear();
@@ -183,36 +263,33 @@ impl Ft8Stage {
     }
 }
 
+impl ModeStage for Ft8Stage {
+    fn push_audio(&mut self, audio: &[f32], out: &mut Vec<DigitalDecode>) {
+        self.drive(audio, out);
+    }
+}
+
 const DEFAULT_PSK_CENTER_HZ: f32 = 1_500.0;
 
 impl DigitalPipeline {
     pub fn new(mode: DigitalMode, _input_rate_hz: u32) -> Option<Self> {
-        let psk31 = match mode {
-            DigitalMode::Psk31 => Some(Psk31Demod::new(DEFAULT_PSK_CENTER_HZ)),
-            _ => None,
-        };
-        let rtty = match mode {
-            DigitalMode::Rtty => Some(RttyDemod::new(
-                rtty::DEFAULT_MARK_HZ,
-                rtty::DEFAULT_SPACE_HZ,
-            )),
-            _ => None,
-        };
-        let aprs = match mode {
-            DigitalMode::Aprs => Some(AprsDemod::new()),
-            _ => None,
-        };
-        let ft8 = match mode {
-            DigitalMode::Ft8 => Ft8Stage::new(),
-            _ => None,
+        let stage: Box<dyn ModeStage> = match mode {
+            DigitalMode::Psk31 | DigitalMode::Psk63 => Box::new(Psk31Stage {
+                demod: Psk31Demod::new(DEFAULT_PSK_CENTER_HZ),
+                mode,
+            }),
+            DigitalMode::Rtty => Box::new(RttyStage {
+                demod: RttyDemod::new(rtty::DEFAULT_MARK_HZ, rtty::DEFAULT_SPACE_HZ),
+            }),
+            DigitalMode::Aprs => Box::new(AprsStage {
+                demod: AprsDemod::new(),
+            }),
+            DigitalMode::Ft8 => Box::new(Ft8Stage::new()?),
         };
         Some(Self {
             mode,
             center_hz: DEFAULT_PSK_CENTER_HZ,
-            psk31,
-            rtty,
-            aprs,
-            ft8,
+            stage,
             pending: Vec::new(),
         })
     }
@@ -227,42 +304,13 @@ impl DigitalPipeline {
 
     pub fn set_center_hz(&mut self, hz: f32) {
         self.center_hz = hz;
-        if matches!(self.mode, DigitalMode::Psk31) {
-            self.psk31 = Some(Psk31Demod::new(hz));
-        }
+        self.stage.set_center_hz(hz);
     }
 
     /// Push a block of post-AGC real audio at 48 kHz. Decodes
     /// accumulate and drain via `drain_decodes`.
     pub fn push_audio(&mut self, audio: &[f32]) {
-        let text = if let Some(demod) = self.psk31.as_mut() {
-            demod.process_block(audio);
-            demod.drain_text()
-        } else if let Some(demod) = self.rtty.as_mut() {
-            demod.process_block(audio);
-            demod.drain_text()
-        } else if let Some(demod) = self.aprs.as_mut() {
-            demod.process_block(audio);
-            demod
-                .drain()
-                .into_iter()
-                .map(|f| format!("{}: {}\n", f.header(), f.info_str()))
-                .collect::<String>()
-        } else if let Some(stage) = self.ft8.as_mut() {
-            stage.push_audio(audio, &mut self.pending);
-            String::new()
-        } else {
-            String::new()
-        };
-        if !text.is_empty() {
-            self.pending.push(DigitalDecode {
-                mode: self.mode,
-                text,
-                snr_db: 0.0,
-                freq_hz: self.center_hz,
-                time_offset_s: 0.0,
-            });
-        }
+        self.stage.push_audio(audio, &mut self.pending);
     }
 
     pub fn drain_decodes(&mut self) -> Vec<DigitalDecode> {
@@ -270,12 +318,9 @@ impl DigitalPipeline {
     }
 
     /// Snapshot the current constellation points (I, Q). Non-empty
-    /// only for demods that expose them (PSK31 today).
+    /// only for PSK-family decoders today.
     pub fn constellation(&self) -> Vec<(f32, f32)> {
-        self.psk31
-            .as_ref()
-            .map(|d| d.constellation().to_vec())
-            .unwrap_or_default()
+        self.stage.constellation()
     }
 }
 
