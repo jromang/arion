@@ -234,6 +234,10 @@ enum DspCommand {
     SetRxFmDeviation      { rx: u8, hz:      f64 },
     SetRxCtcssRun         { rx: u8, enabled: bool },
     SetRxCtcssFreq        { rx: u8, hz:      f64 },
+    SetRxNb               { rx: u8, enabled: bool },
+    SetRxNb2              { rx: u8, enabled: bool },
+    SetRxNbThreshold      { rx: u8, threshold: f64 },
+    SetRxNb2Threshold     { rx: u8, threshold: f64 },
 }
 
 /// A running end-to-end receive session.
@@ -564,6 +568,23 @@ impl Radio {
     }
     pub fn set_rx_ctcss_freq(&self, rx: u8, hz: f64) -> anyhow::Result<()> {
         self.commands.send(DspCommand::SetRxCtcssFreq { rx, hz })?;
+        Ok(())
+    }
+
+    pub fn set_rx_nb(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxNb { rx, enabled })?;
+        Ok(())
+    }
+    pub fn set_rx_nb2(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxNb2 { rx, enabled })?;
+        Ok(())
+    }
+    pub fn set_rx_nb_threshold(&self, rx: u8, threshold: f64) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxNbThreshold { rx, threshold })?;
+        Ok(())
+    }
+    pub fn set_rx_nb2_threshold(&self, rx: u8, threshold: f64) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxNb2Threshold { rx, threshold })?;
         Ok(())
     }
 
@@ -961,6 +982,28 @@ fn dsp_loop(
                 DspCommand::SetRxCtcssFreq { rx, hz } => {
                     let r = rx as usize;
                     if r < num_rx { channels[r].set_ctcss_freq(hz); }
+                }
+                DspCommand::SetRxNb { rx, enabled } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        tracing::info!(rx, enabled, "DSP: NB toggle");
+                        channels[r].set_nb_enabled(enabled);
+                    }
+                }
+                DspCommand::SetRxNb2 { rx, enabled } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        tracing::info!(rx, enabled, "DSP: NB2 toggle");
+                        channels[r].set_nb2_enabled(enabled);
+                    }
+                }
+                DspCommand::SetRxNbThreshold { rx, threshold } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_nb_threshold(threshold); }
+                }
+                DspCommand::SetRxNb2Threshold { rx, threshold } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_nb2_threshold(threshold); }
                 }
             }
         }

@@ -938,6 +938,8 @@ impl App {
                 "bin"  => { let _ = r.set_rx_binaural(rx, new_val); }
                 "anr"  => { let _ = r.set_rx_anr(rx, new_val); }
                 "emnr" => { let _ = r.set_rx_emnr(rx, new_val); }
+                "nb"   => { let _ = r.set_rx_nb(rx, new_val); }
+                "nb2"  => { let _ = r.set_rx_nb2(rx, new_val); }
                 // NB/NB2/TNF: upstream WDSP uses low-level ANB/NOB
                 // structures, not simple SetRXA* calls. Binding
                 // deferred until the full NB pipeline is understood.

@@ -217,6 +217,29 @@ impl Channel {
             sys::RXASetPassband(config.id, lo, hi);
             sys::SetRXAAGCMode(config.id, config.agc.to_wire());
             sys::SetRXAPanelGain1(config.id, config.panel_gain);
+
+            // Attach the external NB (ANB) and NB2 (NOB) pipelines so
+            // they're ready to be toggled on at runtime. Both start off
+            // (`run = 0`) — the wrappers short-circuit when disabled,
+            // so we can unconditionally call them from `process()`.
+            let rate = config.input_rate as f64;
+            let buffsize = config.in_size;
+            sys::create_anbEXT(
+                config.id, 0, buffsize, rate,
+                0.000_1,  // tau (100 µs transition)
+                0.001,    // hangtime (1 ms at zero)
+                0.000_1,  // advtime
+                0.02,     // backtau (20 ms averaging)
+                30.0,     // threshold multiplier
+            );
+            sys::create_nobEXT(
+                config.id, 0, 0, buffsize, rate,
+                0.000_1,
+                0.001,
+                0.000_1,
+                0.02,
+                30.0,
+            );
         }
 
         tracing::info!(
@@ -440,6 +463,24 @@ impl Channel {
         unsafe { sys::SetRXACTCSSFreq(self.id, hz); }
     }
 
+    // --- NB / NB2 (external time-domain noise blankers) ---------------
+
+    pub fn set_nb_enabled(&mut self, enabled: bool) {
+        unsafe { sys::SetEXTANBRun(self.id, i32::from(enabled)); }
+    }
+    pub fn set_nb_threshold(&mut self, threshold: f64) {
+        unsafe { sys::SetEXTANBThreshold(self.id, threshold); }
+    }
+    pub fn set_nb2_enabled(&mut self, enabled: bool) {
+        unsafe { sys::SetEXTNOBRun(self.id, i32::from(enabled)); }
+    }
+    pub fn set_nb2_threshold(&mut self, threshold: f64) {
+        unsafe { sys::SetEXTNOBThreshold(self.id, threshold); }
+    }
+    pub fn set_nb2_mode(&mut self, mode: i32) {
+        unsafe { sys::SetEXTNOBMode(self.id, mode); }
+    }
+
     /// Enable or disable binaural (true stereo) audio output.
     pub fn set_binaural(&mut self, enabled: bool) {
         unsafe { sys::SetRXAPanelBinaural(self.id, i32::from(enabled)); }
@@ -463,10 +504,14 @@ impl Channel {
         debug_assert_eq!(out_buf.len(), 2 * self.out_size, "output buffer wrong size");
 
         let mut error: c_int = 0;
-        // SAFETY: buffer sizes verified above, channel id is valid,
-        // fexchange0 is the documented exchange point. The call may
-        // internally hand off to WDSP's DSP thread via semaphores.
+        // SAFETY: buffer sizes verified above, channel id is valid.
+        // xanbEXT / xnobEXT run in place; they no-op when their
+        // internal `run` flag is 0, so we always call them regardless
+        // of the user-visible NB toggles. The Thetis RXA pipeline
+        // does exactly this — NB lives outside the RXA critical path.
         unsafe {
+            sys::xanbEXT(self.id, in_buf.as_mut_ptr(), in_buf.as_mut_ptr());
+            sys::xnobEXT(self.id, in_buf.as_mut_ptr(), in_buf.as_mut_ptr());
             sys::fexchange0(
                 self.id,
                 in_buf.as_mut_ptr(),
@@ -492,7 +537,11 @@ impl Drop for Channel {
     fn drop(&mut self) {
         // SAFETY: valid channel id, idempotent, WDSP joins its DSP
         // thread internally before returning.
-        unsafe { sys::CloseChannel(self.id) };
+        unsafe {
+            sys::destroy_anbEXT(self.id);
+            sys::destroy_nobEXT(self.id);
+            sys::CloseChannel(self.id);
+        }
         tracing::debug!(id = self.id, "closed WDSP RX channel");
     }
 }

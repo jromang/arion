@@ -219,6 +219,54 @@ unsafe extern "C" {
     /// CTCSS sub-audible tone frequency in Hz (67.0..254.1 range).
     pub fn SetRXACTCSSFreq(channel: c_int, freq: c_double);
 
+    // --- NB  (time-domain noise blanker, nob.c / anb struct) -----------
+    //
+    // The EXT interface owns a pool of ANB/NOB instances keyed by id.
+    // Upstream Thetis wraps them around the RXA pipeline: xanbEXT is
+    // called on the raw IQ buffer before fexchange0. `xanb` short-
+    // circuits internally when `run == 0`, so always calling it costs
+    // only a branch per frame.
+
+    pub fn create_anbEXT(
+        id:         c_int,
+        run:        c_int,
+        buffsize:   c_int,
+        samplerate: c_double,
+        tau:        c_double,
+        hangtime:   c_double,
+        advtime:    c_double,
+        backtau:    c_double,
+        threshold:  c_double,
+    );
+    pub fn destroy_anbEXT(id: c_int);
+    pub fn flush_anbEXT(id: c_int);
+    pub fn xanbEXT(id: c_int, input: *mut c_double, output: *mut c_double);
+    pub fn SetEXTANBRun(id: c_int, run: c_int);
+    pub fn SetEXTANBThreshold(id: c_int, thresh: c_double);
+    pub fn SetEXTANBTau(id: c_int, tau: c_double);
+
+    // --- NB2 (nobII.c, two-pass blanker with hang / zero / reduce modes)
+
+    pub fn create_nobEXT(
+        id:         c_int,
+        run:        c_int,
+        mode:       c_int,
+        buffsize:   c_int,
+        samplerate: c_double,
+        tau:        c_double,
+        hangtime:   c_double,
+        advtime:    c_double,
+        backtau:    c_double,
+        threshold:  c_double,
+    );
+    pub fn destroy_nobEXT(id: c_int);
+    pub fn flush_nobEXT(id: c_int);
+    pub fn xnobEXT(id: c_int, input: *mut c_double, output: *mut c_double);
+    pub fn SetEXTNOBRun(id: c_int, run: c_int);
+    pub fn SetEXTNOBMode(id: c_int, mode: c_int);
+    pub fn SetEXTNOBThreshold(id: c_int, thresh: c_double);
+    pub fn SetEXTNOBTau(id: c_int, tau: c_double);
+
     // --- NR3 (RNNoise) --------------------------------------------------
     //
     // These are only meaningful when `wdsp-sys` was built against a
