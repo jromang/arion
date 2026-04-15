@@ -2067,9 +2067,9 @@ impl EguiView {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label("Top level:");
-                    let mut v = state.agc_top_dbm;
+                    let mut v = state.agc_max_gain_db;
                     if ui.add(egui::Slider::new(&mut v, -120.0..=0.0).suffix(" dBm"))
-                        .changed() { self.app.set_rx_agc_top(rx, v); }
+                        .changed() { self.app.set_rx_agc_max_gain(rx, v); }
                 });
                 ui.horizontal(|ui| {
                     ui.label("Hang level:");

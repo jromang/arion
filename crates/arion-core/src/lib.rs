@@ -241,7 +241,7 @@ enum DspCommand {
     SetRxApfFreq          { rx: u8, freq_hz: f64 },
     SetRxApfBandwidth     { rx: u8, bw_hz:   f64 },
     SetRxApfGain          { rx: u8, gain_db: f64 },
-    SetRxAgcTop           { rx: u8, dbm:     f64 },
+    SetRxAgcMaxGain       { rx: u8, db:      f64 },
     SetRxAgcHangLevel     { rx: u8, level:   f64 },
     SetRxAgcDecay         { rx: u8, decay_ms: i32 },
     SetRxAgcFixedGain     { rx: u8, gain_db: f64 },
@@ -586,8 +586,8 @@ impl Radio {
         self.commands.send(DspCommand::SetRxApfGain { rx, gain_db })?;
         Ok(())
     }
-    pub fn set_rx_agc_top(&self, rx: u8, dbm: f64) -> anyhow::Result<()> {
-        self.commands.send(DspCommand::SetRxAgcTop { rx, dbm })?;
+    pub fn set_rx_agc_max_gain(&self, rx: u8, db: f64) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxAgcMaxGain { rx, db })?;
         Ok(())
     }
     pub fn set_rx_agc_hang_level(&self, rx: u8, level: f64) -> anyhow::Result<()> {
@@ -1035,9 +1035,9 @@ fn dsp_loop(
                     let r = rx as usize;
                     if r < num_rx { channels[r].set_apf_gain(gain_db); }
                 }
-                DspCommand::SetRxAgcTop { rx, dbm } => {
+                DspCommand::SetRxAgcMaxGain { rx, db } => {
                     let r = rx as usize;
-                    if r < num_rx { channels[r].set_agc_top(dbm); }
+                    if r < num_rx { channels[r].set_agc_max_gain(db); }
                 }
                 DspCommand::SetRxAgcHangLevel { rx, level } => {
                     let r = rx as usize;

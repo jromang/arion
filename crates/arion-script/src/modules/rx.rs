@@ -152,9 +152,9 @@ impl ScriptModule for RxModule {
         );
 
         // --- AGC fine controls ---
-        reg_f32_rx(engine, ctx, "agc_top_dbm",
-            |app, i| app.rx(i).map(|r| r.agc_top_dbm).unwrap_or(0.0),
-            |app, i, v| app.set_rx_agc_top(i, v),
+        reg_f32_rx(engine, ctx, "agc_max_gain_db",
+            |app, i| app.rx(i).map(|r| r.agc_max_gain_db).unwrap_or(0.0),
+            |app, i, v| app.set_rx_agc_max_gain(i, v),
         );
         reg_f32_rx(engine, ctx, "agc_hang_level",
             |app, i| app.rx(i).map(|r| r.agc_hang_level).unwrap_or(0.0),

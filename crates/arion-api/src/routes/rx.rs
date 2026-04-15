@@ -46,7 +46,7 @@ pub struct RxPatch {
     pub squelch_db:      Option<f32>,
     pub apf:             Option<bool>,
     pub apf_freq_hz:     Option<f32>,
-    pub agc_top_dbm:     Option<f32>,
+    pub agc_max_gain_db:     Option<f32>,
     pub agc_decay_ms:    Option<i32>,
     pub fm_deviation_hz: Option<f32>,
     pub ctcss_on:        Option<bool>,
@@ -84,7 +84,7 @@ pub async fn patch_rx(
     if let Some(db) = body.squelch_db { send(Action::SetRxSquelchThreshold { rx, db })?; }
     if let Some(on) = body.apf { send(Action::SetRxApf { rx, on })?; }
     if let Some(hz) = body.apf_freq_hz { send(Action::SetRxApfFreq { rx, hz })?; }
-    if let Some(dbm) = body.agc_top_dbm { send(Action::SetRxAgcTop { rx, dbm })?; }
+    if let Some(db) = body.agc_max_gain_db { send(Action::SetRxAgcMaxGain { rx, db })?; }
     if let Some(ms) = body.agc_decay_ms { send(Action::SetRxAgcDecay { rx, ms })?; }
     if let Some(hz) = body.fm_deviation_hz { send(Action::SetRxFmDeviation { rx, hz })?; }
     if let Some(on) = body.ctcss_on { send(Action::SetRxCtcss { rx, on })?; }

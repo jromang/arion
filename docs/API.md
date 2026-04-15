@@ -66,7 +66,7 @@ reverse proxy + auth is unsafe.
 | `anr` | bool | Thetis "NR" (LMS adaptive) |
 | `emnr` | bool | Thetis "NR2" (enhanced spectral) |
 | `agc` | string | `off / long / slow / med / fast` |
-| `agc_top_dbm` | f32 | AGC top level dBm |
+| `agc_max_gain_db` | f32 | AGC max-gain ceiling in dB (`max_gain = 10^(db/20)`; sane range 60..120) |
 | `agc_decay_ms` | i32 | AGC decay time constant |
 | `squelch` | bool | mode-dispatched squelch toggle |
 | `squelch_db` | f32 | threshold (FM: 0..1 level; else dB) |

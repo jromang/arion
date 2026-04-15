@@ -326,8 +326,8 @@ pub struct RxSettings {
     pub apf_bw_hz:       f32,
     #[serde(default = "default_apf_gain")]
     pub apf_gain_db:     f32,
-    #[serde(default = "default_agc_top")]
-    pub agc_top_dbm:     f32,
+    #[serde(default = "default_agc_max_gain")]
+    pub agc_max_gain_db:     f32,
     #[serde(default = "default_agc_hang_level")]
     pub agc_hang_level:  f32,
     #[serde(default = "default_agc_decay")]
@@ -359,7 +359,7 @@ fn default_squelch_db()     -> f32 { -30.0 }
 fn default_apf_freq()       -> f32 { 600.0 }
 fn default_apf_bw()         -> f32 { 50.0 }
 fn default_apf_gain()       -> f32 { 6.0 }
-fn default_agc_top()        -> f32 { -30.0 }
+fn default_agc_max_gain()        -> f32 { 90.0 }
 fn default_agc_hang_level() -> f32 { -20.0 }
 fn default_agc_decay()      -> i32 { 250 }
 fn default_agc_fixed_gain() -> f32 { 10.0 }
@@ -383,7 +383,7 @@ impl Default for RxSettings {
             apf_freq_hz:     default_apf_freq(),
             apf_bw_hz:       default_apf_bw(),
             apf_gain_db:     default_apf_gain(),
-            agc_top_dbm:     default_agc_top(),
+            agc_max_gain_db:     default_agc_max_gain(),
             agc_hang_level:  default_agc_hang_level(),
             agc_decay_ms:    default_agc_decay(),
             agc_fixed_gain:  default_agc_fixed_gain(),

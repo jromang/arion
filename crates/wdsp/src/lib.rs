@@ -426,8 +426,11 @@ impl Channel {
 
     // --- AGC fine controls ---------------------------------------------
 
-    pub fn set_agc_top(&mut self, dbm: f64) {
-        unsafe { sys::SetRXAAGCTop(self.id, dbm); }
+    /// Set the AGC max-gain ceiling, in dB. WDSP computes
+    /// `max_gain = 10^(db/20)`, so this is *not* a dBm output cap
+    /// despite the upstream `SetRXAAGCTop` name. Sane range 60..120.
+    pub fn set_agc_max_gain(&mut self, db: f64) {
+        unsafe { sys::SetRXAAGCTop(self.id, db); }
     }
     pub fn set_agc_hang_enabled(&mut self, on: bool) {
         unsafe { sys::SetRXAAGCHang(self.id, i32::from(on)); }

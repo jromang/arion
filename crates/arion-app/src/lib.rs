@@ -87,7 +87,12 @@ pub struct RxState {
     pub apf_freq_hz:     f32,
     pub apf_bw_hz:       f32,
     pub apf_gain_db:     f32,
-    pub agc_top_dbm:     f32,
+    /// AGC max-gain ceiling in dB. WDSP computes
+    /// `max_gain = 10^(value/20)`, so this is *not* a dBm output cap
+    /// despite the field name. Typical sane range: 60..120 dB. Below
+    /// ~30 dB the AGC starves SSB/CW audio to silence (FM bypasses
+    /// this AGC, which is why it stays audible).
+    pub agc_max_gain_db:     f32,
     pub agc_hang_level:  f32,
     pub agc_decay_ms:    i32,
     pub agc_fixed_gain:  f32,
@@ -142,7 +147,7 @@ impl Default for RxState {
             apf_freq_hz:     600.0,
             apf_bw_hz:       50.0,
             apf_gain_db:     6.0,
-            agc_top_dbm:     -30.0,
+            agc_max_gain_db:     90.0,
             agc_hang_level:  -20.0,
             agc_decay_ms:    250,
             agc_fixed_gain:  10.0,
@@ -550,7 +555,7 @@ impl App {
                 apf_freq_hz:     serde_rx.apf_freq_hz,
                 apf_bw_hz:       serde_rx.apf_bw_hz,
                 apf_gain_db:     serde_rx.apf_gain_db,
-                agc_top_dbm:     serde_rx.agc_top_dbm,
+                agc_max_gain_db:     serde_rx.agc_max_gain_db,
                 agc_hang_level:  serde_rx.agc_hang_level,
                 agc_decay_ms:    serde_rx.agc_decay_ms,
                 agc_fixed_gain:  serde_rx.agc_fixed_gain,
@@ -894,11 +899,11 @@ impl App {
 
     // --- E.12 AGC fine ---
 
-    pub fn set_rx_agc_top(&mut self, rx: u8, dbm: f32) {
+    pub fn set_rx_agc_max_gain(&mut self, rx: u8, db: f32) {
         let Some(view) = self.rxs.get_mut(rx as usize) else { return };
-        view.agc_top_dbm = dbm;
+        view.agc_max_gain_db = db;
         if let Some(r) = &self.radio {
-            let _ = r.set_rx_agc_top(rx, dbm as f64);
+            let _ = r.set_rx_agc_max_gain(rx, db as f64);
         }
         self.mark_dirty();
     }
@@ -1291,7 +1296,7 @@ impl App {
             let _ = radio.set_rx_apf_bandwidth(rx, view.apf_bw_hz as f64);
             let _ = radio.set_rx_apf_gain(rx, view.apf_gain_db as f64);
             // AGC fine controls.
-            let _ = radio.set_rx_agc_top(rx, view.agc_top_dbm as f64);
+            let _ = radio.set_rx_agc_max_gain(rx, view.agc_max_gain_db as f64);
             let _ = radio.set_rx_agc_hang_level(rx, view.agc_hang_level as f64);
             let _ = radio.set_rx_agc_decay(rx, view.agc_decay_ms);
             let _ = radio.set_rx_agc_fixed_gain(rx, view.agc_fixed_gain as f64);
@@ -1408,7 +1413,7 @@ impl App {
                 apf_freq_hz:     view.apf_freq_hz,
                 apf_bw_hz:       view.apf_bw_hz,
                 apf_gain_db:     view.apf_gain_db,
-                agc_top_dbm:     view.agc_top_dbm,
+                agc_max_gain_db:     view.agc_max_gain_db,
                 agc_hang_level:  view.agc_hang_level,
                 agc_decay_ms:    view.agc_decay_ms,
                 agc_fixed_gain:  view.agc_fixed_gain,

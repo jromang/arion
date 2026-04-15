@@ -112,7 +112,7 @@ It is the only gateway to the application's state.
 | `.nr3`, `.nr4`  | `bool`     | R/W | RNNoise / specbleach                  |
 | `.anr`, `.emnr` | `bool`     | R/W | LMS adaptive NR / enhanced spectral NR |
 | `.agc`          | `String`   | R/W | `"Off"`, `"Long"`, `"Slow"`, `"Med"`, `"Fast"` |
-| `.agc_top_dbm`  | `float`    | R/W | AGC top level in dBm                  |
+| `.agc_max_gain_db`  | `float`    | R/W | AGC max-gain ceiling, dB (sane 60..120) |
 | `.agc_hang_level` | `float`  | R/W | AGC hang level                        |
 | `.agc_decay_ms` | `int`      | R/W | AGC decay time constant (ms)          |
 | `.agc_fixed_gain` | `float`  | R/W | Gain when AGC=Off (dB)                |

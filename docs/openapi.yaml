@@ -578,7 +578,7 @@ components:
         anr:          { type: boolean, description: "LMS adaptive NR (Thetis NR)" }
         emnr:         { type: boolean, description: "Enhanced spectral NR (Thetis NR2)" }
         agc:          { type: string, enum: [off, long, slow, med, fast] }
-        agc_top_dbm:  { type: number }
+        agc_max_gain_db:  { type: number }
         agc_decay_ms: { type: integer }
         squelch:      { type: boolean, description: "Mode-dispatched squelch" }
         squelch_db:   { type: number }
