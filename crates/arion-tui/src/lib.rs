@@ -28,6 +28,7 @@ enum Focus {
     SideMode,
     SideBand,
     SideFilter,
+    SideDigital,
     Controls,
     Repl,
     Popup(PopupKind),
@@ -39,11 +40,20 @@ enum PopupKind {
     Memories,
 }
 
+const DIGITAL_OPTIONS: &[(Option<arion_core::DigitalMode>, &str)] = &[
+    (None, "Off"),
+    (Some(arion_core::DigitalMode::Psk31), "PSK31"),
+    (Some(arion_core::DigitalMode::Psk63), "PSK63"),
+    (Some(arion_core::DigitalMode::Rtty),  "RTTY"),
+    (Some(arion_core::DigitalMode::Aprs),  "APRS"),
+];
+
 const FOCUS_ORDER: &[Focus] = &[
     Focus::Spectrum,
     Focus::SideMode,
     Focus::SideBand,
     Focus::SideFilter,
+    Focus::SideDigital,
     Focus::Controls,
 ];
 
@@ -59,6 +69,7 @@ pub struct TuiView {
     mode_state: ListState,
     band_state: ListState,
     filter_state: ListState,
+    digital_state: ListState,
     // Memories table state
     mem_state: TableState,
     // Waterfall
@@ -68,6 +79,7 @@ pub struct TuiView {
     last_mode_area: Rect,
     last_band_area: Rect,
     last_filter_area: Rect,
+    last_digital_area: Rect,
     last_controls_area: Rect,
 }
 
@@ -85,12 +97,14 @@ impl TuiView {
             mode_state: ListState::default(),
             band_state: ListState::default(),
             filter_state: ListState::default(),
+            digital_state: ListState::default(),
             mem_state: TableState::default(),
             waterfalls,
             last_spectrum_area: Rect::default(),
             last_mode_area: Rect::default(),
             last_band_area: Rect::default(),
             last_filter_area: Rect::default(),
+            last_digital_area: Rect::default(),
             last_controls_area: Rect::default(),
         }
     }
@@ -318,6 +332,18 @@ impl TuiView {
                     }
                     self.focus = Focus::SideFilter;
                 }
+                // Click on Digital list
+                else if self.hit_test(self.last_digital_area, x, y) {
+                    let row = (y - self.last_digital_area.y).saturating_sub(1) as usize;
+                    if row < DIGITAL_OPTIONS.len() {
+                        self.digital_state.select(Some(row));
+                        self.app.set_rx_digital_mode(
+                            self.app.active_rx() as u8,
+                            DIGITAL_OPTIONS[row].0,
+                        );
+                    }
+                    self.focus = Focus::SideDigital;
+                }
             }
             MouseEventKind::ScrollUp => self.tune_step(100),
             MouseEventKind::ScrollDown => self.tune_step(-100),
@@ -369,6 +395,7 @@ impl TuiView {
             Focus::SideMode   => &mut self.mode_state,
             Focus::SideBand   => &mut self.band_state,
             Focus::SideFilter => &mut self.filter_state,
+            Focus::SideDigital => &mut self.digital_state,
             _ => return,
         };
         let i = state.selected().unwrap_or(0);
@@ -380,6 +407,7 @@ impl TuiView {
             Focus::SideMode   => (&mut self.mode_state, 11),
             Focus::SideBand   => (&mut self.band_state, Band::ALL.len() - 1),
             Focus::SideFilter => (&mut self.filter_state, FilterPreset::ALL.len() - 1),
+            Focus::SideDigital => (&mut self.digital_state, DIGITAL_OPTIONS.len() - 1),
             _ => return,
         };
         let i = state.selected().unwrap_or(0);
@@ -408,6 +436,13 @@ impl TuiView {
                 if let Some(i) = self.filter_state.selected() {
                     if let Some(&p) = FilterPreset::ALL.get(i) {
                         self.app.set_rx_filter_preset(rx, p);
+                    }
+                }
+            }
+            Focus::SideDigital => {
+                if let Some(i) = self.digital_state.selected() {
+                    if let Some(&(mode, _)) = DIGITAL_OPTIONS.get(i) {
+                        self.app.set_rx_digital_mode(rx, mode);
                     }
                 }
             }
@@ -643,18 +678,21 @@ impl TuiView {
 
     fn draw_side_panel(&mut self, frame: &mut Frame, area: Rect) {
         let chunks = Layout::vertical([
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
-            Constraint::Ratio(1, 3),
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
+            Constraint::Ratio(1, 4),
         ]).split(area);
 
         self.last_mode_area = chunks[0];
         self.last_band_area = chunks[1];
         self.last_filter_area = chunks[2];
+        self.last_digital_area = chunks[3];
 
         self.draw_mode_list(frame, chunks[0]);
         self.draw_band_list(frame, chunks[1]);
         self.draw_filter_list(frame, chunks[2]);
+        self.draw_digital_list(frame, chunks[3]);
     }
 
     fn draw_mode_list(&mut self, frame: &mut Frame, area: Rect) {
@@ -723,6 +761,35 @@ impl TuiView {
             .border_style(Style::default().fg(if focused { Color::Cyan } else { Color::DarkGray }));
         let list = List::new(items).block(block).highlight_symbol("▶ ");
         frame.render_stateful_widget(list, area, &mut self.filter_state);
+    }
+
+    fn draw_digital_list(&mut self, frame: &mut Frame, area: Rect) {
+        let focused = self.focus == Focus::SideDigital;
+        let rx = self.app.active_rx() as u8;
+        let current = self.app.rx_digital_mode(rx);
+
+        let items: Vec<ListItem> = DIGITAL_OPTIONS
+            .iter()
+            .map(|&(m, label)| {
+                let style = if m == current {
+                    Style::default().fg(Color::Black).bg(Color::LightGreen)
+                } else {
+                    Style::default().fg(Color::White)
+                };
+                ListItem::new(label).style(style)
+            })
+            .collect();
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title("Digital")
+            .border_style(Style::default().fg(if focused {
+                Color::Cyan
+            } else {
+                Color::DarkGray
+            }));
+        let list = List::new(items).block(block).highlight_symbol("▶ ");
+        frame.render_stateful_widget(list, area, &mut self.digital_state);
     }
 
     fn draw_controls(&self, frame: &mut Frame, area: Rect) {
