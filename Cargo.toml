@@ -6,6 +6,7 @@ members = [
     "crates/liquid-sys",
     "crates/liquid",
     "crates/ft8-sys",
+    "crates/ft8",
     "crates/hpsdr-protocol",
     "crates/hpsdr-net",
     "crates/arion-audio",
@@ -78,6 +79,7 @@ wdsp = { path = "crates/wdsp" }
 liquid-sys = { path = "crates/liquid-sys" }
 liquid = { path = "crates/liquid" }
 ft8-sys = { path = "crates/ft8-sys" }
+ft8 = { path = "crates/ft8" }
 hpsdr-protocol = { path = "crates/hpsdr-protocol" }
 hpsdr-net = { path = "crates/hpsdr-net" }
 arion-audio = { path = "crates/arion-audio" }

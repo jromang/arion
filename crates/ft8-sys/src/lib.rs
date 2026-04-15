@@ -63,6 +63,8 @@ pub struct monitor_config_t {
 pub type monitor_t = c_void;
 
 extern "C" {
+    pub fn arion_ft8_monitor_sizeof() -> usize;
+    pub fn arion_ft8_monitor_waterfall(me: *const monitor_t) -> *const ftx_waterfall_t;
     pub fn monitor_init(me: *mut monitor_t, cfg: *const monitor_config_t);
     pub fn monitor_reset(me: *mut monitor_t);
     pub fn monitor_process(me: *mut monitor_t, frame: *const c_float);
@@ -78,23 +80,29 @@ extern "C" {
 
 // --- message struct (opaque to sys, size-matched to ft8_lib) -------------
 
-/// Size in bytes of `ftx_message_t` on the C side. ft8_lib stores
-/// the full 13-byte packed payload + 8 bytes of hash state + 3 bytes
-/// of reserved; we let `payload + hash + extra` round to 32 bytes
-/// which is safely above the real layout (ft8_lib 2025-era layouts
-/// are ~24 bytes; we over-allocate for forward-compat).
-pub const FTX_MESSAGE_STORAGE: usize = 32;
-
+/// ft8_lib's `ftx_message_t` is `uint8_t payload[10] + uint16_t hash`.
+/// We over-allocate 4 bytes for alignment / forward-compatibility.
 #[repr(C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, Default)]
 pub struct ftx_message_t {
-    pub storage: [u8; FTX_MESSAGE_STORAGE],
+    pub payload: [u8; 10],
+    pub hash: u16,
+    _reserved: [u8; 4],
 }
 
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
 pub struct ftx_message_offsets_t {
     pub offsets: [i16; 6],
+}
+
+extern "C" {
+    pub fn ft8_encode(payload: *const u8, tones: *mut u8);
+    pub fn ftx_message_encode(
+        msg: *mut ftx_message_t,
+        hash_if: *mut c_void,
+        message_text: *const c_char,
+    ) -> c_int;
 }
 
 extern "C" {

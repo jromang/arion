@@ -4,6 +4,7 @@ fn main() {
     let vendor = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("vendor/ft8_lib");
     println!("cargo:rerun-if-changed=vendor/ft8_lib");
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=shim.c");
 
     let mut build = cc::Build::new();
     build
@@ -20,6 +21,7 @@ fn main() {
     for sub in ["ft8", "common", "fft"] {
         collect_c(&vendor.join(sub), &mut build);
     }
+    build.file(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("shim.c"));
     build.compile("ft8");
     println!("cargo:rustc-link-lib=m");
 }

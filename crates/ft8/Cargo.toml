@@ -1,0 +1,11 @@
+[package]
+name = "ft8"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Safe wrapper over ft8-sys (ft8_lib FFI)"
+
+[dependencies]
+ft8-sys = { path = "../ft8-sys" }
+thiserror.workspace = true
