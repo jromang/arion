@@ -187,19 +187,55 @@ fn decode_slot(samples: &[Complex32]) -> Vec<WsprDecode> {
     };
     let freq_hz = signed_bin as f32 * bin_hz;
 
-    // --- Stage 2: 4-FSK non-coherent demod over 162 symbols ---
-    if samples.len() < N_SYMBOLS * SAMPLES_PER_SYMBOL {
-        return Vec::new();
+    // --- Stage 2/3: search around the detected peak for a valid
+    //     decode. Real off-air signals arrive with arbitrary
+    //     symbol-clock offset (TX didn't start exactly on the UTC
+    //     boundary) and sub-Hz carrier error. A small sweep over
+    //     ±0.5 symbols in time and ±1 tone-spacing in frequency
+    //     covers realistic WSJT-X / WsprDaemon transmissions
+    //     without turning the search into a CPU hog.
+    const TIME_OFFSETS: &[i32] = &[0, 32, 64, 96, 128, 160, 192, 224, -32, -64, -96, -128];
+    let freq_step_hz = TONE_SPACING_HZ / 4.0;
+    let freq_offsets: [f32; 9] = [-1.0, -0.75, -0.5, -0.25, 0.0, 0.25, 0.5, 0.75, 1.0];
+
+    for &toff in TIME_OFFSETS {
+        for &foff in &freq_offsets {
+            let f = freq_hz + foff * freq_step_hz * 4.0; // i.e. ± up to 1 spacing
+            if let Some(mut d) = decode_slot_at(samples, f, toff) {
+                d.snr_db = snr_db;
+                d.time_offset_s = toff as f32 / WSPR_RATE_HZ;
+                return vec![d];
+            }
+        }
     }
+    Vec::new()
+}
+
+/// Attempt one demod + Fano pass at a specific carrier frequency
+/// and sample-level time offset. `time_offset` may be negative
+/// (the signal started a few samples *before* our buffer start).
+/// Returns `None` if the sweep position doesn't produce a valid
+/// decode.
+fn decode_slot_at(
+    samples: &[Complex32],
+    freq_hz: f32,
+    time_offset: i32,
+) -> Option<WsprDecode> {
+    let needed = N_SYMBOLS * SAMPLES_PER_SYMBOL;
+    // Clip negative offsets to the buffer start; clip tail to
+    // buffer end. A missed sample or two at either edge cannot
+    // defeat the decoder on its own.
+    let start = time_offset.max(0) as usize;
+    if samples.len() < start + needed {
+        return None;
+    }
+    let seg_all = &samples[start..start + needed];
+
     let mut hard = [0u8; N_SYMBOLS];
     for (k, out) in hard.iter_mut().enumerate() {
-        let start = k * SAMPLES_PER_SYMBOL;
-        let end = start + SAMPLES_PER_SYMBOL;
-        let seg = &samples[start..end];
+        let seg = &seg_all[k * SAMPLES_PER_SYMBOL..(k + 1) * SAMPLES_PER_SYMBOL];
         let mut energies = [0.0_f32; 4];
         for (t, energy) in energies.iter_mut().enumerate() {
-            // Tone t lives at freq_hz + (t - 1.5) · spacing so the
-            // 4 tones straddle the detected peak symmetrically.
             let tone_hz = freq_hz + (t as f32 - 1.5) * TONE_SPACING_HZ;
             let dphi = 2.0 * std::f32::consts::PI * tone_hz / WSPR_RATE_HZ;
             let (mut re, mut im) = (0.0_f32, 0.0_f32);
@@ -224,19 +260,14 @@ fn decode_slot(samples: &[Complex32]) -> Vec<WsprDecode> {
         *out = best as u8;
     }
 
-    // --- Stage 3: data bits → Fano → unpack ---
-    // Channel symbol t = 2 · data_bit + sync_bit, so data bit = t >> 1.
+    // Data bits, deinterleave, Fano, unpack.
     let mut soft = [0u8; N_SYMBOLS];
     for (i, &t) in hard.iter().enumerate() {
         soft[i] = if t >> 1 == 1 { 255 } else { 0 };
     }
     wsprd::deinterleave(&mut soft);
-    let Ok(decdata) = wsprd::fano_decode(&mut soft) else {
-        return Vec::new();
-    };
-    let Ok(text) = wsprd::unpack(&decdata) else {
-        return Vec::new();
-    };
+    let decdata = wsprd::fano_decode(&mut soft).ok()?;
+    let text = wsprd::unpack(&decdata).ok()?;
 
     let mut parts = text.split_whitespace();
     let callsign = parts.next().unwrap_or("?").to_string();
@@ -246,14 +277,14 @@ fn decode_slot(samples: &[Complex32]) -> Vec<WsprDecode> {
         .and_then(|s| s.parse::<i8>().ok())
         .unwrap_or(0);
 
-    vec![WsprDecode {
+    Some(WsprDecode {
         callsign,
         locator,
         power_dbm,
-        snr_db,
+        snr_db: 0.0,
         freq_hz,
         time_offset_s: 0.0,
-    }]
+    })
 }
 
 /// Convert a [`WsprDecode`] to a [`DigitalDecode`] for the pipeline.
@@ -314,6 +345,38 @@ mod tests {
             (decodes[0].freq_hz - 50.0).abs() < 3.0,
             "freq_hz = {}",
             decodes[0].freq_hz
+        );
+    }
+
+    /// The sweep must recover the message even if the signal
+    /// starts mid-buffer and the carrier is a fraction of a tone
+    /// off. Simulate a TX that began ~0.4 symbols after UTC
+    /// and is tuned 0.3 Hz high.
+    #[test]
+    fn decode_with_time_and_freq_offset() {
+        // Generate a clean signal at 45.7 Hz (our peak detector
+        // will lock onto roughly this frequency) but splice it
+        // 100 samples into a padded buffer so the decoder has to
+        // sweep in time.
+        let clean = synth_baseband("AA0AA EM15 37", 45.7);
+        let pad = 100_usize;
+        let mut samples = vec![
+            Complex32 { re: 0.0, im: 0.0 };
+            clean.len() + 2 * pad
+        ];
+        for (i, s) in clean.iter().enumerate() {
+            samples[pad + i] = *s;
+        }
+        let decodes = decode_slot(&samples);
+        assert_eq!(decodes.len(), 1);
+        assert_eq!(decodes[0].callsign, "AA0AA");
+        assert_eq!(decodes[0].locator, "EM15");
+        assert_eq!(decodes[0].power_dbm, 37);
+        // The sweep should have found a non-zero time offset.
+        assert!(
+            decodes[0].time_offset_s.abs() > 0.0,
+            "expected non-zero time offset, got {}",
+            decodes[0].time_offset_s
         );
     }
 
