@@ -1,0 +1,11 @@
+[package]
+name = "liquid"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Safe wrapper over liquid-sys"
+
+[dependencies]
+liquid-sys = { path = "../liquid-sys" }
+thiserror.workspace = true

@@ -3,6 +3,8 @@ resolver = "2"
 members = [
     "crates/wdsp-sys",
     "crates/wdsp",
+    "crates/liquid-sys",
+    "crates/liquid",
     "crates/hpsdr-protocol",
     "crates/hpsdr-net",
     "crates/arion-audio",
@@ -72,6 +74,8 @@ crossterm = "0.29"
 # Internal crates
 wdsp-sys = { path = "crates/wdsp-sys" }
 wdsp = { path = "crates/wdsp" }
+liquid-sys = { path = "crates/liquid-sys" }
+liquid = { path = "crates/liquid" }
 hpsdr-protocol = { path = "crates/hpsdr-protocol" }
 hpsdr-net = { path = "crates/hpsdr-net" }
 arion-audio = { path = "crates/arion-audio" }

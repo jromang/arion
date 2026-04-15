@@ -1,0 +1,3 @@
+crates/wdsp-sys/vendor/**         linguist-vendored=true
+crates/wdsp-sys/vendor-nr/**      linguist-vendored=true
+crates/liquid-sys/vendor/**       linguist-vendored=true
