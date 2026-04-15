@@ -543,6 +543,9 @@ impl eframe::App for EguiView {
         if self.app.window_open(WindowKind::Eq) {
             self.draw_eq_window(&ctx);
         }
+        if self.app.window_open(WindowKind::Digital) {
+            self.draw_digital_window(&ctx);
+        }
         if self.app.window_open(WindowKind::Repl) {
             self.draw_repl_window(&ctx);
         }
@@ -855,6 +858,7 @@ impl EguiView {
                     (WindowKind::BandStack,  "Band Stack"),
                     (WindowKind::Multimeter, "Multimeter"),
                     (WindowKind::Eq,         "Equalizer"),
+                    (WindowKind::Digital,    "Digital Decodes"),
                     (WindowKind::Repl,       "REPL"),
                     (WindowKind::Setup,      "Setup"),
                 ] {
@@ -1183,6 +1187,59 @@ impl EguiView {
     }
 
     /// Floating 10-band graphic EQ window with vertical sliders.
+    fn draw_digital_window(&mut self, ctx: &egui::Context) {
+        let mut open = true;
+        let rx = self.app.active_rx() as u8;
+        let current = self.app.rx_digital_mode(rx);
+        let decodes = self.app.rx_digital_decodes(rx);
+
+        egui::Window::new("Digital Decodes")
+            .open(&mut open)
+            .default_width(420.0)
+            .default_height(320.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                ui.horizontal(|ui| {
+                    ui.label("Mode:");
+                    let label = match current {
+                        None => "Off",
+                        Some(arion_core::DigitalMode::Psk31) => "PSK31",
+                        Some(arion_core::DigitalMode::Psk63) => "PSK63",
+                        Some(arion_core::DigitalMode::Rtty) => "RTTY",
+                        Some(arion_core::DigitalMode::Aprs) => "APRS",
+                    };
+                    egui::ComboBox::from_id_salt("digital_mode_combo")
+                        .selected_text(label)
+                        .show_ui(ui, |ui| {
+                            for (m, lbl) in [
+                                (None, "Off"),
+                                (Some(arion_core::DigitalMode::Psk31), "PSK31"),
+                                (Some(arion_core::DigitalMode::Psk63), "PSK63"),
+                                (Some(arion_core::DigitalMode::Rtty), "RTTY"),
+                                (Some(arion_core::DigitalMode::Aprs), "APRS"),
+                            ] {
+                                if ui.selectable_label(current == m, lbl).clicked() {
+                                    self.app.set_rx_digital_mode(rx, m);
+                                }
+                            }
+                        });
+                });
+                ui.separator();
+                egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
+                    if decodes.is_empty() {
+                        ui.weak("(no decodes yet — decoder pipeline pending)");
+                    } else {
+                        for d in decodes {
+                            ui.monospace(format!("[{} {:+.0} dB] {}", d.mode.as_str(), d.snr_db, d.text));
+                        }
+                    }
+                });
+            });
+        if !open {
+            self.app.set_window_open(WindowKind::Digital, false);
+        }
+    }
+
     fn draw_eq_window(&mut self, ctx: &egui::Context) {
         let mut open = true;
         let rx = self.app.active_rx() as u8;

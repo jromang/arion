@@ -61,6 +61,9 @@ pub use hpsdr_net::session::MAX_SESSION_RX as MAX_RX;
 pub use arion_audio::{list_output_devices, AudioStats, StereoFrame};
 pub use wdsp::Mode as WdspMode;
 
+pub mod digital;
+pub use digital::{DigitalDecode, DigitalMode};
+
 /// Per-receiver configuration passed to [`Radio::start`].
 #[derive(Debug, Clone, Copy)]
 pub struct RxConfig {
@@ -151,6 +154,11 @@ pub struct RxTelemetry {
     pub span_hz: u32,
     /// Current demodulation mode.
     pub mode: WdspMode,
+    /// Active digital decoder mode, if any (PSK31/RTTY/APRS).
+    pub digital_mode: Option<DigitalMode>,
+    /// Digital decodes emitted since the last snapshot. Empty if no
+    /// digital decoder is active. Small, bounded ring.
+    pub digital_decodes: Vec<DigitalDecode>,
 }
 
 impl Default for RxTelemetry {
@@ -162,6 +170,8 @@ impl Default for RxTelemetry {
             center_freq_hz:   0,
             span_hz:          48_000,
             mode:             WdspMode::Usb,
+            digital_mode:     None,
+            digital_decodes:  Vec::new(),
         }
     }
 }
@@ -246,6 +256,7 @@ enum DspCommand {
     SetRxSamSubmode       { rx: u8, submode: u8 },
     SetRxBpsnbaNc         { rx: u8, nc: u32 },
     SetRxBpsnbaMp         { rx: u8, mp: bool },
+    SetRxDigitalMode      { rx: u8, mode: Option<DigitalMode> },
 }
 
 /// A running end-to-end receive session.
@@ -373,9 +384,10 @@ impl Radio {
         // Snapshot per-RX initial state for the DSP thread.
         let initial_rx: [RxRuntime; MAX_RX] =
             std::array::from_fn(|r| RxRuntime {
-                enabled: r < num_rx && config.rx[r].enabled,
-                volume:  config.rx[r].volume,
-                mode:    config.rx[r].mode,
+                enabled:      r < num_rx && config.rx[r].enabled,
+                volume:       config.rx[r].volume,
+                mode:         config.rx[r].mode,
+                digital_mode: None,
             });
 
         let dsp_thread = {
@@ -455,6 +467,17 @@ impl Radio {
     /// Back-compat: set RX0 mode.
     pub fn set_mode(&self, mode: Mode) -> anyhow::Result<()> {
         self.set_rx_mode(0, mode)
+    }
+
+    /// Enable or disable a digital decoder on top of the analog DSP
+    /// pipeline for a given RX. `None` disables any active decoder.
+    pub fn set_rx_digital_mode(
+        &self,
+        rx: u8,
+        mode: Option<DigitalMode>,
+    ) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxDigitalMode { rx, mode })?;
+        Ok(())
     }
 
     /// Set the post-DSP linear audio gain for a given RX.
@@ -706,9 +729,10 @@ impl Drop for Radio {
 /// to worry about borrows.
 #[derive(Debug, Clone, Copy)]
 struct RxRuntime {
-    enabled: bool,
-    volume:  f32,
-    mode:    Mode,
+    enabled:      bool,
+    volume:       f32,
+    mode:         Mode,
+    digital_mode: Option<DigitalMode>,
 }
 
 /// Raise the DSP thread to a real-time scheduling class so audio
@@ -1070,6 +1094,18 @@ fn dsp_loop(
                     let r = rx as usize;
                     if r < num_rx { channels[r].set_bpsnba_mp(mp); }
                 }
+                DspCommand::SetRxDigitalMode { rx, mode } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        tracing::info!(rx, ?mode, "DSP: digital mode change");
+                        rx_state[r].digital_mode = mode;
+                        // Decoder pipeline is a stub in this slice; real
+                        // PSK31/RTTY/APRS demod plugs in here via the
+                        // `liquid` wrapper + a `SubchannelDecoder` trait
+                        // once the arion-core/digital module is fleshed
+                        // out (F.1.2 follow-up).
+                    }
+                }
             }
         }
 
@@ -1209,6 +1245,8 @@ fn dsp_loop(
                     center_freq_hz:   center_freqs[r].load(Ordering::Acquire),
                     span_hz:          48_000,
                     mode:             rx_state[r].mode,
+                    digital_mode:     rx_state[r].digital_mode,
+                    digital_decodes:  Vec::new(),
                 };
             }
             snapshot.last_update = Instant::now();

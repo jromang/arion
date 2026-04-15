@@ -59,6 +59,7 @@ pub enum WindowKind {
     Setup,
     Repl,
     Eq,
+    Digital,
 }
 
 // --------------------------------------------------------------------
@@ -114,6 +115,9 @@ pub struct RxState {
     /// at 32, 63, 125, 250, 500, 1k, 2k, 4k, 8k, 16k Hz.
     /// Values in dB, typically -12..+12.
     pub eq_gains:     [i32; 11],
+    /// Active digital decoder (PSK31/RTTY/APRS) layered on top of the
+    /// analog DSP mode. `None` means no decoder active.
+    pub digital_mode: Option<arion_core::DigitalMode>,
 }
 
 impl Default for RxState {
@@ -156,6 +160,7 @@ impl Default for RxState {
             rit_hz:       0,
             eq_enabled:   false,
             eq_gains:     [0; 11],
+            digital_mode: None,
         }
     }
 }
@@ -692,6 +697,28 @@ impl App {
             let _ = r.set_rx_frequency(rx, hz);
         }
         self.mark_dirty();
+    }
+
+    pub fn set_rx_digital_mode(&mut self, rx: u8, mode: Option<arion_core::DigitalMode>) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        if view.digital_mode == mode {
+            return;
+        }
+        view.digital_mode = mode;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_digital_mode(rx, mode);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn rx_digital_mode(&self, rx: u8) -> Option<arion_core::DigitalMode> {
+        self.rxs.get(rx as usize).and_then(|r| r.digital_mode)
+    }
+
+    pub fn rx_digital_decodes(&self, rx: u8) -> Vec<arion_core::DigitalDecode> {
+        self.telemetry_snapshot()
+            .and_then(|t| t.rx.get(rx as usize).map(|r| r.digital_decodes.clone()))
+            .unwrap_or_default()
     }
 
     pub fn set_rx_mode(&mut self, rx: u8, mode: WdspMode) {

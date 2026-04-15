@@ -327,6 +327,51 @@ impl ScriptModule for RxModule {
             .unwrap_or(0)
         });
 
+        // --- digital_mode (string: "off"/"psk31"/"psk63"/"rtty"/"aprs") ---
+        let c = ctx.clone();
+        engine.register_get("digital_mode", move |rx: &mut Rx| -> String {
+            c.with_app(|app| {
+                app.rx_digital_mode(rx.index)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_else(|| "off".to_string())
+            })
+            .unwrap_or_else(|_| "off".to_string())
+        });
+        let c = ctx.clone();
+        engine.register_set(
+            "digital_mode",
+            move |rx: &mut Rx, s: String| -> Result<(), Box<rhai::EvalAltResult>> {
+                let mode = match s.to_ascii_lowercase().as_str() {
+                    "off" | "" | "none" => None,
+                    other => Some(
+                        arion_core::DigitalMode::parse(other)
+                            .ok_or_else(|| rhai_err(format!("unknown digital mode: {other}")))?,
+                    ),
+                };
+                c.with_app(|app| app.set_rx_digital_mode(rx.index, mode))
+                    .map_err(rhai_err)?;
+                Ok(())
+            },
+        );
+
+        // --- digital_decodes() returns array of #{ mode, text, snr } ---
+        let c = ctx.clone();
+        engine.register_fn("digital_decodes", move |rx: &mut Rx| -> Array {
+            c.with_app(|app| {
+                app.rx_digital_decodes(rx.index)
+                    .into_iter()
+                    .map(|d| {
+                        let mut m = rhai::Map::new();
+                        m.insert("mode".into(), Dynamic::from(d.mode.as_str().to_string()));
+                        m.insert("text".into(), Dynamic::from(d.text));
+                        m.insert("snr".into(), Dynamic::from(d.snr_db as f64));
+                        Dynamic::from_map(m)
+                    })
+                    .collect::<Array>()
+            })
+            .unwrap_or_default()
+        });
+
         // --- Display / ToString ---
         engine.register_fn("to_string", |rx: &mut Rx| format!("Rx({})", rx.index));
     }

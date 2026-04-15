@@ -86,6 +86,8 @@ fn synth_loop(app: Arc<Mutex<App>>, telemetry: Arc<ArcSwap<Telemetry>>) {
             s_meter_db:       -90.0 + 30.0 * (t * 0.7).sin(),
             span_hz:          48_000,
             mode:             snap.rx[0].mode,
+            digital_mode:     None,
+            digital_decodes:  Vec::new(),
         };
         telemetry.store(Arc::new(snap));
     }
