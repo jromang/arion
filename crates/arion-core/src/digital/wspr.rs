@@ -19,7 +19,10 @@
 //! works end-to-end, so swapping in a real decoder is a one-file
 //! change.
 
+use std::sync::Arc;
+
 use liquid::{Complex32, MsResamp};
+use rustfft::{num_complex::Complex, Fft, FftPlanner};
 
 use super::DigitalDecode;
 
@@ -110,11 +113,76 @@ impl WsprDecoder {
 /// Decode a full 120-s WSPR slot from downsampled (375 Hz complex)
 /// baseband samples.
 ///
-/// TODO(wsprd-sys): wire in the vendored ft8_lib-style safe wrapper
-/// around WSJT-X's wsprd decoder. For now the function returns no
-/// decodes so the pipeline compiles and the UI surfaces the mode.
-fn decode_slot(_samples: &[Complex32]) -> Vec<WsprDecode> {
-    Vec::new()
+/// **Detector, not decoder.** Until `wsprd-sys` exposes a library
+/// API for WSJT-X's wsprd (see `todo/other_modes.md`), this scans
+/// the slot spectrum for a narrow peak (characteristic of the
+/// ~6 Hz-wide WSPR signal). When a peak stands clear of the noise
+/// floor we emit a `WsprDecode` with `callsign = "SIGNAL"` and the
+/// detected frequency / SNR — enough to confirm the pipeline is
+/// hearing something while we wait on real Fano decoding.
+fn decode_slot(samples: &[Complex32]) -> Vec<WsprDecode> {
+    const FFT_LEN: usize = 32_768;
+    // White noise of length 32 768 routinely shows a max/10%-ile
+    // ratio ≈ 20 dB just from statistics; we need headroom above
+    // that to keep false positives out.
+    const DETECT_SNR_DB: f32 = 28.0;
+
+    if samples.len() < FFT_LEN {
+        return Vec::new();
+    }
+
+    let mut planner = FftPlanner::<f32>::new();
+    let fft: Arc<dyn Fft<f32>> = planner.plan_fft_forward(FFT_LEN);
+    let mut buf: Vec<Complex<f32>> = samples[..FFT_LEN]
+        .iter()
+        .map(|c| Complex::new(c.re, c.im))
+        .collect();
+    fft.process(&mut buf);
+
+    let mut mags: Vec<f32> = buf.iter().map(|c| c.norm_sqr()).collect();
+    // Zero the DC bin — real radios leak a strong spike there
+    // (mixer offset) that has nothing to do with the WSPR signal.
+    mags[0] = 0.0;
+
+    // Peak bin
+    let (peak_bin, &peak_mag) = mags
+        .iter()
+        .enumerate()
+        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
+        .expect("FFT_LEN > 0");
+
+    // Noise floor ≈ 10th-percentile magnitude. More robust than
+    // the median against a strong but narrow peak + its FFT
+    // sidelobes, and against broadband noise being eaten by an
+    // in-band interferer.
+    let mut sorted = mags;
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let floor = sorted[sorted.len() / 10].max(1e-20);
+    let snr_db = 10.0 * (peak_mag / floor).log10();
+
+    if snr_db < DETECT_SNR_DB {
+        return Vec::new();
+    }
+
+    // Map FFT bin → baseband Hz. rustfft produces the DC bin at 0
+    // and Nyquist at FFT_LEN/2; bins above that are negative
+    // frequencies in a complex input. Fold them into ±bin_hz.
+    let bin_hz = WSPR_RATE_HZ / FFT_LEN as f32;
+    let signed_bin = if peak_bin > FFT_LEN / 2 {
+        peak_bin as i32 - FFT_LEN as i32
+    } else {
+        peak_bin as i32
+    };
+    let freq_hz = signed_bin as f32 * bin_hz;
+
+    vec![WsprDecode {
+        callsign: "SIGNAL".into(),
+        locator: "?".into(),
+        power_dbm: 0,
+        snr_db,
+        freq_hz,
+        time_offset_s: 0.0,
+    }]
 }
 
 /// Convert a [`WsprDecode`] to a [`DigitalDecode`] for the pipeline.
@@ -125,5 +193,62 @@ pub fn to_digital_decode(d: &WsprDecode) -> DigitalDecode {
         snr_db: d.snr_db,
         freq_hz: d.freq_hz,
         time_offset_s: d.time_offset_s,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Synthetic 5 Hz tone buried in white noise should be detected
+    /// (SNR ~ +40 dB in the FFT bin).
+    #[test]
+    fn detects_narrow_tone_above_noise() {
+        let n = 32_768;
+        let tone_hz = 5.0_f32;
+        let amp = 1.0_f32;
+        let noise_amp = 0.02_f32; // PSD floor way below the tone bin
+        // Cheap LCG for deterministic "noise" without adding a dep.
+        let mut seed: u64 = 0x1234_5678_9abc_def0;
+        let mut rng = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (((seed >> 33) as u32 as f32) / (1u32 << 30) as f32) - 1.0
+        };
+        let samples: Vec<Complex32> = (0..n)
+            .map(|k| {
+                let t = k as f32 / WSPR_RATE_HZ;
+                let phi = 2.0 * std::f32::consts::PI * tone_hz * t;
+                Complex32 {
+                    re: amp * phi.cos() + noise_amp * rng(),
+                    im: amp * phi.sin() + noise_amp * rng(),
+                }
+            })
+            .collect();
+        let decodes = decode_slot(&samples);
+        assert_eq!(decodes.len(), 1);
+        let d = &decodes[0];
+        assert!((d.freq_hz - tone_hz).abs() < 0.5, "freq={}", d.freq_hz);
+        assert!(d.snr_db > 20.0, "snr={}", d.snr_db);
+    }
+
+    #[test]
+    fn returns_empty_for_pure_noise() {
+        let n = 32_768;
+        let mut seed: u64 = 1;
+        let mut rng = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (((seed >> 33) as u32 as f32) / (1u32 << 30) as f32) - 1.0
+        };
+        let samples: Vec<Complex32> = (0..n)
+            .map(|_| Complex32 {
+                re: rng(),
+                im: rng(),
+            })
+            .collect();
+        let decodes = decode_slot(&samples);
+        assert!(
+            decodes.is_empty(),
+            "expected no detections on white noise, got {decodes:?}"
+        );
     }
 }
