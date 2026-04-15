@@ -178,6 +178,47 @@ paths:
                   items: { type: integer }
       responses:
         "200": { $ref: "#/components/responses/Ok" }
+  /rx/{idx}/tnf:
+    parameters:
+      - $ref: "#/components/parameters/RxIdx"
+    get:
+      tags: [rx]
+      description: Tracking-notch filter summary.
+      responses:
+        "200":
+          description: OK
+    post:
+      tags: [rx]
+      description: Append a notch.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TnfNotch" }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+  /rx/{idx}/tnf/{nidx}:
+    parameters:
+      - $ref: "#/components/parameters/RxIdx"
+      - in: path
+        name: nidx
+        required: true
+        schema: { type: integer, minimum: 0 }
+    put:
+      tags: [rx]
+      description: Replace a notch.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/TnfNotch" }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+    delete:
+      tags: [rx]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+
   /active-rx:
     post:
       tags: [rx]
@@ -523,7 +564,30 @@ components:
         rit_hz:       { type: integer }
         nr3:          { type: boolean }
         nr4:          { type: boolean }
+        anr:          { type: boolean, description: "LMS adaptive NR (Thetis NR)" }
+        emnr:         { type: boolean, description: "Enhanced spectral NR (Thetis NR2)" }
         agc:          { type: string, enum: [off, long, slow, med, fast] }
+        agc_top_dbm:  { type: number }
+        agc_decay_ms: { type: integer }
+        squelch:      { type: boolean, description: "Mode-dispatched squelch" }
+        squelch_db:   { type: number }
+        apf:          { type: boolean, description: "Audio Peak Filter (CW)" }
+        apf_freq_hz:  { type: number }
+        fm_deviation_hz: { type: number }
+        ctcss_on:     { type: boolean }
+        ctcss_hz:     { type: number }
+        sam_submode:  { type: integer, enum: [0, 1, 2], description: "0=DSB 1=LSB 2=USB" }
+        bpsnba_nc:    { type: integer, description: "BPSNBA FIR length (power of 2, ≥ 128)" }
+        bpsnba_mp:    { type: boolean }
+    TnfNotch:
+      type: object
+      additionalProperties: false
+      required: [freq_hz, width_hz]
+      properties:
+        freq_hz:  { type: number, description: "Centre frequency in Hz, radio-audio-baseband" }
+        width_hz: { type: number }
+        active:   { type: boolean, default: true }
+
     MemorySnapshot:
       type: object
       properties:

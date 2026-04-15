@@ -5,11 +5,13 @@ SDR control application for HermesLite 2 / Apache Labs ANAN radios.
 
 ## Overview
 
-Arion is structured as a Cargo workspace with 11 library crates and
-2 binary crates. The design follows a strict **MVVM** (Model–View–
+Arion is structured as a Cargo workspace with 15 library crates and
+3 binary crates. The design follows a strict **MVVM** (Model–View–
 ViewModel) pattern combined with **Hexagonal Architecture** (Ports &
-Adapters), enabling two independent frontends (egui desktop + ratatui
-TUI) to share a single application core without code duplication.
+Adapters), enabling multiple independent frontends (egui desktop,
+ratatui console, browser WebSocket) and external control surfaces
+(rigctld, MIDI, REST API) to share a single application core
+without code duplication.
 
 ```
 ┌───────────────────────────────────────────────────────────────┐
@@ -123,10 +125,25 @@ TUI) to share a single application core without code duplication.
 |---|---|---|
 | `arion-core` | Radio orchestrator: connects net → WDSP → audio, owns the DSP thread | `Radio`, `RadioConfig`, `DspCommand`, `Telemetry` |
 | `arion-settings` | TOML serialization (load/save with atomic write) | `Settings`, `DisplaySettings`, `DspDefaults`, `Calibration`, `Memory` |
-| `arion-app` | **View-model (the hexagon center).** Owns `App` struct with all UI state + read/write API + lifecycle | `App`, `RxState`, `Band`, `BandStack`, `FilterPreset`, `AgcPreset`, `WindowKind` |
+| `arion-app` | **View-model (the hexagon center).** Owns `App` struct with all UI state + read/write API + lifecycle + transport-neutral `protocol::{StateSnapshot, Action}` DTOs | `App`, `RxState`, `Band`, `BandStack`, `FilterPreset`, `AgcPreset`, `WindowKind`, `protocol::Action`, `protocol::StateSnapshot` |
 | `arion-script` | Rhai scripting engine + function bindings | `ScriptEngine`, `ReplLine`, `ReplLineKind` |
 
-### Layer 3 — Frontends (Views)
+### Layer 3 — External control surfaces
+
+All four follow the same pattern: handler thread pushes
+`arion_app::protocol::Action` (or a dedicated request type) into an
+`mpsc::Sender`, the UI thread drains the channel once per frame and
+applies actions. Reads go through `Arc<ArcSwap<StateSnapshot>>` or
+`ArcSwap<Telemetry>`, republished by the UI each frame.
+
+| Crate | Role | Transport |
+|---|---|---|
+| `arion-rigctld` | Hamlib `rigctld`-compatible TCP server | TCP 4532, text protocol |
+| `arion-midi` | MIDI controller bridge (midir + wmidi + audioadapter) | ALSA / CoreMIDI / WinMM |
+| `arion-api` | REST / JSON HTTP API + Prometheus metrics + optional Rhai eval | HTTP 8081 (axum, dedicated tokio runtime) |
+| `arion-web` | Browser frontend + WebSocket state push + WebRTC audio (prototype) | HTTP 8080 (axum, dedicated tokio runtime) |
+
+### Layer 4 — Frontends (Views)
 
 | Crate | Role | Key types |
 |---|---|---|
@@ -139,6 +156,7 @@ TUI) to share a single application core without code duplication.
 |---|---|---|
 | `arion` | `apps/arion` | `main.rs` → `arion_egui::run()` |
 | `arion-tui` | `apps/arion-tui` | `main.rs` → `TuiView::new(opts).run()` |
+| `arion-web` | `apps/arion-web` | `main.rs` — headless web-only server |
 
 ## Design patterns
 

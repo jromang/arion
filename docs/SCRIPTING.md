@@ -152,6 +152,13 @@ nb(rx, true);    nb2(rx, false);
 anf(rx, true);   bin(rx, true);       tnf(rx, true);
 ```
 
+**Note** — Arion also supports **NR (ANR)**, **NR2 (EMNR)**,
+**squelch**, **APF** (CW peak filter), **fine AGC controls**,
+**FM CTCSS + deviation**, **SAM sub-mode** and **BPSNBA tuning**.
+These are not yet exposed as Rhai free functions; use the REST
+API (`PATCH /api/v1/rx/{idx}`) or direct `App::set_rx_*` from Rust
+for now. Binding them to scripting is a small, mechanical follow-up.
+
 ### 4.4 AGC
 
 ```rhai

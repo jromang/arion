@@ -40,12 +40,44 @@ reverse proxy + auth is unsafe.
 |---|---|---|
 | GET  | `/api/v1/rx` | list all RX |
 | GET  | `/api/v1/rx/{idx}` | single RX snapshot |
-| PATCH | `/api/v1/rx/{idx}` | merge: `frequency_hz, mode, volume, muted, locked, rit_hz, nr3, nr4, agc` |
+| PATCH | `/api/v1/rx/{idx}` | merge update — see full field list below |
 | POST | `/api/v1/rx/{idx}/tune` | `{ "delta_hz": number }` (non-idempotent) |
 | PATCH | `/api/v1/rx/{idx}/filter` | `{ "low": f64, "high": f64 }` |
 | POST | `/api/v1/rx/{idx}/filter/preset` | `{ "preset": "F2700" }` |
 | PATCH | `/api/v1/rx/{idx}/eq` | `{ "gains": [i32; 11] }` (preamp + 10 bands) |
 | POST | `/api/v1/active-rx` | `{ "rx": usize }` |
+| GET  | `/api/v1/rx/{idx}/tnf` | tracking-notch summary |
+| POST | `/api/v1/rx/{idx}/tnf` | `{ "freq_hz": f64, "width_hz": f64, "active"?: bool }` |
+| PUT  | `/api/v1/rx/{idx}/tnf/{nidx}` | replace notch |
+| DELETE | `/api/v1/rx/{idx}/tnf/{nidx}` | remove notch |
+
+#### `PATCH /rx/{idx}` body (all fields optional — only the ones present are applied)
+
+| Field | Type | Purpose |
+|---|---|---|
+| `frequency_hz` | u32 | VFO frequency |
+| `mode` | string | `USB / LSB / DSB / CWU / CWL / AM / FM / DIGU / DIGL / SAM / DRM / SPEC` |
+| `volume` | f32 | AF gain |
+| `muted` | bool | |
+| `locked` | bool | |
+| `rit_hz` | i32 | ±10 kHz clamp |
+| `nr3` | bool | RNNoise |
+| `nr4` | bool | libspecbleach |
+| `anr` | bool | Thetis "NR" (LMS adaptive) |
+| `emnr` | bool | Thetis "NR2" (enhanced spectral) |
+| `agc` | string | `off / long / slow / med / fast` |
+| `agc_top_dbm` | f32 | AGC top level dBm |
+| `agc_decay_ms` | i32 | AGC decay time constant |
+| `squelch` | bool | mode-dispatched squelch toggle |
+| `squelch_db` | f32 | threshold (FM: 0..1 level; else dB) |
+| `apf` | bool | Audio Peak Filter (CW) |
+| `apf_freq_hz` | f32 | APF centre frequency |
+| `fm_deviation_hz` | f32 | 2500 (narrow) or 5000 (wide) typical |
+| `ctcss_on` | bool | FM tone squelch |
+| `ctcss_hz` | f32 | CTCSS tone (67.0..254.1) |
+| `sam_submode` | u8 | `0 = DSB`, `1 = LSB`, `2 = USB` |
+| `bpsnba_nc` | u32 | BPSNBA FIR length (power of 2, ≥ 128) |
+| `bpsnba_mp` | bool | BPSNBA minimum-phase flag |
 
 ### Bands
 | Method | Path | Purpose |
@@ -159,3 +191,13 @@ curl -s http://127.0.0.1:8081/api/v1/metrics
   WebSocket until TCI is wired.
 - **UI state** (windows, tabs) — intentionally absent; the API only
   exposes the radio domain.
+- **Get for BPSNBA / APF params** — WDSP exposes no reader for these
+  knobs; values are write-only. Values applied via PATCH take effect
+  but are not reflected in `GET /rx/{idx}` and (for BPSNBA) not
+  persisted across restarts.
+
+## OpenAPI spec
+
+A hand-maintained OpenAPI 3.1 description lives at
+[`openapi.yaml`](openapi.yaml). Suitable for Swagger UI, Postman
+import, or generating client stubs in any supported language.

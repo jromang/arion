@@ -47,18 +47,33 @@ namesake, Arion transforms waves into music — radio waves into audio.
 ## Features
 
 - **Dual RX** — two independent DDC receivers (RX1 + RX2)
-- **DSP** — NR3 (RNNoise), NR4 (libspecbleach), ANF, SNBA, binaural,
-  10-band graphic EQ with presets, variable passband filter
+- **DSP** — four independent noise reducers (NR/ANR, NR2/EMNR,
+  NR3/RNNoise, NR4/libspecbleach), ANF auto-notch, SNBA + BPSNBA
+  spectral blankers, NB (ANB) + NB2 (NOB) time-domain blankers,
+  TNF tracking-notch filter (multiple notches per RX), squelch
+  (FM / AM / SSB auto-routing), APF (audio peak filter for CW),
+  binaural mixing, fine-grained AGC (top / hang / decay / fixed
+  gain), FM CTCSS + deviation, 10-band graphic EQ, variable
+  passband filter
 - **Spectrum & Waterfall** — real-time display with peak hold,
   averaging, configurable dB range, spectrum fill
 - **S-Meter** — S-units display with per-band calibration
 - **Band stack** — quick-jump between amateur bands with memory
 - **Memories** — named frequency/mode bookmarks
+- **External control** — four surfaces in parallel:
+  - **rigctld** (Hamlib subset, TCP 4532) — WSJT-X, fldigi,
+    GPredict, CQRLOG compatibility
+  - **MIDI** (crate `arion-midi`) — hot-swappable CC / Note
+    mapping, learn mode, presets for X-Touch Mini + BeatStep
+  - **REST API** (crate `arion-api`, `/api/v1/*`) — JSON over
+    HTTP, Prometheus `/metrics`, OpenAPI 3.1 spec, optional
+    Rhai `/scripts/eval` endpoint
+  - **arion-web** — WebSocket bridge to a browser frontend
 - **Rhai scripting** — built-in REPL with syntax highlighting;
   every UI action is scriptable
 - **Two frontends** on one shared core (MVVM architecture):
   - `arion` — egui + wgpu desktop with 7-segment VFO display,
-    resizable panels, floating windows, Setup with 5 tabs
+    resizable panels, floating windows, Setup with 7 tabs
   - `arion-tui` — ratatui console for SSH / tmux / headless servers
 - **Self-contained build** — FFTW, rnnoise, libspecbleach vendored;
   no system libraries or `pkg-config` needed
@@ -134,16 +149,21 @@ crates/
   wdsp/              Safe Rust wrapper (Channel, Mode, EQ, wisdom)
   hpsdr-protocol/    HPSDR Protocol 1 wire types
   hpsdr-net/         UDP discovery + multi-RX session
-  arion-audio/       cpal output + ring buffer + resampling
+  arion-audio/       cpal output + ring buffer + rubato resampling
   arion-core/        Radio orchestrator (net → DSP → audio)
   arion-settings/    TOML persistence (atomic write)
-  arion-app/         Headless view-model (MVVM core)
+  arion-app/         Headless view-model (MVVM core) + protocol DTOs
   arion-script/      Rhai scripting engine + bindings
+  arion-rigctld/     Hamlib rigctld-compatible TCP server
+  arion-midi/        MIDI controller bridge (midir + wmidi)
+  arion-api/         REST / JSON HTTP API (axum) + Prometheus metrics
+  arion-web/         Browser frontend + WebSocket + WebRTC audio bridge
   arion-egui/        egui desktop frontend (DSEG7 VFO, waterfall, EQ, REPL)
   arion-tui/         ratatui console frontend (waterfall, side panel, popups)
 apps/
-  arion/             Desktop binary
-  arion-tui/         Console binary
+  arion/             Desktop binary (egui)
+  arion-tui/         Console binary (ratatui)
+  arion-web/         Headless web-only binary
 thetis-upstream/     Git submodule: original Thetis C# source (read-only reference)
 ```
 
@@ -154,19 +174,24 @@ thetis-upstream/     Git submodule: original Thetis C# source (read-only referen
 | A | Done | Foundations + minimal RX on HermesLite 2 |
 | B | Done | Daily-usable RX (multi-RX, NR, click-to-tune, bands, persistence, cross-compile) |
 | D | Done | Thetis-style UI, MVVM refactor, Rhai scripting, TUI frontend |
-| E | Partial | DSP bindings (ANF, EQ, SNBA done; PureSignal, Diversity need antenna) |
-| C | Planned | TX (SSB/CW), CAT Kenwood server, TCI server, MIDI |
-| F | Planned | CI, installers, documentation, audio recording |
+| E | Done (software) | DSP bindings: ANF, SNBA, EQ, 4 NR variants, NB/NB2, TNF, squelch, APF, AGC fine, FM CTCSS/deviation, SAM sub-mode, BPSNBA tuning. E.4 PureSignal / E.5 Diversity / E.6 ALEX routing still blocked on antenna |
+| C | Partial | rigctld ✅, MIDI ✅, REST API ✅; TX + Kenwood CAT + TCI still pending |
+| F | Planned | CI, installers, audio recording, scheduler |
 
 ## Known limitations
 
 - **No TX** — transmit pipeline not implemented yet (Phase C)
-- **No CAT / TCI** — external control protocols not yet available
-- **NB / NB2** — noise blanker UI toggles exist but are not wired to
-  DSP (upstream WDSP uses complex ANB/NOB structures)
-- **Single sample rate** — 48 kHz only from the radio; rubato handles
-  device-side resampling
-- **No installer** — build from source required
+- **No TCI server** — SkimmerServer / JTDX TCI mode won't connect.
+  Design exists in `todo/tci.md`
+- **No Kenwood CAT** — only the Hamlib subset via rigctld is
+  available; Thetis' native TS-2000 + `ZZ*` command set is not
+  implemented
+- **Single sample rate** — 48 kHz only from the radio; rubato 2.0
+  handles device-side resampling
+- **No installer** — build from source required (Phase F)
+- **No authentication on external surfaces** — rigctld and the REST
+  API bind to loopback by default. Exposing them on a LAN requires
+  a reverse proxy with auth
 
 ## Scripting
 
@@ -182,15 +207,51 @@ build custom panels and menus, and auto-loads a startup script.
   items, and presets.
 - **REPL help** — type `help()` or `help("topic")`.
 
-## External control (rigctld)
+## External control
 
-Arion embeds a Hamlib-`rigctld`-compatible TCP server so that WSJT-X,
-fldigi, GPredict, CQRLOG and friends can drive the radio like any
-other rig. Enable it in *Setup → Network*; default port is 4532.
+Arion exposes four independent control surfaces, all toggleable
+from *Setup → Network* or via the persisted `arion.toml`:
 
-- **Full reference** — see [`docs/RIGCTLD.md`](docs/RIGCTLD.md).
+### rigctld (Hamlib subset, TCP 4532)
+
+Tested against WSJT-X, fldigi, GPredict, CQRLOG.
+
+- **Full reference** — [`docs/RIGCTLD.md`](docs/RIGCTLD.md)
 - **WSJT-X** — *Radio = Hamlib NET rigctl*, *Network Server =
-  `127.0.0.1:4532`*, *Poll Interval = 1 s*.
+  `127.0.0.1:4532`*, *Poll Interval = 1 s*
+
+### REST / JSON HTTP API (default port 8081)
+
+Resource-oriented JSON API under `/api/v1/*`, documented in
+[`docs/API.md`](docs/API.md) and [`docs/openapi.yaml`](docs/openapi.yaml).
+Includes a Prometheus text-format `/metrics` endpoint and an
+optional gated `/scripts/eval` for Rhai.
+
+```sh
+curl -s http://127.0.0.1:8081/api/v1/instance | jq
+curl -X PATCH http://127.0.0.1:8081/api/v1/rx/0 \
+     -H 'content-type: application/json' \
+     -d '{"frequency_hz": 14074000, "mode": "USB"}'
+curl -X POST http://127.0.0.1:8081/api/v1/bands/M20
+```
+
+### MIDI controllers
+
+Map any USB MIDI controller (knobs, pads, encoders) to Arion
+actions — VFO tuning, mode change, band jump, NR toggle, memory
+recall, …
+
+- **Full reference** — [`docs/MIDI.md`](docs/MIDI.md)
+- **Presets** — [`docs/midi-presets/beatstep.toml`](docs/midi-presets/beatstep.toml),
+  [`docs/midi-presets/x-touch-mini.toml`](docs/midi-presets/x-touch-mini.toml)
+- **Setup UI** — *Setup → MIDI* with Learn mode (shows the last
+  received event) and hot-swap binding edits (no listener restart)
+- **Persistence** — `~/.config/arion/midi.toml`
+
+### arion-web (WebSocket + WebRTC audio — prototype)
+
+Browser frontend with live state push and audio streaming.
+Enabled via `ARION_WEB_LISTEN=<addr>`. Design may evolve.
 
 ## Contributing
 
