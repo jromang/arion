@@ -327,7 +327,7 @@ impl ScriptModule for RxModule {
             .unwrap_or(0)
         });
 
-        // --- digital_mode (string: "off"/"psk31"/"psk63"/"rtty"/"aprs") ---
+        // --- digital_mode (string: "off"/"psk31"/"psk63"/"rtty"/"aprs"/"ft8") ---
         let c = ctx.clone();
         engine.register_get("digital_mode", move |rx: &mut Rx| -> String {
             c.with_app(|app| {
@@ -354,7 +354,38 @@ impl ScriptModule for RxModule {
             },
         );
 
-        // --- digital_decodes() returns array of #{ mode, text, snr } ---
+        // --- digital_center_hz (PSK carrier offset, Hz) ---
+        let c = ctx.clone();
+        engine.register_get("digital_center_hz", move |rx: &mut Rx| -> f64 {
+            c.with_app(|app| app.rx_digital_center_hz(rx.index) as f64)
+                .unwrap_or(1500.0)
+        });
+        let c = ctx.clone();
+        engine.register_set(
+            "digital_center_hz",
+            move |rx: &mut Rx, hz: f64| {
+                let _ = c.with_app(|app| app.set_rx_digital_center_hz(rx.index, hz as f32));
+            },
+        );
+
+        // --- constellation() returns array of #{ i, q } ---
+        let c = ctx.clone();
+        engine.register_fn("constellation", move |rx: &mut Rx| -> Array {
+            c.with_app(|app| {
+                app.rx_constellation(rx.index)
+                    .into_iter()
+                    .map(|(i, q)| {
+                        let mut m = rhai::Map::new();
+                        m.insert("i".into(), Dynamic::from(i as f64));
+                        m.insert("q".into(), Dynamic::from(q as f64));
+                        Dynamic::from_map(m)
+                    })
+                    .collect::<Array>()
+            })
+            .unwrap_or_default()
+        });
+
+        // --- digital_decodes() returns array of #{ mode, text, snr, freq, dt } ---
         let c = ctx.clone();
         engine.register_fn("digital_decodes", move |rx: &mut Rx| -> Array {
             c.with_app(|app| {

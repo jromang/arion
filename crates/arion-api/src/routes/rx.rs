@@ -54,6 +54,10 @@ pub struct RxPatch {
     pub sam_submode:     Option<u8>,
     pub bpsnba_nc:       Option<u32>,
     pub bpsnba_mp:       Option<bool>,
+    /// Enable/disable the digital decoder. Accepts "psk31", "psk63",
+    /// "rtty", "aprs", "ft8"; empty / "off" / "none" disables.
+    pub digital_mode:       Option<String>,
+    pub digital_center_hz:  Option<f32>,
     pub agc:          Option<String>,
 }
 
@@ -100,6 +104,17 @@ pub async fn patch_rx(
         send(Action::SetRxBpsnbaNc { rx, nc })?;
     }
     if let Some(mp) = body.bpsnba_mp { send(Action::SetRxBpsnbaMp { rx, mp })?; }
+    if let Some(mode) = body.digital_mode {
+        send(Action::SetRxDigitalMode { rx, mode: if mode.is_empty() { None } else { Some(mode) } })?;
+    }
+    if let Some(hz) = body.digital_center_hz {
+        if !(100.0..=4000.0).contains(&hz) {
+            return Err(ApiError::Validation(
+                "digital_center_hz must be between 100 and 4000".into(),
+            ));
+        }
+        send(Action::SetRxDigitalCenterHz { rx, hz })?;
+    }
     if let Some(agc) = body.agc { send(Action::SetRxAgc { rx, agc })?; }
     Ok(Json(json!({ "ok": true })))
 }

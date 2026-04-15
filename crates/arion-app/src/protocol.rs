@@ -55,6 +55,23 @@ pub struct RxSnapshot {
     pub fm_deviation_hz: f32,
     pub ctcss_on:        bool,
     pub ctcss_hz:        f32,
+    /// Digital decoder mode layered on top of the analog DSP path.
+    /// `None` (serialized as JSON null) means no decoder active.
+    pub digital_mode:       Option<&'static str>,
+    pub digital_center_hz:  f32,
+    /// Decodes emitted in the latest telemetry snapshot. Typically
+    /// empty — the transport layer is responsible for accumulating
+    /// history if needed.
+    pub digital_decodes:    Vec<DigitalDecodeSnapshot>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct DigitalDecodeSnapshot {
+    pub mode:           &'static str,
+    pub text:           String,
+    pub score:          f32,
+    pub freq_hz:        f32,
+    pub time_offset_s:  f32,
 }
 
 impl StateSnapshot {
@@ -90,6 +107,24 @@ impl StateSnapshot {
                     fm_deviation_hz: r.fm_deviation_hz,
                     ctcss_on:        r.ctcss_on,
                     ctcss_hz:        r.ctcss_hz,
+                    digital_mode:    r.digital_mode.map(|m| m.as_str()),
+                    digital_center_hz: r.digital_center_hz,
+                    digital_decodes: telemetry
+                        .rx
+                        .get(i)
+                        .map(|rt| {
+                            rt.digital_decodes
+                                .iter()
+                                .map(|d| DigitalDecodeSnapshot {
+                                    mode:          d.mode.as_str(),
+                                    text:          d.text.clone(),
+                                    score:         d.snr_db,
+                                    freq_hz:       d.freq_hz,
+                                    time_offset_s: d.time_offset_s,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
                 }
             })
             .collect();
@@ -154,6 +189,10 @@ pub enum Action {
     SetRxSamSubmode  { rx: u8, submode: u8 },
     SetRxBpsnbaNc    { rx: u8, nc: u32 },
     SetRxBpsnbaMp    { rx: u8, mp: bool },
+    /// Enable/disable a digital decoder. `mode = None` disables.
+    /// Accepted names: "psk31", "psk63", "rtty", "aprs", "ft8".
+    SetRxDigitalMode    { rx: u8, mode: Option<String> },
+    SetRxDigitalCenterHz { rx: u8, hz: f32 },
     SetRxAgc       { rx: u8, agc: String },
     SetRxFilter    { rx: u8, low: f64, high: f64 },
     SetRxFilterPreset { rx: u8, preset: String },
@@ -222,6 +261,16 @@ impl Action {
             Action::SetRxSamSubmode { rx, submode } => app.set_rx_sam_submode(rx, submode),
             Action::SetRxBpsnbaNc { rx, nc } => app.set_rx_bpsnba_nc(rx, nc),
             Action::SetRxBpsnbaMp { rx, mp } => app.set_rx_bpsnba_mp(rx, mp),
+            Action::SetRxDigitalMode { rx, mode } => {
+                let parsed = match mode.as_deref() {
+                    None | Some("") | Some("off") | Some("none") => None,
+                    Some(name) => arion_core::DigitalMode::parse(name),
+                };
+                app.set_rx_digital_mode(rx, parsed);
+            }
+            Action::SetRxDigitalCenterHz { rx, hz } => {
+                app.set_rx_digital_center_hz(rx, hz);
+            }
             Action::SetRxAgc { rx, agc } => {
                 if let Some(a) = agc_from_label(&agc) {
                     app.set_rx_agc(rx, a);

@@ -31,6 +31,8 @@ fn fresh_ctx() -> (
                 apf: false, apf_freq_hz: 600.0,
                 agc_top_dbm: -30.0, agc_decay_ms: 250,
                 fm_deviation_hz: 5000.0, ctcss_on: false, ctcss_hz: 67.0,
+                digital_mode: None, digital_center_hz: 1500.0,
+                digital_decodes: vec![],
             },
             arion_app::protocol::RxSnapshot {
                 enabled:      false,
@@ -44,6 +46,8 @@ fn fresh_ctx() -> (
                 apf: false, apf_freq_hz: 600.0,
                 agc_top_dbm: -30.0, agc_decay_ms: 250,
                 fm_deviation_hz: 5000.0, ctcss_on: false, ctcss_hz: 67.0,
+                digital_mode: None, digital_center_hz: 1500.0,
+                digital_decodes: vec![],
             },
         ],
         memories: vec![],
