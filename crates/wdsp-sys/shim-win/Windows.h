@@ -1,14 +1,20 @@
-/* Windows.h case-correction forwarder for mingw-w64 cross-compile.
+/* Windows.h case-correction forwarder for mingw-w64.
  *
- * Upstream WDSP does `#include <Windows.h>` (capital W). On real
- * Windows the NTFS-side filesystem is case-insensitive so w32api's
- * lowercase `windows.h` matches. Cross-compiling from a case-
- * sensitive Linux host breaks that assumption — the lookup fails
- * outright. This one-liner forwarder lives in `shim-win/` which the
- * build script only injects into the include path when the target
- * is Windows, so the native Linux POSIX shim in `shim/` is untouched.
+ * Upstream WDSP does `#include <Windows.h>` (capital W). mingw-w64
+ * ships the header as lowercase `windows.h`, so on case-sensitive
+ * filesystems (Linux cross-compile) the lookup fails outright. On
+ * NTFS (case-insensitive) we still want a deterministic path —
+ * `<Windows.h>` always resolves here, and we forward to mingw's
+ * real header.
+ *
+ * `#include <windows.h>` cannot be used to forward: on NTFS it would
+ * match this very file again (case-insensitive) and the include guard
+ * would no-op it, so mingw's header would never be pulled in.
+ * `#include_next` (GCC/Clang) resumes the search *after* the directory
+ * that supplied the current file, skipping this shim and reaching the
+ * w32api copy.
  */
 #ifndef WDSP_SHIM_WIN_WINDOWS_H
 #define WDSP_SHIM_WIN_WINDOWS_H
-#include <windows.h>
+#include_next <windows.h>
 #endif
