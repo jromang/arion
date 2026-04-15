@@ -463,6 +463,43 @@ impl Channel {
         unsafe { sys::SetRXACTCSSFreq(self.id, hz); }
     }
 
+    // --- TNF (tracking notch filter) -----------------------------------
+
+    pub fn set_tnf_enabled(&mut self, enabled: bool) {
+        unsafe { sys::RXANBPSetNotchesRun(self.id, i32::from(enabled)); }
+    }
+
+    /// Append a notch at index `idx`. Indices must be contiguous from 0.
+    pub fn add_tnf_notch(&mut self, idx: u32, fcenter: f64, fwidth: f64, active: bool) -> bool {
+        // SAFETY: channel id valid; backing store is WDSP's own notch DB.
+        let rc = unsafe {
+            sys::RXANBPAddNotch(self.id, idx as i32, fcenter, fwidth, i32::from(active))
+        };
+        rc == 0
+    }
+    pub fn edit_tnf_notch(&mut self, idx: u32, fcenter: f64, fwidth: f64, active: bool) -> bool {
+        let rc = unsafe {
+            sys::RXANBPEditNotch(self.id, idx as i32, fcenter, fwidth, i32::from(active))
+        };
+        rc == 0
+    }
+    pub fn delete_tnf_notch(&mut self, idx: u32) -> bool {
+        let rc = unsafe { sys::RXANBPDeleteNotch(self.id, idx as i32) };
+        rc == 0
+    }
+    pub fn num_tnf_notches(&self) -> u32 {
+        let mut n: i32 = 0;
+        unsafe { sys::RXANBPGetNumNotches(self.id, &mut n) };
+        n.max(0) as u32
+    }
+
+    // --- SAM sub-mode (AMD) --------------------------------------------
+
+    /// 0 = DSB, 1 = LSB, 2 = USB.
+    pub fn set_sam_submode(&mut self, submode: u8) {
+        unsafe { sys::SetRXAAMDSBMode(self.id, submode as i32); }
+    }
+
     // --- NB / NB2 (external time-domain noise blankers) ---------------
 
     pub fn set_nb_enabled(&mut self, enabled: bool) {

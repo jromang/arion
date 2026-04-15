@@ -238,6 +238,12 @@ enum DspCommand {
     SetRxNb2              { rx: u8, enabled: bool },
     SetRxNbThreshold      { rx: u8, threshold: f64 },
     SetRxNb2Threshold     { rx: u8, threshold: f64 },
+    // --- TNF + SAM ---
+    SetRxTnfEnabled       { rx: u8, enabled: bool },
+    AddRxTnfNotch         { rx: u8, idx: u32, freq_hz: f64, width_hz: f64, active: bool },
+    EditRxTnfNotch        { rx: u8, idx: u32, freq_hz: f64, width_hz: f64, active: bool },
+    DeleteRxTnfNotch      { rx: u8, idx: u32 },
+    SetRxSamSubmode       { rx: u8, submode: u8 },
 }
 
 /// A running end-to-end receive session.
@@ -585,6 +591,27 @@ impl Radio {
     }
     pub fn set_rx_nb2_threshold(&self, rx: u8, threshold: f64) -> anyhow::Result<()> {
         self.commands.send(DspCommand::SetRxNb2Threshold { rx, threshold })?;
+        Ok(())
+    }
+
+    pub fn set_rx_tnf_enabled(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxTnfEnabled { rx, enabled })?;
+        Ok(())
+    }
+    pub fn add_rx_tnf_notch(&self, rx: u8, idx: u32, freq_hz: f64, width_hz: f64, active: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::AddRxTnfNotch { rx, idx, freq_hz, width_hz, active })?;
+        Ok(())
+    }
+    pub fn edit_rx_tnf_notch(&self, rx: u8, idx: u32, freq_hz: f64, width_hz: f64, active: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::EditRxTnfNotch { rx, idx, freq_hz, width_hz, active })?;
+        Ok(())
+    }
+    pub fn delete_rx_tnf_notch(&self, rx: u8, idx: u32) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::DeleteRxTnfNotch { rx, idx })?;
+        Ok(())
+    }
+    pub fn set_rx_sam_submode(&self, rx: u8, submode: u8) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxSamSubmode { rx, submode })?;
         Ok(())
     }
 
@@ -1004,6 +1031,26 @@ fn dsp_loop(
                 DspCommand::SetRxNb2Threshold { rx, threshold } => {
                     let r = rx as usize;
                     if r < num_rx { channels[r].set_nb2_threshold(threshold); }
+                }
+                DspCommand::SetRxTnfEnabled { rx, enabled } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_tnf_enabled(enabled); }
+                }
+                DspCommand::AddRxTnfNotch { rx, idx, freq_hz, width_hz, active } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].add_tnf_notch(idx, freq_hz, width_hz, active); }
+                }
+                DspCommand::EditRxTnfNotch { rx, idx, freq_hz, width_hz, active } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].edit_tnf_notch(idx, freq_hz, width_hz, active); }
+                }
+                DspCommand::DeleteRxTnfNotch { rx, idx } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].delete_tnf_notch(idx); }
+                }
+                DspCommand::SetRxSamSubmode { rx, submode } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_sam_submode(submode); }
                 }
             }
         }

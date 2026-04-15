@@ -245,6 +245,35 @@ unsafe extern "C" {
     pub fn SetEXTANBThreshold(id: c_int, thresh: c_double);
     pub fn SetEXTANBTau(id: c_int, tau: c_double);
 
+    // --- TNF (tracking notch filter, implemented via NBP notch DB) ----
+
+    /// Append a notch at the given index. `notch` is the desired slot
+    /// (new notches are appended at `num_notches`). Returns 0 on success,
+    /// -1 if the slot is out of range or the DB is full.
+    pub fn RXANBPAddNotch(
+        channel:  c_int,
+        notch:    c_int,
+        fcenter:  c_double,
+        fwidth:   c_double,
+        active:   c_int,
+    ) -> c_int;
+    pub fn RXANBPDeleteNotch(channel: c_int, notch: c_int) -> c_int;
+    pub fn RXANBPEditNotch(
+        channel:  c_int,
+        notch:    c_int,
+        fcenter:  c_double,
+        fwidth:   c_double,
+        active:   c_int,
+    ) -> c_int;
+    pub fn RXANBPSetNotchesRun(channel: c_int, run: c_int);
+    pub fn RXANBPGetNumNotches(channel: c_int, nnotches: *mut c_int);
+
+    // --- SAM sub-mode (DSB / LSB / USB) --------------------------------
+
+    /// AMD synchronous-AM sub-band selector:
+    /// 0 = DSB (default), 1 = LSB, 2 = USB.
+    pub fn SetRXAAMDSBMode(channel: c_int, sbmode: c_int);
+
     // --- NB2 (nobII.c, two-pass blanker with hang / zero / reduce modes)
 
     pub fn create_nobEXT(

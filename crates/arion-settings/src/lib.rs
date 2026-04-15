@@ -292,6 +292,15 @@ impl Default for GeneralSettings {
     }
 }
 
+/// One tracking-notch filter entry. Persisted per-RX.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TnfNotch {
+    pub freq_hz:  f64,
+    pub width_hz: f64,
+    pub active:   bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct RxSettings {
@@ -331,6 +340,10 @@ pub struct RxSettings {
     pub ctcss_on:        bool,
     #[serde(default = "default_ctcss_hz")]
     pub ctcss_hz:        f32,
+    #[serde(default)]
+    pub tnf_notches:     Vec<TnfNotch>,
+    #[serde(default)]
+    pub sam_submode:     u8,
 }
 
 fn default_squelch_db()     -> f32 { -30.0 }
@@ -368,6 +381,8 @@ impl Default for RxSettings {
             fm_deviation_hz: default_fm_deviation(),
             ctcss_on:        false,
             ctcss_hz:        default_ctcss_hz(),
+            tnf_notches:     Vec::new(),
+            sam_submode:     0,
         }
     }
 }

@@ -51,6 +51,7 @@ pub struct RxPatch {
     pub fm_deviation_hz: Option<f32>,
     pub ctcss_on:        Option<bool>,
     pub ctcss_hz:        Option<f32>,
+    pub sam_submode:     Option<u8>,
     pub agc:          Option<String>,
 }
 
@@ -82,6 +83,12 @@ pub async fn patch_rx(
     if let Some(hz) = body.fm_deviation_hz { send(Action::SetRxFmDeviation { rx, hz })?; }
     if let Some(on) = body.ctcss_on { send(Action::SetRxCtcss { rx, on })?; }
     if let Some(hz) = body.ctcss_hz { send(Action::SetRxCtcssFreq { rx, hz })?; }
+    if let Some(submode) = body.sam_submode {
+        if submode > 2 {
+            return Err(ApiError::Validation("sam_submode must be 0 (DSB), 1 (LSB), or 2 (USB)".into()));
+        }
+        send(Action::SetRxSamSubmode { rx, submode })?;
+    }
     if let Some(agc) = body.agc { send(Action::SetRxAgc { rx, agc })?; }
     Ok(Json(json!({ "ok": true })))
 }

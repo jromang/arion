@@ -92,6 +92,8 @@ pub struct RxState {
     pub fm_deviation_hz: f32,
     pub ctcss_on:        bool,
     pub ctcss_hz:        f32,
+    pub tnf_notches:     Vec<arion_settings::TnfNotch>,
+    pub sam_submode:     u8,
     pub filter_lo:    f64,
     pub filter_hi:    f64,
     // --- DSP toggles (UI + persist, DSP binding in E) ---
@@ -139,6 +141,8 @@ impl Default for RxState {
             fm_deviation_hz: 5000.0,
             ctcss_on:        false,
             ctcss_hz:        67.0,
+            tnf_notches:     Vec::new(),
+            sam_submode:     0,
             filter_lo:    lo,
             filter_hi:    hi,
             agc_mode:     AgcPreset::Med,
@@ -543,6 +547,8 @@ impl App {
                 fm_deviation_hz: serde_rx.fm_deviation_hz,
                 ctcss_on:        serde_rx.ctcss_on,
                 ctcss_hz:        serde_rx.ctcss_hz,
+                tnf_notches:     serde_rx.tnf_notches.clone(),
+                sam_submode:     serde_rx.sam_submode,
                 filter_lo:    flo,
                 filter_hi:    fhi,
                 ..RxState::default()
@@ -891,6 +897,58 @@ impl App {
         self.mark_dirty();
     }
 
+    // --- E.15 TNF (tracking notch filter) ---
+
+    /// Append a notch at the end of the list.
+    pub fn add_rx_tnf_notch(&mut self, rx: u8, freq_hz: f64, width_hz: f64, active: bool) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        let idx = view.tnf_notches.len() as u32;
+        view.tnf_notches.push(arion_settings::TnfNotch {
+            freq_hz,
+            width_hz,
+            active,
+        });
+        if let Some(r) = &self.radio {
+            let _ = r.add_rx_tnf_notch(rx, idx, freq_hz, width_hz, active);
+        }
+        self.mark_dirty();
+    }
+
+    /// Replace the notch at `idx`. No-op if the index is out of range.
+    pub fn edit_rx_tnf_notch(&mut self, rx: u8, idx: u32, freq_hz: f64, width_hz: f64, active: bool) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        let Some(slot) = view.tnf_notches.get_mut(idx as usize) else { return };
+        slot.freq_hz = freq_hz;
+        slot.width_hz = width_hz;
+        slot.active = active;
+        if let Some(r) = &self.radio {
+            let _ = r.edit_rx_tnf_notch(rx, idx, freq_hz, width_hz, active);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn delete_rx_tnf_notch(&mut self, rx: u8, idx: u32) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        let ui = idx as usize;
+        if ui >= view.tnf_notches.len() { return }
+        view.tnf_notches.remove(ui);
+        if let Some(r) = &self.radio {
+            let _ = r.delete_rx_tnf_notch(rx, idx);
+        }
+        self.mark_dirty();
+    }
+
+    // --- E.16 SAM sub-mode ---
+
+    pub fn set_rx_sam_submode(&mut self, rx: u8, submode: u8) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.sam_submode = submode;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_sam_submode(rx, submode);
+        }
+        self.mark_dirty();
+    }
+
     pub fn set_rx_agc(&mut self, rx: u8, agc: AgcPreset) {
         let Some(view) = self.rxs.get_mut(rx as usize) else { return };
         view.agc_mode = agc;
@@ -940,6 +998,7 @@ impl App {
                 "emnr" => { let _ = r.set_rx_emnr(rx, new_val); }
                 "nb"   => { let _ = r.set_rx_nb(rx, new_val); }
                 "nb2"  => { let _ = r.set_rx_nb2(rx, new_val); }
+                "tnf"  => { let _ = r.set_rx_tnf_enabled(rx, new_val); }
                 // NB/NB2/TNF: upstream WDSP uses low-level ANB/NOB
                 // structures, not simple SetRXA* calls. Binding
                 // deferred until the full NB pipeline is understood.
@@ -1215,6 +1274,8 @@ impl App {
                 fm_deviation_hz: view.fm_deviation_hz,
                 ctcss_on:        view.ctcss_on,
                 ctcss_hz:        view.ctcss_hz,
+                tnf_notches:     view.tnf_notches.clone(),
+                sam_submode:     view.sam_submode,
             };
         }
         s.band_stacks  = self.band_stack.to_settings();

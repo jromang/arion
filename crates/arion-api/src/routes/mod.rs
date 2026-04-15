@@ -13,6 +13,7 @@ pub mod rigctld;
 pub mod rx;
 pub mod scripts;
 pub mod telemetry;
+pub mod tnf;
 
 pub fn router() -> Router<ApiContext> {
     Router::new()
@@ -29,6 +30,8 @@ pub fn router() -> Router<ApiContext> {
         .route("/rx/{idx}/filter/preset", post(rx::post_filter_preset))
         .route("/rx/{idx}/eq",       patch(rx::patch_eq))
         .route("/active-rx",         post(rx::post_active_rx))
+        .route("/rx/{idx}/tnf",      get(tnf::list_notches).post(tnf::post_notch))
+        .route("/rx/{idx}/tnf/{nidx}", put(tnf::put_notch).delete(tnf::delete_notch))
         // bands
         .route("/bands",             get(bands::list_bands))
         .route("/bands/{band}",      post(bands::post_jump))
