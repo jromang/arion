@@ -274,6 +274,15 @@ unsafe extern "C" {
     /// 0 = DSB (default), 1 = LSB, 2 = USB.
     pub fn SetRXAAMDSBMode(channel: c_int, sbmode: c_int);
 
+    // --- BPSNBA tuning (no public run toggle — auto-activates via SNBA)
+
+    /// BPSNBA filter length in FIR coefficients. Must be a power of 2
+    /// (typical 1024 / 2048 / 4096). Default 2048.
+    pub fn RXABPSNBASetNC(channel: c_int, nc: c_int);
+    /// BPSNBA minimum-phase flag. 0 = linear phase (default),
+    /// 1 = minimum phase (lower group delay, some artefacts).
+    pub fn RXABPSNBASetMP(channel: c_int, mp: c_int);
+
     // --- NB2 (nobII.c, two-pass blanker with hang / zero / reduce modes)
 
     pub fn create_nobEXT(

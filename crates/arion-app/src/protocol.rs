@@ -152,6 +152,8 @@ pub enum Action {
     EditRxTnfNotch   { rx: u8, idx: u32, freq_hz: f64, width_hz: f64, active: bool },
     DeleteRxTnfNotch { rx: u8, idx: u32 },
     SetRxSamSubmode  { rx: u8, submode: u8 },
+    SetRxBpsnbaNc    { rx: u8, nc: u32 },
+    SetRxBpsnbaMp    { rx: u8, mp: bool },
     SetRxAgc       { rx: u8, agc: String },
     SetRxFilter    { rx: u8, low: f64, high: f64 },
     SetRxFilterPreset { rx: u8, preset: String },
@@ -218,6 +220,8 @@ impl Action {
             }
             Action::DeleteRxTnfNotch { rx, idx } => app.delete_rx_tnf_notch(rx, idx),
             Action::SetRxSamSubmode { rx, submode } => app.set_rx_sam_submode(rx, submode),
+            Action::SetRxBpsnbaNc { rx, nc } => app.set_rx_bpsnba_nc(rx, nc),
+            Action::SetRxBpsnbaMp { rx, mp } => app.set_rx_bpsnba_mp(rx, mp),
             Action::SetRxAgc { rx, agc } => {
                 if let Some(a) = agc_from_label(&agc) {
                     app.set_rx_agc(rx, a);

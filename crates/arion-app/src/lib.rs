@@ -949,6 +949,19 @@ impl App {
         self.mark_dirty();
     }
 
+    // --- E.17 BPSNBA tuning (not persisted) ---
+
+    pub fn set_rx_bpsnba_nc(&mut self, rx: u8, nc: u32) {
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_bpsnba_nc(rx, nc);
+        }
+    }
+    pub fn set_rx_bpsnba_mp(&mut self, rx: u8, mp: bool) {
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_bpsnba_mp(rx, mp);
+        }
+    }
+
     pub fn set_rx_agc(&mut self, rx: u8, agc: AgcPreset) {
         let Some(view) = self.rxs.get_mut(rx as usize) else { return };
         view.agc_mode = agc;

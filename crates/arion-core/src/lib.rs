@@ -244,6 +244,8 @@ enum DspCommand {
     EditRxTnfNotch        { rx: u8, idx: u32, freq_hz: f64, width_hz: f64, active: bool },
     DeleteRxTnfNotch      { rx: u8, idx: u32 },
     SetRxSamSubmode       { rx: u8, submode: u8 },
+    SetRxBpsnbaNc         { rx: u8, nc: u32 },
+    SetRxBpsnbaMp         { rx: u8, mp: bool },
 }
 
 /// A running end-to-end receive session.
@@ -612,6 +614,14 @@ impl Radio {
     }
     pub fn set_rx_sam_submode(&self, rx: u8, submode: u8) -> anyhow::Result<()> {
         self.commands.send(DspCommand::SetRxSamSubmode { rx, submode })?;
+        Ok(())
+    }
+    pub fn set_rx_bpsnba_nc(&self, rx: u8, nc: u32) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxBpsnbaNc { rx, nc })?;
+        Ok(())
+    }
+    pub fn set_rx_bpsnba_mp(&self, rx: u8, mp: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxBpsnbaMp { rx, mp })?;
         Ok(())
     }
 
@@ -1051,6 +1061,14 @@ fn dsp_loop(
                 DspCommand::SetRxSamSubmode { rx, submode } => {
                     let r = rx as usize;
                     if r < num_rx { channels[r].set_sam_submode(submode); }
+                }
+                DspCommand::SetRxBpsnbaNc { rx, nc } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_bpsnba_nc(nc); }
+                }
+                DspCommand::SetRxBpsnbaMp { rx, mp } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_bpsnba_mp(mp); }
                 }
             }
         }

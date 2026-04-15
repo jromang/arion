@@ -500,6 +500,18 @@ impl Channel {
         unsafe { sys::SetRXAAMDSBMode(self.id, submode as i32); }
     }
 
+    // --- BPSNBA tuning -------------------------------------------------
+
+    /// BPSNBA auto-routes when SNBA + TNF are both active. These two
+    /// knobs only adjust the internal filter; there's no separate
+    /// run toggle by design.
+    pub fn set_bpsnba_nc(&mut self, nc: u32) {
+        unsafe { sys::RXABPSNBASetNC(self.id, nc as i32); }
+    }
+    pub fn set_bpsnba_mp(&mut self, mp: bool) {
+        unsafe { sys::RXABPSNBASetMP(self.id, i32::from(mp)); }
+    }
+
     // --- NB / NB2 (external time-domain noise blankers) ---------------
 
     pub fn set_nb_enabled(&mut self, enabled: bool) {

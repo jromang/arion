@@ -52,6 +52,8 @@ pub struct RxPatch {
     pub ctcss_on:        Option<bool>,
     pub ctcss_hz:        Option<f32>,
     pub sam_submode:     Option<u8>,
+    pub bpsnba_nc:       Option<u32>,
+    pub bpsnba_mp:       Option<bool>,
     pub agc:          Option<String>,
 }
 
@@ -89,6 +91,15 @@ pub async fn patch_rx(
         }
         send(Action::SetRxSamSubmode { rx, submode })?;
     }
+    if let Some(nc) = body.bpsnba_nc {
+        if nc < 128 || !nc.is_power_of_two() {
+            return Err(ApiError::Validation(
+                "bpsnba_nc must be a power of 2 ≥ 128 (typical 1024 / 2048 / 4096)".into(),
+            ));
+        }
+        send(Action::SetRxBpsnbaNc { rx, nc })?;
+    }
+    if let Some(mp) = body.bpsnba_mp { send(Action::SetRxBpsnbaMp { rx, mp })?; }
     if let Some(agc) = body.agc { send(Action::SetRxAgc { rx, agc })?; }
     Ok(Json(json!({ "ok": true })))
 }
