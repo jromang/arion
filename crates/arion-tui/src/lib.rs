@@ -46,6 +46,7 @@ const DIGITAL_OPTIONS: &[(Option<arion_core::DigitalMode>, &str)] = &[
     (Some(arion_core::DigitalMode::Psk63), "PSK63"),
     (Some(arion_core::DigitalMode::Rtty),  "RTTY"),
     (Some(arion_core::DigitalMode::Aprs),  "APRS"),
+    (Some(arion_core::DigitalMode::Ft8),   "FT8"),
 ];
 
 const FOCUS_ORDER: &[Focus] = &[

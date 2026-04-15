@@ -296,6 +296,7 @@ dependencies = [
  "arc-swap",
  "arion-audio",
  "ctrlc",
+ "ft8",
  "hpsdr-net",
  "hpsdr-protocol",
  "liquid",

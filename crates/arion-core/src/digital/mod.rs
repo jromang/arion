@@ -21,6 +21,7 @@ pub mod rtty;
 pub mod varicode;
 
 use aprs::AprsDemod;
+use liquid::{Complex32, MsResamp};
 use psk31::Psk31Demod;
 use rtty::RttyDemod;
 
@@ -30,6 +31,7 @@ pub enum DigitalMode {
     Psk63,
     Rtty,
     Aprs,
+    Ft8,
 }
 
 impl DigitalMode {
@@ -39,6 +41,7 @@ impl DigitalMode {
             Self::Psk63 => "psk63",
             Self::Rtty => "rtty",
             Self::Aprs => "aprs",
+            Self::Ft8 => "ft8",
         }
     }
 
@@ -48,6 +51,7 @@ impl DigitalMode {
             "psk63" => Some(Self::Psk63),
             "rtty" => Some(Self::Rtty),
             "aprs" => Some(Self::Aprs),
+            "ft8" => Some(Self::Ft8),
             _ => None,
         }
     }
@@ -67,7 +71,78 @@ pub struct DigitalPipeline {
     psk31: Option<Psk31Demod>,
     rtty: Option<RttyDemod>,
     aprs: Option<AprsDemod>,
+    ft8: Option<Ft8Stage>,
     pending: Vec<DigitalDecode>,
+}
+
+/// FT8 decoder running inside the DigitalPipeline. Resamples 48 kHz
+/// → 12 kHz, feeds a `ft8::Monitor` in 1920-sample (one-symbol)
+/// blocks, and runs a decode every ~14 s of accumulated audio.
+struct Ft8Stage {
+    resampler: MsResamp,
+    monitor: ft8::Monitor,
+    scratch_in: Vec<Complex32>,
+    scratch_out: Vec<Complex32>,
+    pending_samples: Vec<f32>,
+    samples_since_decode: usize,
+}
+
+const FT8_DECODE_SAMPLES_12K: usize = 12_000 * 14; // run a decode every ~14 s of accumulated 12 kHz audio.
+
+impl Ft8Stage {
+    fn new() -> Option<Self> {
+        // 48 kHz real audio → 12 kHz complex for the ft8 monitor.
+        let resampler = MsResamp::new(12_000.0 / 48_000.0, 60.0).ok()?;
+        let monitor = ft8::Monitor::new().ok()?;
+        Some(Self {
+            resampler,
+            monitor,
+            scratch_in: Vec::with_capacity(2048),
+            scratch_out: Vec::with_capacity(512),
+            pending_samples: Vec::with_capacity(2048),
+            samples_since_decode: 0,
+        })
+    }
+
+    fn push_audio(&mut self, audio: &[f32], out: &mut Vec<DigitalDecode>) {
+        // Real-valued 48 k → complex; the monitor only uses the real
+        // part of the mix-down internally, so feeding im=0 is fine.
+        self.scratch_in.clear();
+        self.scratch_in.reserve(audio.len());
+        for &s in audio {
+            self.scratch_in.push(Complex32 { re: s, im: 0.0 });
+        }
+        let cap = self.resampler.num_output(audio.len() as u32) as usize + 16;
+        if self.scratch_out.len() < cap {
+            self.scratch_out.resize(cap, Complex32 { re: 0.0, im: 0.0 });
+        }
+        let n = self
+            .resampler
+            .execute(&self.scratch_in, &mut self.scratch_out);
+        self.pending_samples
+            .extend(self.scratch_out[..n].iter().map(|c| c.re));
+
+        // Feed complete symbol-sized blocks to the monitor.
+        let block = self.monitor.block_size();
+        while self.pending_samples.len() >= block {
+            let (head, _) = self.pending_samples.split_at(block);
+            self.monitor.process(head);
+            self.pending_samples.drain(..block);
+        }
+
+        self.samples_since_decode += n;
+        if self.samples_since_decode >= FT8_DECODE_SAMPLES_12K {
+            for d in self.monitor.decode(64, 10) {
+                out.push(DigitalDecode {
+                    mode: DigitalMode::Ft8,
+                    text: d.text,
+                    snr_db: d.snr_db,
+                });
+            }
+            self.monitor.reset();
+            self.samples_since_decode = 0;
+        }
+    }
 }
 
 const DEFAULT_PSK_CENTER_HZ: f32 = 1_500.0;
@@ -89,12 +164,17 @@ impl DigitalPipeline {
             DigitalMode::Aprs => Some(AprsDemod::new()),
             _ => None,
         };
+        let ft8 = match mode {
+            DigitalMode::Ft8 => Ft8Stage::new(),
+            _ => None,
+        };
         Some(Self {
             mode,
             center_hz: DEFAULT_PSK_CENTER_HZ,
             psk31,
             rtty,
             aprs,
+            ft8,
             pending: Vec::new(),
         })
     }
@@ -130,6 +210,9 @@ impl DigitalPipeline {
                 .into_iter()
                 .map(|f| format!("{}: {}\n", f.header(), f.info_str()))
                 .collect::<String>()
+        } else if let Some(stage) = self.ft8.as_mut() {
+            stage.push_audio(audio, &mut self.pending);
+            String::new()
         } else {
             String::new()
         };
@@ -159,6 +242,39 @@ impl DigitalPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pipeline_decodes_self_generated_ft8() {
+        // Encode a 12 kHz FT8 signal, upsample to 48 kHz (the native
+        // tap rate), then feed it to the DigitalPipeline — the same
+        // path the DSP thread exercises.
+        let audio_12k = ft8::encode_to_audio("CQ AA0AA FN42", 1_000.0).unwrap();
+        // Crude 4× linear upsample just for the test — the pipeline's
+        // own MsResamp takes us back to 12 kHz at its input. Real
+        // off-air audio already lives at 48 kHz.
+        let mut audio_48k = Vec::with_capacity(audio_12k.len() * 4);
+        for s in &audio_12k {
+            for _ in 0..4 {
+                audio_48k.push(*s);
+            }
+        }
+        let mut pipe = DigitalPipeline::new(DigitalMode::Ft8, 48_000).unwrap();
+        for chunk in audio_48k.chunks(1024) {
+            pipe.push_audio(chunk);
+        }
+        // Trigger a decode by flushing 14 s worth of silence (the
+        // stage batches decodes every ~14 s of 12 kHz audio).
+        let silence = vec![0.0_f32; 1024];
+        for _ in 0..700 {
+            pipe.push_audio(&silence);
+        }
+        let decodes = pipe.drain_decodes();
+        let text: String = decodes.iter().map(|d| d.text.as_str()).collect();
+        assert!(
+            text.contains("AA0AA") || text.contains("FN42"),
+            "got: {text:?}"
+        );
+    }
 
     #[test]
     fn pipeline_decodes_self_generated_aprs() {
