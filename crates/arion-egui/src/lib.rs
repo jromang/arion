@@ -1289,6 +1289,21 @@ impl EguiView {
                             }
                         });
                 });
+                if matches!(
+                    current,
+                    Some(arion_core::DigitalMode::Psk31) | Some(arion_core::DigitalMode::Psk63)
+                ) {
+                    let mut hz = self.app.rx_digital_center_hz(rx);
+                    ui.horizontal(|ui| {
+                        ui.label("Carrier:");
+                        if ui
+                            .add(egui::Slider::new(&mut hz, 300.0..=2700.0).suffix(" Hz"))
+                            .changed()
+                        {
+                            self.app.set_rx_digital_center_hz(rx, hz);
+                        }
+                    });
+                }
                 ui.separator();
                 egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
                     if decodes.is_empty() {

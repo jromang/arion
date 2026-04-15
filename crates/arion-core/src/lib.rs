@@ -261,6 +261,7 @@ enum DspCommand {
     SetRxBpsnbaNc         { rx: u8, nc: u32 },
     SetRxBpsnbaMp         { rx: u8, mp: bool },
     SetRxDigitalMode      { rx: u8, mode: Option<DigitalMode> },
+    SetRxDigitalCenterHz  { rx: u8, hz: f32 },
 }
 
 /// A running end-to-end receive session.
@@ -481,6 +482,14 @@ impl Radio {
         mode: Option<DigitalMode>,
     ) -> anyhow::Result<()> {
         self.commands.send(DspCommand::SetRxDigitalMode { rx, mode })?;
+        Ok(())
+    }
+
+    /// Set the audio-passband offset at which the digital decoder
+    /// looks for its carrier. Only meaningful for PSK-family modes;
+    /// RTTY / APRS use fixed tone pairs.
+    pub fn set_rx_digital_center_hz(&self, rx: u8, hz: f32) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxDigitalCenterHz { rx, hz })?;
         Ok(())
     }
 
@@ -1112,6 +1121,14 @@ fn dsp_loop(
                         digital[r] = mode
                             .and_then(|m| DigitalPipeline::new(m, 48_000));
                         pending_decodes[r].clear();
+                    }
+                }
+                DspCommand::SetRxDigitalCenterHz { rx, hz } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        if let Some(pipe) = digital[r].as_mut() {
+                            pipe.set_center_hz(hz);
+                        }
                     }
                 }
             }

@@ -119,6 +119,9 @@ pub struct RxState {
     /// Active digital decoder (PSK31/RTTY/APRS) layered on top of the
     /// analog DSP mode. `None` means no decoder active.
     pub digital_mode: Option<arion_core::DigitalMode>,
+    /// Carrier offset (Hz, inside the SSB passband) where a PSK-family
+    /// decoder looks for its signal. Ignored for RTTY / APRS.
+    pub digital_center_hz: f32,
 }
 
 impl Default for RxState {
@@ -162,6 +165,7 @@ impl Default for RxState {
             eq_enabled:   false,
             eq_gains:     [0; 11],
             digital_mode: None,
+            digital_center_hz: 1500.0,
         }
     }
 }
@@ -718,6 +722,25 @@ impl App {
 
     pub fn rx_digital_mode(&self, rx: u8) -> Option<arion_core::DigitalMode> {
         self.rxs.get(rx as usize).and_then(|r| r.digital_mode)
+    }
+
+    pub fn rx_digital_center_hz(&self, rx: u8) -> f32 {
+        self.rxs
+            .get(rx as usize)
+            .map(|r| r.digital_center_hz)
+            .unwrap_or(1500.0)
+    }
+
+    pub fn set_rx_digital_center_hz(&mut self, rx: u8, hz: f32) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        if (view.digital_center_hz - hz).abs() < 0.5 {
+            return;
+        }
+        view.digital_center_hz = hz;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_digital_center_hz(rx, hz);
+        }
+        self.mark_dirty();
     }
 
     pub fn rx_digital_decodes(&self, rx: u8) -> Vec<arion_core::DigitalDecode> {
