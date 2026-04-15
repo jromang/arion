@@ -2755,6 +2755,39 @@ impl EguiView {
                     Sense::click_and_drag(),
                 );
 
+                // --- Signal browser: Ctrl+click on spectrum retunes
+                //     the active PSK decoder's carrier to the clicked
+                //     audio offset. USB / DIGU only; ignored on other
+                //     modes because the passband mapping isn't obvious.
+                if spec_resp.clicked()
+                    && ui.input(|i| i.modifiers.ctrl || i.modifiers.command)
+                {
+                    let rx_u8 = r as u8;
+                    let is_psk = matches!(
+                        self.app.rx_digital_mode(rx_u8),
+                        Some(arion_core::DigitalMode::Psk31)
+                            | Some(arion_core::DigitalMode::Psk63)
+                    );
+                    let rx_mode = self
+                        .app
+                        .rx(r)
+                        .map(|s| s.mode)
+                        .unwrap_or(arion_core::WdspMode::Usb);
+                    let is_usb = matches!(
+                        rx_mode,
+                        arion_core::WdspMode::Usb | arion_core::WdspMode::DigU
+                    );
+                    if let (true, true, Some(click)) =
+                        (is_psk, is_usb, spec_resp.interact_pointer_pos())
+                    {
+                        let frac = ((click.x - spec_rect.left()) / spec_rect.width())
+                            .clamp(0.0, 1.0);
+                        let rf = lo_hz + frac * (hi_hz - lo_hz);
+                        let audio_hz = (rf - center_hz as f32).clamp(100.0, 4000.0);
+                        self.app.set_rx_digital_center_hz(rx_u8, audio_hz);
+                    }
+                }
+
                 // --- Zoom via modifier+scroll ---
                 let is_over_spec = ui.ctx().pointer_hover_pos()
                     .is_some_and(|p| band_rect.contains(p));
