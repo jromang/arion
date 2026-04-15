@@ -24,6 +24,7 @@ eframe.workspace = true
 egui.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+directories.workspace = true
 
 # Pulled in with default features so the native backends (vulkan /
 # metal / dx12 / gles) get compiled. eframe only enables the `wgsl`

@@ -325,6 +325,7 @@ dependencies = [
  "arion-script",
  "arion-settings",
  "arion-web",
+ "directories",
  "eframe",
  "egui",
  "egui_code_editor",

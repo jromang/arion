@@ -98,6 +98,16 @@ impl SpectrumOverlay {
     }
 }
 
+/// One captured digital-mode decode + the local timestamp at which
+/// the egui frame first observed it. The Digital Decodes window
+/// uses the timestamp for its `Time` column and the footer "last
+/// X s ago" stat.
+#[derive(Clone, Debug)]
+struct DecodeRow {
+    received_at: std::time::SystemTime,
+    decode: arion_core::DigitalDecode,
+}
+
 pub struct EguiView {
     app: App,
     /// Per-RX waterfall texture cache. Indexed 0..MAX_RX.
@@ -108,7 +118,12 @@ pub struct EguiView {
     /// keep the Digital Decodes window populated across frames —
     /// Telemetry only carries decodes emitted during the last
     /// snapshot interval. Newest at the end.
-    digital_history: Vec<Vec<String>>,
+    digital_history: Vec<Vec<DecodeRow>>,
+    /// Per-RX filter substring (matched against the decode message).
+    digital_filter: Vec<String>,
+    /// Per-RX pause flag — when true, drain telemetry but don't add
+    /// to the ring (useful when the user is reading a busy slot).
+    digital_paused: Vec<bool>,
     /// Transient form-field state for the "Add memory" widget. Lives
     /// here (not in `App`) because it's tied to the egui form
     /// lifecycle and would be re-created from scratch by another
@@ -308,6 +323,8 @@ impl EguiView {
             waterfalls,
             overlays,
             digital_history: (0..MAX_RX).map(|_| Vec::new()).collect(),
+            digital_filter: (0..MAX_RX).map(|_| String::new()).collect(),
+            digital_paused: (0..MAX_RX).map(|_| false).collect(),
             view_states,
             passband_drags,
             display_modes,
@@ -1262,33 +1279,36 @@ impl EguiView {
         let mut open = true;
         let rx = self.app.active_rx() as u8;
         let current = self.app.rx_digital_mode(rx);
-        // Drain the latest telemetry decodes into the per-RX
-        // rolling history (Telemetry only carries decodes from the
-        // last ~40 ms snapshot interval, so without this ring they
-        // would flash on-screen and vanish).
+
+        // Drain telemetry decodes into the per-RX history ring
+        // (Telemetry only carries the last snapshot's decodes, so
+        // without this ring they would flash and vanish). Skipped
+        // when the user has hit Pause.
+        let paused = self.digital_paused[rx as usize];
         for d in self.app.rx_digital_decodes(rx) {
-            let line = if d.mode == arion_core::DigitalMode::Ft8 {
-                format!(
-                    "[ft8 {:+3.0} {:4.0}Hz dt={:+.1}] {}",
-                    d.snr_db, d.freq_hz, d.time_offset_s, d.text
-                )
-            } else {
-                format!("[{}] {}", d.mode.as_str(), d.text)
-            };
+            if paused {
+                continue;
+            }
             let hist = &mut self.digital_history[rx as usize];
-            if hist.len() >= 128 {
+            if hist.len() >= 256 {
                 hist.remove(0);
             }
-            hist.push(line);
+            hist.push(DecodeRow {
+                received_at: std::time::SystemTime::now(),
+                decode: d,
+            });
         }
         let history = self.digital_history[rx as usize].clone();
+        let filter = self.digital_filter[rx as usize].clone();
+        let filter_lc = filter.to_ascii_lowercase();
 
         egui::Window::new("Digital Decodes")
             .open(&mut open)
-            .default_width(420.0)
-            .default_height(320.0)
+            .default_width(640.0)
+            .default_height(380.0)
             .resizable(true)
             .show(ctx, |ui| {
+                // --- Mode picker + carrier slider ---
                 ui.horizontal(|ui| {
                     ui.label("Mode:");
                     let label = match current {
@@ -1317,13 +1337,12 @@ impl EguiView {
                                 }
                             }
                         });
-                });
-                if matches!(
-                    current,
-                    Some(arion_core::DigitalMode::Psk31) | Some(arion_core::DigitalMode::Psk63)
-                ) {
-                    let mut hz = self.app.rx_digital_center_hz(rx);
-                    ui.horizontal(|ui| {
+                    if matches!(
+                        current,
+                        Some(arion_core::DigitalMode::Psk31)
+                            | Some(arion_core::DigitalMode::Psk63)
+                    ) {
+                        let mut hz = self.app.rx_digital_center_hz(rx);
                         ui.label("Carrier:");
                         if ui
                             .add(egui::Slider::new(&mut hz, 300.0..=2700.0).suffix(" Hz"))
@@ -1331,28 +1350,86 @@ impl EguiView {
                         {
                             self.app.set_rx_digital_center_hz(rx, hz);
                         }
-                    });
-                }
-                ui.separator();
-                egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                    if history.is_empty() {
-                        let msg = match current {
-                            None => "(select a mode above to start decoding)",
-                            Some(arion_core::DigitalMode::Ft8) => {
-                                "(waiting for the next UTC 15-s slot)"
-                            }
-                            Some(arion_core::DigitalMode::Wspr) => {
-                                "(waiting for the next UTC 2-min slot)"
-                            }
-                            _ => "(decoder running — waiting for a signal)",
-                        };
-                        ui.weak(msg);
-                    } else {
-                        for line in &history {
-                            ui.monospace(line);
-                        }
                     }
                 });
+
+                // --- Toolbar: filter + Pause / Clear / Save ---
+                ui.horizontal(|ui| {
+                    ui.label("Filter:");
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.digital_filter[rx as usize])
+                            .hint_text("callsign or text…")
+                            .desired_width(180.0),
+                    );
+                    if resp.changed() { /* live filter */ }
+
+                    let mut paused_flag = self.digital_paused[rx as usize];
+                    if ui.toggle_value(&mut paused_flag, "Pause").clicked() {
+                        self.digital_paused[rx as usize] = paused_flag;
+                    }
+                    if ui.button("Clear").clicked() {
+                        self.digital_history[rx as usize].clear();
+                    }
+                    if ui.button("Save").clicked() {
+                        save_decodes_log(&history);
+                    }
+                });
+                ui.separator();
+
+                // --- Filtered view ---
+                let visible: Vec<&DecodeRow> = if filter_lc.is_empty() {
+                    history.iter().collect()
+                } else {
+                    history
+                        .iter()
+                        .filter(|r| {
+                            r.decode.text.to_ascii_lowercase().contains(&filter_lc)
+                        })
+                        .collect()
+                };
+
+                // --- Decode table ---
+                if visible.is_empty() {
+                    let msg = match current {
+                        None => "(select a mode above to start decoding)",
+                        Some(arion_core::DigitalMode::Ft8) => {
+                            "(waiting for the next UTC 15-s slot)"
+                        }
+                        Some(arion_core::DigitalMode::Wspr) => {
+                            "(waiting for the next UTC 2-min slot)"
+                        }
+                        _ if !filter.is_empty() => "(no decodes match the filter)",
+                        _ => "(decoder running — waiting for a signal)",
+                    };
+                    ui.weak(msg);
+                } else {
+                    let click_target = render_decode_table(ui, &visible);
+                    if let Some(freq_hz) = click_target {
+                        if matches!(
+                            current,
+                            Some(arion_core::DigitalMode::Psk31)
+                                | Some(arion_core::DigitalMode::Psk63)
+                                | Some(arion_core::DigitalMode::Ft8)
+                        ) {
+                            self.app.set_rx_digital_center_hz(rx, freq_hz);
+                        }
+                    }
+                }
+
+                // --- Footer stats ---
+                ui.separator();
+                let n = history.len();
+                let unique = unique_callsigns(&history);
+                let last_age = history
+                    .last()
+                    .and_then(|r| r.received_at.elapsed().ok())
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
+                ui.weak(format!(
+                    "{n} decodes  •  {unique} unique callsign{}  •  last {last_age}s ago",
+                    if unique == 1 { "" } else { "s" }
+                ));
+
             });
         if !open {
             self.app.set_window_open(WindowKind::Digital, false);
@@ -3909,5 +3986,176 @@ fn db_to_waterfall_color(db: f32, min_db: f32, max_db: f32, palette: WaterfallPa
             ];
             lerp_stops(STOPS, t)
         }
+    }
+}
+
+// --- Digital decode table helpers ------------------------------------------
+
+/// Render a sortable-feeling decode table (egui::Grid). Returns
+/// `Some(freq_hz)` when the user clicks a row; the caller decides
+/// whether that maps to a `set_rx_digital_center_hz` dispatch.
+fn render_decode_table(ui: &mut egui::Ui, rows: &[&DecodeRow]) -> Option<f32> {
+    let mut clicked: Option<f32> = None;
+    egui::ScrollArea::vertical()
+        .stick_to_bottom(true)
+        .max_height(280.0)
+        .show(ui, |ui| {
+            egui::Grid::new("digital_decode_grid")
+                .striped(true)
+                .num_columns(6)
+                .spacing(egui::vec2(8.0, 2.0))
+                .show(ui, |ui| {
+                    ui.strong("Time");
+                    ui.strong("Mode");
+                    ui.strong("SNR");
+                    ui.strong("Freq");
+                    ui.strong("Δt");
+                    ui.strong("Message");
+                    ui.end_row();
+                    for r in rows {
+                        let d = &r.decode;
+                        let is_cq = d.text.trim_start().starts_with("CQ ");
+                        let color = if is_cq {
+                            egui::Color32::from_rgb(120, 230, 120)
+                        } else {
+                            ui.visuals().text_color()
+                        };
+                        let strong_if_cq = |t: String| -> egui::RichText {
+                            let r = egui::RichText::new(t).color(color);
+                            if is_cq { r.strong() } else { r }
+                        };
+                        ui.label(strong_if_cq(format_local_time(r.received_at)));
+                        ui.label(strong_if_cq(d.mode.as_str().to_string()));
+                        ui.label(strong_if_cq(format!("{:+.0}", d.snr_db)));
+                        let freq_resp = ui
+                            .add(
+                                egui::Label::new(strong_if_cq(format!(
+                                    "{:.0}",
+                                    d.freq_hz
+                                )))
+                                .sense(egui::Sense::click()),
+                            );
+                        if freq_resp.clicked() && d.freq_hz > 0.0 {
+                            clicked = Some(d.freq_hz);
+                        }
+                        ui.label(strong_if_cq(if d.time_offset_s == 0.0 {
+                            "—".into()
+                        } else {
+                            format!("{:+.1}", d.time_offset_s)
+                        }));
+                        ui.label(strong_if_cq(d.text.clone()));
+                        ui.end_row();
+                    }
+                });
+        });
+    clicked
+}
+
+fn format_local_time(t: std::time::SystemTime) -> String {
+    use std::time::UNIX_EPOCH;
+    let secs = t
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let h = (secs / 3600) % 24;
+    let m = (secs / 60) % 60;
+    let s = secs % 60;
+    format!("{h:02}:{m:02}:{s:02}")
+}
+
+fn unique_callsigns(history: &[DecodeRow]) -> usize {
+    use std::collections::HashSet;
+    let mut s = HashSet::new();
+    for r in history {
+        // First whitespace-separated token, skipping a leading "CQ".
+        let mut iter = r.decode.text.split_whitespace();
+        let first = iter.next().unwrap_or("");
+        let token = if first == "CQ" {
+            iter.next().unwrap_or(first)
+        } else {
+            first
+        };
+        if token.chars().any(|c| c.is_ascii_digit())
+            && token.chars().any(|c| c.is_ascii_alphabetic())
+        {
+            s.insert(token.to_string());
+        }
+    }
+    s.len()
+}
+
+/// Append the supplied decode rows to
+/// `<cache>/arion/decodes-YYYYMMDD.log` as one tab-separated line
+/// per row. Silent failure (UI button has no feedback channel
+/// today) — the cache dir lookup mirrors what arion-settings does
+/// for its own files.
+fn save_decodes_log(rows: &[DecodeRow]) {
+    use std::io::Write;
+    let Some(dirs) = directories::ProjectDirs::from("", "", "arion") else {
+        tracing::warn!("digital save: no XDG cache dir available");
+        return;
+    };
+    let cache = dirs.cache_dir();
+    if let Err(e) = std::fs::create_dir_all(cache) {
+        tracing::warn!("digital save: mkdir {}: {}", cache.display(), e);
+        return;
+    }
+    let day = {
+        let secs = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let days = secs / 86_400;
+        // 1970-01-01 + days, naive Y/M/D without the chrono dep —
+        // good enough for a daily file-rotation key.
+        let mut y = 1970_i64;
+        let mut d = days as i64;
+        loop {
+            let leap =
+                (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+            let yd = if leap { 366 } else { 365 };
+            if d < yd {
+                break;
+            }
+            d -= yd;
+            y += 1;
+        }
+        let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+        let dim: [i64; 12] = [
+            31,
+            if leap { 29 } else { 28 },
+            31, 30, 31, 30, 31, 31, 30, 31, 30, 31,
+        ];
+        let mut m = 0_usize;
+        while m < 12 && d >= dim[m] {
+            d -= dim[m];
+            m += 1;
+        }
+        format!("{:04}{:02}{:02}", y, m + 1, d + 1)
+    };
+    let path = cache.join(format!("decodes-{day}.log"));
+    let f = match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("digital save: open {}: {}", path.display(), e);
+            return;
+        }
+    };
+    let mut w = std::io::BufWriter::new(f);
+    for r in rows {
+        let _ = writeln!(
+            w,
+            "{}\t{}\t{:+.1}\t{:.0}\t{:+.1}\t{}",
+            format_local_time(r.received_at),
+            r.decode.mode.as_str(),
+            r.decode.snr_db,
+            r.decode.freq_hz,
+            r.decode.time_offset_s,
+            r.decode.text
+        );
     }
 }
