@@ -76,6 +76,8 @@ pub struct RxState {
     pub volume:       f32,
     pub nr3:          bool,
     pub nr4:          bool,
+    pub anr:          bool,
+    pub emnr:         bool,
     pub filter_lo:    f64,
     pub filter_hi:    f64,
     // --- DSP toggles (UI + persist, DSP binding in E) ---
@@ -108,6 +110,8 @@ impl Default for RxState {
             volume:       0.25,
             nr3:          false,
             nr4:          false,
+            anr:          false,
+            emnr:         false,
             filter_lo:    lo,
             filter_hi:    hi,
             agc_mode:     AgcPreset::Med,
@@ -497,6 +501,8 @@ impl App {
                 volume:       serde_rx.volume,
                 nr3:          serde_rx.nr3,
                 nr4:          serde_rx.nr4,
+                anr:          serde_rx.anr,
+                emnr:         serde_rx.emnr,
                 filter_lo:    flo,
                 filter_hi:    fhi,
                 ..RxState::default()
@@ -696,6 +702,30 @@ impl App {
         self.mark_dirty();
     }
 
+    pub fn set_rx_anr(&mut self, rx: u8, on: bool) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        if view.anr == on {
+            return;
+        }
+        view.anr = on;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_anr(rx, on);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_emnr(&mut self, rx: u8, on: bool) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        if view.emnr == on {
+            return;
+        }
+        view.emnr = on;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_emnr(rx, on);
+        }
+        self.mark_dirty();
+    }
+
     pub fn set_rx_agc(&mut self, rx: u8, agc: AgcPreset) {
         let Some(view) = self.rxs.get_mut(rx as usize) else { return };
         view.agc_mode = agc;
@@ -727,18 +757,22 @@ impl App {
         let Some(view) = self.rxs.get_mut(rx as usize) else { return };
         let new_val;
         match flag {
-            "nb"  => { view.nb  = !view.nb;  new_val = view.nb; }
-            "nb2" => { view.nb2 = !view.nb2; new_val = view.nb2; }
-            "anf" => { view.anf = !view.anf; new_val = view.anf; }
-            "bin" => { view.bin = !view.bin; new_val = view.bin; }
-            "tnf" => { view.tnf = !view.tnf; new_val = view.tnf; }
+            "nb"   => { view.nb   = !view.nb;   new_val = view.nb; }
+            "nb2"  => { view.nb2  = !view.nb2;  new_val = view.nb2; }
+            "anf"  => { view.anf  = !view.anf;  new_val = view.anf; }
+            "bin"  => { view.bin  = !view.bin;  new_val = view.bin; }
+            "tnf"  => { view.tnf  = !view.tnf;  new_val = view.tnf; }
+            "anr"  => { view.anr  = !view.anr;  new_val = view.anr; }
+            "emnr" => { view.emnr = !view.emnr; new_val = view.emnr; }
             _ => return,
         }
         // Push to live radio DSP where bindings exist
         if let Some(r) = &self.radio {
             match flag {
-                "anf" => { let _ = r.set_rx_anf(rx, new_val); }
-                "bin" => { let _ = r.set_rx_binaural(rx, new_val); }
+                "anf"  => { let _ = r.set_rx_anf(rx, new_val); }
+                "bin"  => { let _ = r.set_rx_binaural(rx, new_val); }
+                "anr"  => { let _ = r.set_rx_anr(rx, new_val); }
+                "emnr" => { let _ = r.set_rx_emnr(rx, new_val); }
                 // NB/NB2/TNF: upstream WDSP uses low-level ANB/NOB
                 // structures, not simple SetRXA* calls. Binding
                 // deferred until the full NB pipeline is understood.
@@ -999,6 +1033,8 @@ impl App {
                 volume:       view.volume,
                 nr3:          view.nr3,
                 nr4:          view.nr4,
+                anr:          view.anr,
+                emnr:         view.emnr,
             };
         }
         s.band_stacks  = self.band_stack.to_settings();

@@ -42,6 +42,10 @@ pub struct RxSnapshot {
     pub anf:          bool,
     pub bin:          bool,
     pub tnf:          bool,
+    pub nr3:          bool,
+    pub nr4:          bool,
+    pub anr:          bool,
+    pub emnr:         bool,
 }
 
 impl StateSnapshot {
@@ -64,6 +68,10 @@ impl StateSnapshot {
                     anf:          r.anf,
                     bin:          r.bin,
                     tnf:          r.tnf,
+                    nr3:          r.nr3,
+                    nr4:          r.nr4,
+                    anr:          r.anr,
+                    emnr:         r.emnr,
                 }
             })
             .collect();
@@ -107,6 +115,8 @@ pub enum Action {
     SetRxRit       { rx: u8, hz: i32 },
     SetRxNr3       { rx: u8, on: bool },
     SetRxNr4       { rx: u8, on: bool },
+    SetRxAnr       { rx: u8, on: bool },
+    SetRxEmnr      { rx: u8, on: bool },
     SetRxAgc       { rx: u8, agc: String },
     SetRxFilter    { rx: u8, low: f64, high: f64 },
     SetRxFilterPreset { rx: u8, preset: String },
@@ -150,6 +160,8 @@ impl Action {
             Action::SetRxRit { rx, hz } => app.set_rx_rit(rx, hz),
             Action::SetRxNr3 { rx, on } => app.set_rx_nr3(rx, on),
             Action::SetRxNr4 { rx, on } => app.set_rx_nr4(rx, on),
+            Action::SetRxAnr { rx, on } => app.set_rx_anr(rx, on),
+            Action::SetRxEmnr { rx, on } => app.set_rx_emnr(rx, on),
             Action::SetRxAgc { rx, agc } => {
                 if let Some(a) = agc_from_label(&agc) {
                     app.set_rx_agc(rx, a);

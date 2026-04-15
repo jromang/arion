@@ -165,6 +165,17 @@ unsafe extern "C" {
     /// Turn the spectral noise blanker on (`1`) or off (`0`).
     pub fn SetRXASNBARun(channel: c_int, run: c_int);
 
+    // --- EMNR (Enhanced Spectral Noise Reduction) -----------------------
+
+    /// Toggle EMNR (Thetis-branded "NR2"). Runs the `emnr` module
+    /// that was wired into the RXA pipeline at channel creation.
+    pub fn SetRXAEMNRRun(channel: c_int, run: c_int);
+
+    // --- ANR (Adaptive Noise Reduction) ---------------------------------
+
+    /// Toggle LMS adaptive noise reduction (Thetis-branded "NR").
+    pub fn SetRXAANRRun(channel: c_int, run: c_int);
+
     // --- NR3 (RNNoise) --------------------------------------------------
     //
     // These are only meaningful when `wdsp-sys` was built against a

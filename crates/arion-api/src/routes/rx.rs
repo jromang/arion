@@ -40,6 +40,8 @@ pub struct RxPatch {
     pub rit_hz:       Option<i32>,
     pub nr3:          Option<bool>,
     pub nr4:          Option<bool>,
+    pub anr:          Option<bool>,
+    pub emnr:         Option<bool>,
     pub agc:          Option<String>,
 }
 
@@ -60,6 +62,8 @@ pub async fn patch_rx(
     if let Some(hz) = body.rit_hz { send(Action::SetRxRit { rx, hz })?; }
     if let Some(on) = body.nr3 { send(Action::SetRxNr3 { rx, on })?; }
     if let Some(on) = body.nr4 { send(Action::SetRxNr4 { rx, on })?; }
+    if let Some(on) = body.anr { send(Action::SetRxAnr { rx, on })?; }
+    if let Some(on) = body.emnr { send(Action::SetRxEmnr { rx, on })?; }
     if let Some(agc) = body.agc { send(Action::SetRxAgc { rx, agc })?; }
     Ok(Json(json!({ "ok": true })))
 }

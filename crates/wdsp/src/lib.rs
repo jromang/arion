@@ -347,6 +347,17 @@ impl Channel {
         unsafe { sys::SetRXASNBARun(self.id, i32::from(enabled)); }
     }
 
+    /// Enable or disable EMNR (enhanced spectral noise reduction,
+    /// a.k.a. "NR2" in Thetis).
+    pub fn set_emnr_enabled(&mut self, enabled: bool) {
+        unsafe { sys::SetRXAEMNRRun(self.id, i32::from(enabled)); }
+    }
+
+    /// Enable or disable the LMS adaptive noise reducer (Thetis "NR").
+    pub fn set_anr_enabled(&mut self, enabled: bool) {
+        unsafe { sys::SetRXAANRRun(self.id, i32::from(enabled)); }
+    }
+
     /// Enable or disable binaural (true stereo) audio output.
     pub fn set_binaural(&mut self, enabled: bool) {
         unsafe { sys::SetRXAPanelBinaural(self.id, i32::from(enabled)); }

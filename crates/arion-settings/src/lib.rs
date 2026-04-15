@@ -301,6 +301,10 @@ pub struct RxSettings {
     pub volume:       f32,
     pub nr3:          bool,
     pub nr4:          bool,
+    #[serde(default)]
+    pub anr:          bool,
+    #[serde(default)]
+    pub emnr:         bool,
 }
 
 impl Default for RxSettings {
@@ -312,6 +316,8 @@ impl Default for RxSettings {
             volume:       0.25,
             nr3:          false,
             nr4:          false,
+            anr:          false,
+            emnr:         false,
         }
     }
 }

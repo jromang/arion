@@ -26,6 +26,7 @@ fn fresh_ctx() -> (
                 volume:       0.5,
                 s_meter_db:   -90.0,
                 nb: false, nb2: false, anf: false, bin: false, tnf: false,
+                nr3: false, nr4: false, anr: false, emnr: false,
             },
             arion_app::protocol::RxSnapshot {
                 enabled:      false,
@@ -34,6 +35,7 @@ fn fresh_ctx() -> (
                 volume:       0.5,
                 s_meter_db:   -140.0,
                 nb: false, nb2: false, anf: false, bin: false, tnf: false,
+                nr3: false, nr4: false, anr: false, emnr: false,
             },
         ],
         memories: vec![],

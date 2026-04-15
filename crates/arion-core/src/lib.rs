@@ -217,6 +217,8 @@ enum DspCommand {
     SetRxEqBands { rx: u8, gains: [i32; 11] },
     SetRxAnf { rx: u8, enabled: bool },
     SetRxSnba { rx: u8, enabled: bool },
+    SetRxEmnr { rx: u8, enabled: bool },
+    SetRxAnr  { rx: u8, enabled: bool },
     SetRxBinaural { rx: u8, enabled: bool },
 }
 
@@ -485,6 +487,16 @@ impl Radio {
 
     pub fn set_rx_snba(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
         self.commands.send(DspCommand::SetRxSnba { rx, enabled })?;
+        Ok(())
+    }
+
+    pub fn set_rx_emnr(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxEmnr { rx, enabled })?;
+        Ok(())
+    }
+
+    pub fn set_rx_anr(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxAnr { rx, enabled })?;
         Ok(())
     }
 
@@ -802,6 +814,20 @@ fn dsp_loop(
                     if r < num_rx {
                         tracing::info!(rx, enabled, "DSP: SNBA toggle");
                         channels[r].set_snba_enabled(enabled);
+                    }
+                }
+                DspCommand::SetRxEmnr { rx, enabled } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        tracing::info!(rx, enabled, "DSP: EMNR toggle");
+                        channels[r].set_emnr_enabled(enabled);
+                    }
+                }
+                DspCommand::SetRxAnr { rx, enabled } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        tracing::info!(rx, enabled, "DSP: ANR toggle");
+                        channels[r].set_anr_enabled(enabled);
                     }
                 }
                 DspCommand::SetRxBinaural { rx, enabled } => {

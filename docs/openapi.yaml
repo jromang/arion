@@ -1,0 +1,574 @@
+openapi: 3.1.0
+info:
+  title: Arion REST API
+  version: "1.0.0"
+  description: |
+    HTTP/JSON control surface for the Arion SDR application.
+    See docs/API.md for the prose reference.
+  license:
+    name: GPL-3.0-or-later
+servers:
+  - url: http://127.0.0.1:8081/api/v1
+    description: Default loopback binding.
+
+tags:
+  - name: instance
+  - name: radio
+  - name: rx
+  - name: bands
+  - name: memories
+  - name: midi
+  - name: services
+  - name: scripting
+  - name: observability
+
+paths:
+  /instance:
+    get:
+      tags: [instance]
+      summary: Instance information
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Instance" }
+
+  /radio:
+    get:
+      tags: [radio]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RadioStatus" }
+  /radio/connect:
+    post:
+      tags: [radio]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                ip: { type: string, example: "192.168.1.40" }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+  /radio/disconnect:
+    post:
+      tags: [radio]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+
+  /rx:
+    get:
+      tags: [rx]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  num_rx:    { type: integer }
+                  active_rx: { type: integer }
+                  rx:
+                    type: array
+                    items: { $ref: "#/components/schemas/RxSnapshot" }
+  /rx/{idx}:
+    parameters:
+      - $ref: "#/components/parameters/RxIdx"
+    get:
+      tags: [rx]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/RxSnapshot" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    patch:
+      tags: [rx]
+      description: Partial update — only fields present are applied.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/RxPatch" }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+        "400": { $ref: "#/components/responses/BadRequest" }
+        "404": { $ref: "#/components/responses/NotFound" }
+  /rx/{idx}/tune:
+    parameters:
+      - $ref: "#/components/parameters/RxIdx"
+    post:
+      tags: [rx]
+      description: Non-idempotent relative frequency nudge.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [delta_hz]
+              properties:
+                delta_hz: { type: integer, description: "Signed Hz offset." }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+  /rx/{idx}/filter:
+    parameters:
+      - $ref: "#/components/parameters/RxIdx"
+    patch:
+      tags: [rx]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                low:  { type: number }
+                high: { type: number }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+  /rx/{idx}/filter/preset:
+    parameters:
+      - $ref: "#/components/parameters/RxIdx"
+    post:
+      tags: [rx]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [preset]
+              properties:
+                preset:
+                  type: string
+                  enum: [F6000, F4000, F2700, F2400, F1800, F1000, F600, F400, F250, F100]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+  /rx/{idx}/eq:
+    parameters:
+      - $ref: "#/components/parameters/RxIdx"
+    patch:
+      tags: [rx]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [gains]
+              properties:
+                gains:
+                  type: array
+                  minItems: 11
+                  maxItems: 11
+                  items: { type: integer }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+  /active-rx:
+    post:
+      tags: [rx]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [rx]
+              properties:
+                rx: { type: integer, minimum: 0 }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+
+  /bands:
+    get:
+      tags: [bands]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bands: { type: array, items: { type: string } }
+  /bands/{band}:
+    parameters:
+      - in: path
+        name: band
+        required: true
+        schema:
+          type: string
+          enum: [M160, M80, M60, M40, M30, M20, M17, M15, M12, M10, M6]
+    post:
+      tags: [bands]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+
+  /memories:
+    get:
+      tags: [memories]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  memories:
+                    type: array
+                    items: { $ref: "#/components/schemas/MemorySnapshot" }
+    post:
+      tags: [memories]
+      description: Save the current RX VFO + mode as a new memory.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [rx, name]
+              properties:
+                rx:   { type: integer }
+                name: { type: string }
+                tag:  { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+  /memories/{idx}:
+    parameters:
+      - in: path
+        name: idx
+        required: true
+        schema: { type: integer }
+    get:
+      tags: [memories]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/MemorySnapshot" }
+        "404": { $ref: "#/components/responses/NotFound" }
+    put:
+      tags: [memories]
+      description: Full replacement.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [name, frequency_hz, mode]
+              properties:
+                name:         { type: string }
+                tag:          { type: string }
+                frequency_hz: { type: integer }
+                mode:         { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+    delete:
+      tags: [memories]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+  /memories/{idx}/load:
+    parameters:
+      - in: path
+        name: idx
+        required: true
+        schema: { type: integer }
+    post:
+      tags: [memories]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+
+  /midi:
+    get:
+      tags: [midi]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled:           { type: boolean }
+                  available_devices: { type: array, items: { type: string } }
+    patch:
+      tags: [midi]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                enabled:     { type: boolean }
+                device_name: { type: string }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+  /midi/bindings:
+    get:
+      tags: [midi]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  bindings:
+                    type: array
+                    items: { $ref: "#/components/schemas/MidiBinding" }
+    post:
+      tags: [midi]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MidiBinding" }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+  /midi/bindings/{idx}:
+    parameters:
+      - in: path
+        name: idx
+        required: true
+        schema: { type: integer }
+    put:
+      tags: [midi]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/MidiBinding" }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+    delete:
+      tags: [midi]
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+  /midi/last-event:
+    get:
+      tags: [midi]
+      responses:
+        "200":
+          description: Most recent MIDI event (may be null).
+          content:
+            application/json: {}
+
+  /rigctld:
+    get:
+      tags: [services]
+      responses:
+        "200":
+          description: OK
+    patch:
+      tags: [services]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                enabled: { type: boolean }
+                port:    { type: integer, minimum: 1, maximum: 65535 }
+      responses:
+        "200": { $ref: "#/components/responses/Ok" }
+
+  /scripts/eval:
+    post:
+      tags: [scripting]
+      description: |
+        Evaluate a Rhai fragment against the live App. Requires the
+        `api_allow_scripts` setting — returns 403 otherwise.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [source]
+              properties:
+                source: { type: string }
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  output: { type: string }
+                  error:  { type: [string, "null"] }
+        "403": { $ref: "#/components/responses/Disabled" }
+
+  /telemetry:
+    get:
+      tags: [observability]
+      responses:
+        "200":
+          description: Current state + DSP telemetry in JSON.
+          content:
+            application/json: {}
+  /metrics:
+    get:
+      tags: [observability]
+      description: Prometheus text exposition format.
+      responses:
+        "200":
+          description: text/plain; version=0.0.4
+          content:
+            text/plain:
+              schema: { type: string }
+
+components:
+  parameters:
+    RxIdx:
+      in: path
+      name: idx
+      required: true
+      schema: { type: integer, minimum: 0 }
+
+  responses:
+    Ok:
+      description: Command accepted.
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              ok: { type: boolean, const: true }
+    BadRequest:
+      description: Validation error.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    NotFound:
+      description: Resource not found.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Problem" }
+    Disabled:
+      description: Feature is disabled.
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/Problem" }
+
+  schemas:
+    Instance:
+      type: object
+      properties:
+        name:              { type: string, const: "arion" }
+        version:           { type: string }
+        uptime_seconds:    { type: integer }
+        num_rx:            { type: integer }
+        active_rx:         { type: integer }
+        radio_connected:   { type: boolean }
+        features:
+          type: object
+          properties:
+            scripts_enabled: { type: boolean }
+            midi_enabled:    { type: boolean }
+    RadioStatus:
+      type: object
+      properties:
+        connected:              { type: boolean }
+        num_rx:                 { type: integer }
+        last_telemetry_age_ms:  { type: integer }
+    RxSnapshot:
+      type: object
+      properties:
+        enabled:      { type: boolean }
+        frequency_hz: { type: integer }
+        mode:         { type: string }
+        volume:       { type: number }
+        s_meter_db:   { type: number }
+        nb:           { type: boolean }
+        nb2:          { type: boolean }
+        anf:          { type: boolean }
+        bin:          { type: boolean }
+        tnf:          { type: boolean }
+    RxPatch:
+      type: object
+      additionalProperties: false
+      properties:
+        frequency_hz: { type: integer }
+        mode:         { type: string, enum: [USB, LSB, DSB, CWU, CWL, AM, FM, DIGU, DIGL, SAM, DRM, SPEC] }
+        volume:       { type: number }
+        muted:        { type: boolean }
+        locked:       { type: boolean }
+        rit_hz:       { type: integer }
+        nr3:          { type: boolean }
+        nr4:          { type: boolean }
+        agc:          { type: string, enum: [off, long, slow, med, fast] }
+    MemorySnapshot:
+      type: object
+      properties:
+        name:         { type: string }
+        tag:          { type: string }
+        frequency_hz: { type: integer }
+        mode:         { type: string }
+    MidiBinding:
+      type: object
+      properties:
+        trigger:
+          oneOf:
+            - type: object
+              properties:
+                kind:       { type: string, const: "cc" }
+                channel:    { type: integer }
+                controller: { type: integer }
+            - type: object
+              properties:
+                kind:    { type: string, const: "note" }
+                channel: { type: integer }
+                note:    { type: integer }
+        scale:
+          oneOf:
+            - type: object
+              properties:
+                kind: { type: string, const: "absolute" }
+                min:  { type: number }
+                max:  { type: number }
+            - type: object
+              properties:
+                kind: { type: string, const: "relative" }
+                step: { type: number }
+            - type: object
+              properties:
+                kind: { type: string, const: "trigger" }
+        target:
+          type: object
+          description: "Tagged enum — see arion-midi::Target for exhaustive shape."
+    Problem:
+      type: object
+      description: RFC 7807 flavour.
+      properties:
+        type:   { type: string }
+        title:  { type: string }
+        status: { type: integer }
+        detail: { type: string }
+        code:   { type: string }
