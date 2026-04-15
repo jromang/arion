@@ -1190,6 +1190,13 @@ impl App {
                 self.telemetry  = Some(r.telemetry());
                 self.radio      = Some(r);
                 self.last_error = None;
+                // Freshly-opened WDSP channels only know what RadioConfig
+                // carried (freq / mode / volume / enabled). Every other
+                // persisted RxState field — NR variants, squelch, APF,
+                // AGC fine knobs, FM / CTCSS, SAM submode, TNF notches —
+                // has to be pushed explicitly, otherwise it stays
+                // hidden in arion.toml until the user edits the value.
+                self.reapply_rx_state();
                 // Connect snapshots the form fields the user just
                 // committed so a crash mid-session keeps the most
                 // recent intent on disk.
@@ -1198,6 +1205,62 @@ impl App {
             Err(e) => {
                 self.last_error = Some(format!("{e:#}"));
             }
+        }
+    }
+
+    /// Force-resync every persisted RX setting to the live radio. Called
+    /// automatically after a successful [`connect`], and exposed publicly
+    /// so scripts / tests can trigger a resync without reconnecting.
+    pub fn reapply_rx_state(&mut self) {
+        let Some(radio) = self.radio.as_ref() else { return };
+        for (rx_idx, view) in self.rxs.iter().enumerate().take(self.num_rx as usize) {
+            let rx = rx_idx as u8;
+            // Noise reduction variants (4 independent chains).
+            let _ = radio.set_rx_nr3(rx, view.nr3);
+            let _ = radio.set_rx_nr4(rx, view.nr4);
+            let _ = radio.set_rx_anr(rx, view.anr);
+            let _ = radio.set_rx_emnr(rx, view.emnr);
+            // Squelch (mode-dispatched inside the DSP loop).
+            let _ = radio.set_rx_squelch_run(rx, view.squelch);
+            let _ = radio.set_rx_squelch_threshold(rx, view.squelch_db as f64);
+            // APF — CW audio peak filter.
+            let _ = radio.set_rx_apf_run(rx, view.apf);
+            let _ = radio.set_rx_apf_freq(rx, view.apf_freq_hz as f64);
+            let _ = radio.set_rx_apf_bandwidth(rx, view.apf_bw_hz as f64);
+            let _ = radio.set_rx_apf_gain(rx, view.apf_gain_db as f64);
+            // AGC fine controls.
+            let _ = radio.set_rx_agc_top(rx, view.agc_top_dbm as f64);
+            let _ = radio.set_rx_agc_hang_level(rx, view.agc_hang_level as f64);
+            let _ = radio.set_rx_agc_decay(rx, view.agc_decay_ms);
+            let _ = radio.set_rx_agc_fixed_gain(rx, view.agc_fixed_gain as f64);
+            // FM + CTCSS.
+            let _ = radio.set_rx_fm_deviation(rx, view.fm_deviation_hz as f64);
+            let _ = radio.set_rx_ctcss_run(rx, view.ctcss_on);
+            let _ = radio.set_rx_ctcss_freq(rx, view.ctcss_hz as f64);
+            // SAM sub-mode.
+            let _ = radio.set_rx_sam_submode(rx, view.sam_submode);
+            // TNF: enable the notch master flag and push each notch. Notch
+            // indices must be contiguous from 0 — iterate the persisted
+            // list in order.
+            let _ = radio.set_rx_tnf_enabled(rx, view.tnf);
+            for (n_idx, notch) in view.tnf_notches.iter().enumerate() {
+                let _ = radio.add_rx_tnf_notch(
+                    rx,
+                    n_idx as u32,
+                    notch.freq_hz,
+                    notch.width_hz,
+                    notch.active,
+                );
+            }
+            // Boolean flag toggles not covered by RxConfig.
+            if view.nb  { let _ = radio.set_rx_nb(rx, true); }
+            if view.nb2 { let _ = radio.set_rx_nb2(rx, true); }
+            if view.anf { let _ = radio.set_rx_anf(rx, true); }
+            if view.bin { let _ = radio.set_rx_binaural(rx, true); }
+            // Passband filter + EQ.
+            let _ = radio.set_rx_passband(rx, view.filter_lo, view.filter_hi);
+            let _ = radio.set_rx_eq_run(rx, view.eq_enabled);
+            let _ = radio.set_rx_eq_bands(rx, view.eq_gains);
         }
     }
 
