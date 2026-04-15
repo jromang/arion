@@ -77,7 +77,9 @@ namesake, Arion transforms waves into music — radio waves into audio.
   - **REST API** (crate `arion-api`, `/api/v1/*`) — JSON over
     HTTP, Prometheus `/metrics`, OpenAPI 3.1 spec, optional
     Rhai `/scripts/eval` endpoint
-  - **arion-web** — WebSocket bridge to a browser frontend
+  - **arion-web** — WebSocket bridge + WebRTC audio to a browser
+    frontend (available as a separate binary on Linux / macOS since
+    v0.0.5 ; no longer linked into the `arion` desktop)
 - **Rhai scripting** — built-in REPL with syntax highlighting;
   every UI action is scriptable
 - **Two frontends** on one shared core (MVVM architecture):
@@ -265,10 +267,19 @@ recall, …
   received event) and hot-swap binding edits (no listener restart)
 - **Persistence** — `~/.config/arion/midi.toml`
 
-### arion-web (WebSocket + WebRTC audio — prototype)
+### arion-web (WebSocket + WebRTC audio — prototype, standalone)
 
-Browser frontend with live state push and audio streaming.
-Enabled via `ARION_WEB_LISTEN=<addr>`. Design may evolve.
+Browser frontend with live state push and audio streaming. Since
+v0.0.5 this is **not** linked into the desktop `arion` binary
+(libopus pulls cmake, which doesn't cross-compile to mingw). Run
+it as a separate process on Linux / macOS :
+
+```sh
+ARION_WEB_LISTEN=127.0.0.1:8080 cargo run -p arion-web-bin --release
+```
+
+Point `arion` at the same radio (shared CAT / settings) to use
+both UIs side-by-side.
 
 ## Credits
 

@@ -25,14 +25,11 @@ anyhow.workspace = true
 tracing.workspace = true
 directories.workspace = true
 
-# arion-web pulls in `opus` (audiopus_sys → cmake libopus), which does
-# not cross-compile cleanly to x86_64-pc-windows-gnu (cmake leaks
-# MSVC-specific flags into mingw). The WebSocket / WebRTC bridge is
-# therefore Linux-only for now; a Windows equivalent needs a
-# cmake-free opus bundle. Gated via [target.cfg] so the workspace
-# still builds on all hosts without a feature flag.
-[target.'cfg(not(target_os = "windows"))'.dependencies]
-arion-web.workspace = true
+# arion-web is deliberately NOT pulled in here : it drags libopus
+# (cmake) into the dep chain, which breaks mingw cross-compile.
+# The crate remains in the workspace and is exposed as a separate
+# binary (`cargo run -p arion-web-bin`) for anyone who needs the
+# headless WebSocket / WebRTC bridge on Linux / macOS.
 
 # Pulled in with default features so the native backends (vulkan /
 # metal / dx12 / gles) get compiled. eframe only enables the `wgsl`
