@@ -104,6 +104,11 @@ pub struct EguiView {
     waterfalls: Vec<Waterfall>,
     /// Per-RX spectrum overlay (peak hold + averaging). Indexed 0..MAX_RX.
     overlays: Vec<SpectrumOverlay>,
+    /// Bounded history of digital decodes per RX, so the UI can
+    /// keep the Digital Decodes window populated across frames —
+    /// Telemetry only carries decodes emitted during the last
+    /// snapshot interval. Newest at the end.
+    digital_history: Vec<Vec<String>>,
     /// Transient form-field state for the "Add memory" widget. Lives
     /// here (not in `App`) because it's tied to the egui form
     /// lifecycle and would be re-created from scratch by another
@@ -302,6 +307,7 @@ impl EguiView {
             app,
             waterfalls,
             overlays,
+            digital_history: (0..MAX_RX).map(|_| Vec::new()).collect(),
             view_states,
             passband_drags,
             display_modes,
@@ -1256,7 +1262,26 @@ impl EguiView {
         let mut open = true;
         let rx = self.app.active_rx() as u8;
         let current = self.app.rx_digital_mode(rx);
-        let decodes = self.app.rx_digital_decodes(rx);
+        // Drain the latest telemetry decodes into the per-RX
+        // rolling history (Telemetry only carries decodes from the
+        // last ~40 ms snapshot interval, so without this ring they
+        // would flash on-screen and vanish).
+        for d in self.app.rx_digital_decodes(rx) {
+            let line = if d.mode == arion_core::DigitalMode::Ft8 {
+                format!(
+                    "[ft8 {:+3.0} {:4.0}Hz dt={:+.1}] {}",
+                    d.snr_db, d.freq_hz, d.time_offset_s, d.text
+                )
+            } else {
+                format!("[{}] {}", d.mode.as_str(), d.text)
+            };
+            let hist = &mut self.digital_history[rx as usize];
+            if hist.len() >= 128 {
+                hist.remove(0);
+            }
+            hist.push(line);
+        }
+        let history = self.digital_history[rx as usize].clone();
 
         egui::Window::new("Digital Decodes")
             .open(&mut open)
@@ -1310,21 +1335,20 @@ impl EguiView {
                 }
                 ui.separator();
                 egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui| {
-                    if decodes.is_empty() {
-                        ui.weak("(no decodes yet — decoder pipeline pending)");
+                    if history.is_empty() {
+                        let msg = match current {
+                            None => "(select a mode above to start decoding)",
+                            Some(arion_core::DigitalMode::Ft8) => {
+                                "(waiting for the next UTC 15-s slot)"
+                            }
+                            Some(arion_core::DigitalMode::Wspr) => {
+                                "(waiting for the next UTC 2-min slot)"
+                            }
+                            _ => "(decoder running — waiting for a signal)",
+                        };
+                        ui.weak(msg);
                     } else {
-                        for d in decodes {
-                            // FT8 labels carry useful freq/time/score
-                            // metadata; everything else keeps the
-                            // short 1-line form.
-                            let line = if d.mode == arion_core::DigitalMode::Ft8 {
-                                format!(
-                                    "[ft8 {:+3.0} {:4.0}Hz dt={:+.1}] {}",
-                                    d.snr_db, d.freq_hz, d.time_offset_s, d.text
-                                )
-                            } else {
-                                format!("[{}] {}", d.mode.as_str(), d.text)
-                            };
+                        for line in &history {
                             ui.monospace(line);
                         }
                     }
