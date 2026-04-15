@@ -13,11 +13,14 @@
 //! receives no bits yet. `VaricodeDecoder` itself is tested in
 //! isolation and will produce the expected text once real bits flow.
 
+pub mod aprs;
+pub mod ax25;
 pub mod baudot;
 pub mod psk31;
 pub mod rtty;
 pub mod varicode;
 
+use aprs::AprsDemod;
 use psk31::Psk31Demod;
 use rtty::RttyDemod;
 
@@ -63,6 +66,7 @@ pub struct DigitalPipeline {
     center_hz: f32,
     psk31: Option<Psk31Demod>,
     rtty: Option<RttyDemod>,
+    aprs: Option<AprsDemod>,
     pending: Vec<DigitalDecode>,
 }
 
@@ -81,11 +85,16 @@ impl DigitalPipeline {
             )),
             _ => None,
         };
+        let aprs = match mode {
+            DigitalMode::Aprs => Some(AprsDemod::new()),
+            _ => None,
+        };
         Some(Self {
             mode,
             center_hz: DEFAULT_PSK_CENTER_HZ,
             psk31,
             rtty,
+            aprs,
             pending: Vec::new(),
         })
     }
@@ -114,6 +123,13 @@ impl DigitalPipeline {
         } else if let Some(demod) = self.rtty.as_mut() {
             demod.process_block(audio);
             demod.drain_text()
+        } else if let Some(demod) = self.aprs.as_mut() {
+            demod.process_block(audio);
+            demod
+                .drain()
+                .into_iter()
+                .map(|f| format!("{}: {}\n", f.header(), f.info_str()))
+                .collect::<String>()
         } else {
             String::new()
         };
@@ -134,6 +150,24 @@ impl DigitalPipeline {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pipeline_decodes_self_generated_aprs() {
+        let frame = ax25::UiFrame {
+            dest: ax25::Callsign::new("APZ000", 0),
+            src: ax25::Callsign::new("F4XYZ", 0),
+            info: b">hello aprs".to_vec(),
+        };
+        let audio = aprs::encode_frame(&frame);
+        let mut pipe = DigitalPipeline::new(DigitalMode::Aprs, 48_000).unwrap();
+        for chunk in audio.chunks(1024) {
+            pipe.push_audio(chunk);
+        }
+        let decodes = pipe.drain_decodes();
+        let text: String = decodes.iter().map(|d| d.text.as_str()).collect();
+        assert!(text.contains("F4XYZ>APZ000"), "got: {text:?}");
+        assert!(text.contains(">hello aprs"), "got: {text:?}");
+    }
 
     #[test]
     fn pipeline_decodes_self_generated_rtty() {
