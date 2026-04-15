@@ -552,13 +552,13 @@ components:
         anf:          { type: boolean }
         bin:          { type: boolean }
         tnf:          { type: boolean }
-        digital_mode:       { type: string, nullable: true, enum: [psk31, psk63, rtty, aprs, ft8, null], description: "Active digital decoder layered on top of the analog DSP path" }
+        digital_mode:       { type: string, nullable: true, enum: [psk31, psk63, rtty, aprs, ft8, wspr, null], description: "Active digital decoder layered on top of the analog DSP path" }
         digital_center_hz:  { type: number, description: "Carrier offset within the audio passband for PSK-family modes" }
         digital_decodes:    { type: array, items: { $ref: '#/components/schemas/DigitalDecodeSnapshot' } }
     DigitalDecodeSnapshot:
       type: object
       properties:
-        mode:           { type: string, enum: [psk31, psk63, rtty, aprs, ft8] }
+        mode:           { type: string, enum: [psk31, psk63, rtty, aprs, ft8, wspr] }
         text:           { type: string }
         score:          { type: number, description: "Signal rank (FT8: ft8_lib sync score; other modes: 0)" }
         freq_hz:        { type: number }
@@ -590,7 +590,7 @@ components:
         sam_submode:  { type: integer, enum: [0, 1, 2], description: "0=DSB 1=LSB 2=USB" }
         bpsnba_nc:    { type: integer, description: "BPSNBA FIR length (power of 2, ≥ 128)" }
         bpsnba_mp:    { type: boolean }
-        digital_mode: { type: string, enum: [psk31, psk63, rtty, aprs, ft8, off], description: "Layered digital decoder; 'off' disables" }
+        digital_mode: { type: string, enum: [psk31, psk63, rtty, aprs, ft8, wspr, off], description: "Layered digital decoder; 'off' disables" }
         digital_center_hz: { type: number, description: "PSK carrier offset within the audio passband (100..4000 Hz)" }
     TnfNotch:
       type: object

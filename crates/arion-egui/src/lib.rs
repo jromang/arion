@@ -1273,6 +1273,7 @@ impl EguiView {
                         Some(arion_core::DigitalMode::Rtty) => "RTTY",
                         Some(arion_core::DigitalMode::Aprs) => "APRS",
                         Some(arion_core::DigitalMode::Ft8) => "FT8",
+                        Some(arion_core::DigitalMode::Wspr) => "WSPR",
                     };
                     egui::ComboBox::from_id_salt("digital_mode_combo")
                         .selected_text(label)
@@ -1284,6 +1285,7 @@ impl EguiView {
                                 (Some(arion_core::DigitalMode::Rtty), "RTTY"),
                                 (Some(arion_core::DigitalMode::Aprs), "APRS"),
                                 (Some(arion_core::DigitalMode::Ft8), "FT8"),
+                                (Some(arion_core::DigitalMode::Wspr), "WSPR"),
                             ] {
                                 if ui.selectable_label(current == m, lbl).clicked() {
                                     self.app.set_rx_digital_mode(rx, m);

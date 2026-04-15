@@ -13,11 +13,13 @@ pub mod baudot;
 pub mod psk31;
 pub mod rtty;
 pub mod varicode;
+pub mod wspr;
 
 use aprs::AprsDemod;
 use liquid::{Complex32, MsResamp};
 use psk31::Psk31Demod;
 use rtty::RttyDemod;
+use wspr::WsprDecoder;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum DigitalMode {
@@ -26,6 +28,7 @@ pub enum DigitalMode {
     Rtty,
     Aprs,
     Ft8,
+    Wspr,
 }
 
 impl DigitalMode {
@@ -36,6 +39,7 @@ impl DigitalMode {
             Self::Rtty => "rtty",
             Self::Aprs => "aprs",
             Self::Ft8 => "ft8",
+            Self::Wspr => "wspr",
         }
     }
 
@@ -46,6 +50,7 @@ impl DigitalMode {
             "rtty" => Some(Self::Rtty),
             "aprs" => Some(Self::Aprs),
             "ft8" => Some(Self::Ft8),
+            "wspr" => Some(Self::Wspr),
             _ => None,
         }
     }
@@ -131,6 +136,18 @@ impl ModeStage for RttyStage {
                 freq_hz: 0.0,
                 time_offset_s: 0.0,
             });
+        }
+    }
+}
+
+struct WsprStage {
+    decoder: WsprDecoder,
+}
+
+impl ModeStage for WsprStage {
+    fn push_audio(&mut self, audio: &[f32], out: &mut Vec<DigitalDecode>) {
+        for d in self.decoder.push_audio(audio) {
+            out.push(wspr::to_digital_decode(&d));
         }
     }
 }
@@ -285,6 +302,9 @@ impl DigitalPipeline {
                 demod: AprsDemod::new(),
             }),
             DigitalMode::Ft8 => Box::new(Ft8Stage::new()?),
+            DigitalMode::Wspr => Box::new(WsprStage {
+                decoder: WsprDecoder::new()?,
+            }),
         };
         Some(Self {
             mode,
