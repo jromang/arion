@@ -148,6 +148,12 @@ fn table() -> &'static HashMap<&'static str, u8> {
     T.get_or_init(|| VARICODE.iter().map(|&(c, s)| (s, c)).collect())
 }
 
+/// Look up the varicode bit-string for an ASCII byte. Returns `None`
+/// for bytes outside the 0..128 table or with no assigned code.
+pub fn code_for(c: u8) -> Option<&'static str> {
+    VARICODE.iter().find(|(k, _)| *k == c).map(|(_, v)| *v)
+}
+
 /// Streaming varicode decoder. Feed bits one by one with `push_bit`;
 /// decoded ASCII characters are returned from `drain`.
 #[derive(Default, Debug)]

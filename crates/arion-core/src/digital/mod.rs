@@ -13,9 +13,10 @@
 //! receives no bits yet. `VaricodeDecoder` itself is tested in
 //! isolation and will produce the expected text once real bits flow.
 
+pub mod psk31;
 pub mod varicode;
 
-use liquid::{Complex32, MsResamp, Nco};
+use psk31::Psk31Demod;
 
 #[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
 pub enum DigitalMode {
@@ -56,32 +57,26 @@ pub struct DigitalDecode {
 /// Per-RX digital decoder pipeline.
 pub struct DigitalPipeline {
     mode: DigitalMode,
-    resampler: MsResamp,
-    nco: Nco,
     center_hz: f32,
-    scratch_in: Vec<Complex32>,
-    scratch_out: Vec<Complex32>,
-    varicode: varicode::VaricodeDecoder,
+    psk31: Option<Psk31Demod>,
     pending: Vec<DigitalDecode>,
 }
 
-const BASEBAND_RATE_HZ: f32 = 12_000.0;
 const DEFAULT_PSK_CENTER_HZ: f32 = 1_500.0;
 
 impl DigitalPipeline {
-    pub fn new(mode: DigitalMode, input_rate_hz: u32) -> Option<Self> {
-        let rate = BASEBAND_RATE_HZ / input_rate_hz as f32;
-        let resampler = MsResamp::new(rate, 60.0).ok()?;
-        let mut nco = Nco::new().ok()?;
-        nco.set_frequency_hz(DEFAULT_PSK_CENTER_HZ, BASEBAND_RATE_HZ);
+    pub fn new(mode: DigitalMode, _input_rate_hz: u32) -> Option<Self> {
+        let psk31 = match mode {
+            DigitalMode::Psk31 => Some(Psk31Demod::new(DEFAULT_PSK_CENTER_HZ)),
+            // RTTY/APRS/PSK63 demods land in follow-ups; for now those
+            // modes produce no decodes but the pipeline still exists
+            // so the UI wiring is meaningful.
+            _ => None,
+        };
         Some(Self {
             mode,
-            resampler,
-            nco,
             center_hz: DEFAULT_PSK_CENTER_HZ,
-            scratch_in: Vec::with_capacity(2048),
-            scratch_out: Vec::with_capacity(2048),
-            varicode: varicode::VaricodeDecoder::new(),
+            psk31,
             pending: Vec::new(),
         })
     }
@@ -96,40 +91,46 @@ impl DigitalPipeline {
 
     pub fn set_center_hz(&mut self, hz: f32) {
         self.center_hz = hz;
-        self.nco.set_frequency_hz(hz, BASEBAND_RATE_HZ);
+        if matches!(self.mode, DigitalMode::Psk31) {
+            self.psk31 = Some(Psk31Demod::new(hz));
+        }
     }
 
-    /// Push a block of post-AGC real audio. Steps 1–2 run live; step 3
-    /// (demod) is TODO so no decodes are produced yet.
+    /// Push a block of post-AGC real audio at 48 kHz. Decodes
+    /// accumulate and drain via `drain_decodes`.
     pub fn push_audio(&mut self, audio: &[f32]) {
-        self.scratch_in.clear();
-        self.scratch_in.reserve(audio.len());
-        for &s in audio {
-            self.scratch_in.push(Complex32 { re: s, im: 0.0 });
+        if let Some(demod) = self.psk31.as_mut() {
+            demod.process_block(audio);
+            let text = demod.drain_text();
+            if !text.is_empty() {
+                self.pending.push(DigitalDecode {
+                    mode: self.mode,
+                    text,
+                    snr_db: 0.0,
+                });
+            }
         }
-        let cap = self.resampler.num_output(audio.len() as u32) as usize + 16;
-        if self.scratch_out.len() < cap {
-            self.scratch_out.resize(cap, Complex32 { re: 0.0, im: 0.0 });
-        }
-        let n = self
-            .resampler
-            .execute(&self.scratch_in, &mut self.scratch_out);
-
-        // Carrier mix-down: a tone at center_hz becomes DC.
-        for s in &mut self.scratch_out[..n] {
-            *s = self.nco.mix_down_step(*s);
-        }
-
-        // TODO(F.1.2b): matched filter @ 31.25 baud, symbol sync
-        // (Gardner or liquid symsync), differential BPSK hard decision
-        // → bit stream → self.varicode.push_bit(...).
-        let _ = &mut self.varicode;
     }
 
     pub fn drain_decodes(&mut self) -> Vec<DigitalDecode> {
-        // When real demod lands, accumulate varicode output here:
-        //   let text = self.varicode.drain();
-        //   if !text.is_empty() { self.pending.push(DigitalDecode { ... }); }
         std::mem::take(&mut self.pending)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pipeline_decodes_self_generated_psk31() {
+        let audio = psk31::encode_text("hello world", DEFAULT_PSK_CENTER_HZ);
+        let mut pipe = DigitalPipeline::new(DigitalMode::Psk31, 48_000).unwrap();
+        // Feed in 1024-sample chunks to mimic the real DSP loop.
+        for chunk in audio.chunks(1024) {
+            pipe.push_audio(chunk);
+        }
+        let decodes = pipe.drain_decodes();
+        let text: String = decodes.iter().map(|d| d.text.as_str()).collect();
+        assert!(text.contains("hello world"), "got: {text:?}");
     }
 }
