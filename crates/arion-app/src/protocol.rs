@@ -49,6 +49,7 @@ impl StateSnapshot {
         let rx = app
             .rxs()
             .iter()
+            .take(app.num_rx() as usize)
             .enumerate()
             .map(|(i, r)| {
                 let s_meter_db = telemetry.rx.get(i).map(|rt| rt.s_meter_db).unwrap_or(-140.0);

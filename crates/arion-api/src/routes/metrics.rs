@@ -34,7 +34,7 @@ pub async fn get_metrics(State(ctx): State<ApiContext>) -> impl IntoResponse {
         let _ = writeln!(out, "arion_rx_frequency_hz{{rx=\"{i}\"}} {}", r.frequency_hz);
     }
 
-    let _ = writeln!(out, "# HELP arion_rx_volume Linear AF gain in [0, 1].");
+    let _ = writeln!(out, "# HELP arion_rx_volume Linear AF gain (App-side units, typically 0..2).");
     let _ = writeln!(out, "# TYPE arion_rx_volume gauge");
     for (i, r) in snap.rx.iter().enumerate() {
         let _ = writeln!(out, "arion_rx_volume{{rx=\"{i}\"}} {}", r.volume);
