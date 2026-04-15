@@ -124,7 +124,12 @@ pub struct Psk31Demod {
     primed: bool,
     varicode: VaricodeDecoder,
     pending_text: String,
+    /// Ring of the most recent symbol samples, for UI constellation
+    /// display. Stored normalized-ish (raw symsync output).
+    recent_symbols: Vec<(f32, f32)>,
 }
+
+const CONSTELLATION_CAP: usize = 256;
 
 impl Psk31Demod {
     pub fn new(carrier_hz: f32) -> Self {
@@ -148,7 +153,14 @@ impl Psk31Demod {
             primed: false,
             varicode: VaricodeDecoder::new(),
             pending_text: String::new(),
+            recent_symbols: Vec::with_capacity(CONSTELLATION_CAP),
         }
+    }
+
+    /// Snapshot the latest constellation points. Returned in capture
+    /// order (oldest first).
+    pub fn constellation(&self) -> &[(f32, f32)] {
+        &self.recent_symbols
     }
 
     /// Feed audio samples at 48 kHz. Any newly-decoded characters are
@@ -186,6 +198,11 @@ impl Psk31Demod {
 
         // Stage 4: differential BPSK → bit → varicode.
         for &cur in &self.symbols[..n_sym] {
+            // Record the constellation point before demodulation.
+            if self.recent_symbols.len() >= CONSTELLATION_CAP {
+                self.recent_symbols.remove(0);
+            }
+            self.recent_symbols.push((cur.re, cur.im));
             if self.primed {
                 let dot = cur.re * self.prev.re + cur.im * self.prev.im;
                 self.varicode.push_bit(dot > 0.0);

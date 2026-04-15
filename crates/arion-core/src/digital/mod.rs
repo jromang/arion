@@ -145,6 +145,15 @@ impl DigitalPipeline {
     pub fn drain_decodes(&mut self) -> Vec<DigitalDecode> {
         std::mem::take(&mut self.pending)
     }
+
+    /// Snapshot the current constellation points (I, Q). Non-empty
+    /// only for demods that expose them (PSK31 today).
+    pub fn constellation(&self) -> Vec<(f32, f32)> {
+        self.psk31
+            .as_ref()
+            .map(|d| d.constellation().to_vec())
+            .unwrap_or_default()
+    }
 }
 
 #[cfg(test)]

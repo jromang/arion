@@ -159,6 +159,9 @@ pub struct RxTelemetry {
     /// Digital decodes emitted since the last snapshot. Empty if no
     /// digital decoder is active. Small, bounded ring.
     pub digital_decodes: Vec<DigitalDecode>,
+    /// Latest constellation points (I, Q) captured by a PSK-family
+    /// demod, in capture order. Empty for non-constellation modes.
+    pub constellation: Vec<(f32, f32)>,
 }
 
 impl Default for RxTelemetry {
@@ -172,6 +175,7 @@ impl Default for RxTelemetry {
             mode:             WdspMode::Usb,
             digital_mode:     None,
             digital_decodes:  Vec::new(),
+            constellation:    Vec::new(),
         }
     }
 }
@@ -1268,6 +1272,10 @@ fn dsp_loop(
                     mode:             rx_state[r].mode,
                     digital_mode:     rx_state[r].digital_mode,
                     digital_decodes:  std::mem::take(&mut pending_decodes[r]),
+                    constellation:    digital[r]
+                        .as_ref()
+                        .map(|p| p.constellation())
+                        .unwrap_or_default(),
                 };
             }
             snapshot.last_update = Instant::now();

@@ -134,6 +134,7 @@ pub fn parse_window(s: &str) -> Result<WindowKind, ScriptError> {
         "repl"        => Ok(WindowKind::Repl),
         "eq"          => Ok(WindowKind::Eq),
         "digital"     => Ok(WindowKind::Digital),
+        "constellation" => Ok(WindowKind::Constellation),
         _ => Err(ScriptError::UnknownWindow(s.to_string())),
     }
 }

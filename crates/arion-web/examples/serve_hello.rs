@@ -88,6 +88,7 @@ fn synth_loop(app: Arc<Mutex<App>>, telemetry: Arc<ArcSwap<Telemetry>>) {
             mode:             snap.rx[0].mode,
             digital_mode:     None,
             digital_decodes:  Vec::new(),
+            constellation:    Vec::new(),
         };
         telemetry.store(Arc::new(snap));
     }

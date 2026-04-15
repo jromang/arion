@@ -60,6 +60,7 @@ pub enum WindowKind {
     Repl,
     Eq,
     Digital,
+    Constellation,
 }
 
 // --------------------------------------------------------------------
@@ -722,6 +723,12 @@ impl App {
     pub fn rx_digital_decodes(&self, rx: u8) -> Vec<arion_core::DigitalDecode> {
         self.telemetry_snapshot()
             .and_then(|t| t.rx.get(rx as usize).map(|r| r.digital_decodes.clone()))
+            .unwrap_or_default()
+    }
+
+    pub fn rx_constellation(&self, rx: u8) -> Vec<(f32, f32)> {
+        self.telemetry_snapshot()
+            .and_then(|t| t.rx.get(rx as usize).map(|r| r.constellation.clone()))
             .unwrap_or_default()
     }
 

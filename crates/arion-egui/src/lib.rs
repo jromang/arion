@@ -546,6 +546,9 @@ impl eframe::App for EguiView {
         if self.app.window_open(WindowKind::Digital) {
             self.draw_digital_window(&ctx);
         }
+        if self.app.window_open(WindowKind::Constellation) {
+            self.draw_constellation_window(&ctx);
+        }
         if self.app.window_open(WindowKind::Repl) {
             self.draw_repl_window(&ctx);
         }
@@ -859,6 +862,7 @@ impl EguiView {
                     (WindowKind::Multimeter, "Multimeter"),
                     (WindowKind::Eq,         "Equalizer"),
                     (WindowKind::Digital,    "Digital Decodes"),
+                    (WindowKind::Constellation, "Constellation"),
                     (WindowKind::Repl,       "REPL"),
                     (WindowKind::Setup,      "Setup"),
                 ] {
@@ -1187,6 +1191,67 @@ impl EguiView {
     }
 
     /// Floating 10-band graphic EQ window with vertical sliders.
+    fn draw_constellation_window(&mut self, ctx: &egui::Context) {
+        let mut open = true;
+        let rx = self.app.active_rx() as u8;
+        let points = self.app.rx_constellation(rx);
+
+        egui::Window::new("Constellation")
+            .open(&mut open)
+            .default_width(320.0)
+            .default_height(320.0)
+            .resizable(true)
+            .show(ctx, |ui| {
+                if points.is_empty() {
+                    ui.weak("(no constellation data — enable a PSK mode)");
+                    return;
+                }
+                // Normalize for display: fit all points into a unit
+                // disk (radius = max magnitude seen in this snapshot).
+                let scale = points
+                    .iter()
+                    .map(|&(i, q)| (i * i + q * q).sqrt())
+                    .fold(0.0_f32, f32::max)
+                    .max(1e-6);
+                let (resp, painter) = ui.allocate_painter(
+                    ui.available_size_before_wrap(),
+                    egui::Sense::hover(),
+                );
+                let rect = resp.rect;
+                let center = rect.center();
+                let half = (rect.width().min(rect.height()) * 0.48).max(1.0);
+                // Axes.
+                let axis = egui::Stroke::new(1.0, egui::Color32::from_gray(60));
+                painter.line_segment(
+                    [egui::pos2(rect.min.x, center.y), egui::pos2(rect.max.x, center.y)],
+                    axis,
+                );
+                painter.line_segment(
+                    [egui::pos2(center.x, rect.min.y), egui::pos2(center.x, rect.max.y)],
+                    axis,
+                );
+                // Unit circle.
+                painter.circle_stroke(
+                    center,
+                    half,
+                    egui::Stroke::new(1.0, egui::Color32::from_gray(50)),
+                );
+                // Points: older fade toward dark, newer bright green.
+                let n = points.len() as f32;
+                for (idx, &(i, q)) in points.iter().enumerate() {
+                    let age = 1.0 - (idx as f32 / n);
+                    let brightness = (255.0 * (1.0 - age)) as u8;
+                    let color = egui::Color32::from_rgb(0, brightness.max(50), 0);
+                    let px = center.x + (i / scale) * half;
+                    let py = center.y - (q / scale) * half;
+                    painter.circle_filled(egui::pos2(px, py), 2.0, color);
+                }
+            });
+        if !open {
+            self.app.set_window_open(WindowKind::Constellation, false);
+        }
+    }
+
     fn draw_digital_window(&mut self, ctx: &egui::Context) {
         let mut open = true;
         let rx = self.app.active_rx() as u8;
