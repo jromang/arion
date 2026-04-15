@@ -190,6 +190,26 @@ impl TuiView {
                 let on = self.app.rx(rx as usize).map(|r| !r.locked).unwrap_or(false);
                 self.app.set_rx_locked(rx, on);
             }
+            KeyCode::Char('r') => {
+                let rx = self.app.active_rx() as u8;
+                let on = self.app.rx(rx as usize).map(|r| !r.anr).unwrap_or(false);
+                self.app.set_rx_anr(rx, on);
+            }
+            KeyCode::Char('R') => {
+                let rx = self.app.active_rx() as u8;
+                let on = self.app.rx(rx as usize).map(|r| !r.emnr).unwrap_or(false);
+                self.app.set_rx_emnr(rx, on);
+            }
+            KeyCode::Char('s') => {
+                let rx = self.app.active_rx() as u8;
+                let on = self.app.rx(rx as usize).map(|r| !r.squelch).unwrap_or(false);
+                self.app.set_rx_squelch(rx, on);
+            }
+            KeyCode::Char('p') => {
+                let rx = self.app.active_rx() as u8;
+                let on = self.app.rx(rx as usize).map(|r| !r.apf).unwrap_or(false);
+                self.app.set_rx_apf(rx, on);
+            }
             KeyCode::Char('a') => self.cycle_agc(),
             KeyCode::Up => self.side_panel_up(),
             KeyCode::Down => self.side_panel_down(),
@@ -725,9 +745,13 @@ impl TuiView {
             Span::raw(" "),
             toggle(state.nr3, "NR3"),
             toggle(state.nr4, "NR4"),
+            toggle(state.anr, "ANR"),
+            toggle(state.emnr, "EMNR"),
             toggle(state.nb, "NB"),
             toggle(state.nb2, "NB2"),
             toggle(state.anf, "ANF"),
+            toggle(state.squelch, "SQL"),
+            toggle(state.apf, "APF"),
             toggle(state.bin, "BIN"),
             toggle(state.tnf, "TNF"),
         ]);
