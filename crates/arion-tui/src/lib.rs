@@ -81,6 +81,11 @@ pub struct TuiView {
     last_band_area: Rect,
     last_filter_area: Rect,
     last_digital_area: Rect,
+    /// Rolling buffer of recent digital decodes across all RX — shown
+    /// at the bottom of the side panel. Telemetry only carries
+    /// decodes that fired during the last snapshot interval, so the
+    /// TUI keeps its own bounded history.
+    digital_history: Vec<String>,
     last_controls_area: Rect,
 }
 
@@ -106,6 +111,7 @@ impl TuiView {
             last_band_area: Rect::default(),
             last_filter_area: Rect::default(),
             last_digital_area: Rect::default(),
+            digital_history: Vec::with_capacity(32),
             last_controls_area: Rect::default(),
         }
     }
@@ -769,6 +775,33 @@ impl TuiView {
         let rx = self.app.active_rx() as u8;
         let current = self.app.rx_digital_mode(rx);
 
+        // Drain new decodes from telemetry into the TUI's own ring so
+        // they stay visible across frames.
+        for d in self.app.rx_digital_decodes(rx) {
+            let line = if d.mode == arion_core::DigitalMode::Ft8 {
+                format!(
+                    "[{} {:+3.0} {:.0}Hz] {}",
+                    d.mode.as_str(),
+                    d.snr_db,
+                    d.freq_hz,
+                    d.text
+                )
+            } else {
+                format!("[{}] {}", d.mode.as_str(), d.text)
+            };
+            if self.digital_history.len() >= 64 {
+                self.digital_history.remove(0);
+            }
+            self.digital_history.push(line);
+        }
+
+        // Split the panel: mode list on top, decode log below.
+        let chunks = Layout::vertical([
+            Constraint::Length(DIGITAL_OPTIONS.len() as u16 + 2),
+            Constraint::Min(1),
+        ])
+        .split(area);
+
         let items: Vec<ListItem> = DIGITAL_OPTIONS
             .iter()
             .map(|&(m, label)| {
@@ -781,16 +814,31 @@ impl TuiView {
             })
             .collect();
 
-        let block = Block::default()
+        let border_color = if focused { Color::Cyan } else { Color::DarkGray };
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("Digital")
+                    .border_style(Style::default().fg(border_color)),
+            )
+            .highlight_symbol("▶ ");
+        frame.render_stateful_widget(list, chunks[0], &mut self.digital_state);
+
+        // Decodes log: show the most recent entries that fit.
+        let log_block = Block::default()
             .borders(Borders::ALL)
-            .title("Digital")
-            .border_style(Style::default().fg(if focused {
-                Color::Cyan
-            } else {
-                Color::DarkGray
-            }));
-        let list = List::new(items).block(block).highlight_symbol("▶ ");
-        frame.render_stateful_widget(list, area, &mut self.digital_state);
+            .title("Decodes")
+            .border_style(Style::default().fg(Color::DarkGray));
+        let inner = log_block.inner(chunks[1]);
+        frame.render_widget(log_block, chunks[1]);
+        let visible = (inner.height as usize).max(1);
+        let start = self.digital_history.len().saturating_sub(visible);
+        let text: Vec<Line> = self.digital_history[start..]
+            .iter()
+            .map(|s| Line::from(s.as_str()))
+            .collect();
+        frame.render_widget(Paragraph::new(text), inner);
     }
 
     fn draw_controls(&self, frame: &mut Frame, area: Rect) {

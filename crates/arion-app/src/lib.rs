@@ -565,6 +565,7 @@ impl App {
                     .digital_mode
                     .as_deref()
                     .and_then(arion_core::DigitalMode::parse),
+                digital_center_hz: serde_rx.digital_center_hz,
                 ..RxState::default()
             });
         }
@@ -1302,6 +1303,7 @@ impl App {
             let _ = radio.set_rx_sam_submode(rx, view.sam_submode);
             // Digital decoder layered on top of analog DSP.
             let _ = radio.set_rx_digital_mode(rx, view.digital_mode);
+            let _ = radio.set_rx_digital_center_hz(rx, view.digital_center_hz);
             // TNF: enable the notch master flag and push each notch. Notch
             // indices must be contiguous from 0 — iterate the persisted
             // list in order.
@@ -1416,6 +1418,7 @@ impl App {
                 tnf_notches:     view.tnf_notches.clone(),
                 sam_submode:     view.sam_submode,
                 digital_mode:    view.digital_mode.map(|m| m.as_str().to_string()),
+                digital_center_hz: view.digital_center_hz,
             };
         }
         s.band_stacks  = self.band_stack.to_settings();

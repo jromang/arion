@@ -93,9 +93,23 @@ struct Ft8Stage {
     scratch_out: Vec<Complex32>,
     pending_samples: Vec<f32>,
     samples_since_decode: usize,
+    /// Last UTC slot index we triggered a decode for. FT8 slots are
+    /// aligned to `unix_secs % 15 == 0`. When the slot index changes
+    /// we flush and reset so decodes line up with real TX slots
+    /// instead of an arbitrary rolling 14-second window.
+    last_slot_idx: Option<u64>,
 }
 
-const FT8_DECODE_SAMPLES_12K: usize = 12_000 * 14; // run a decode every ~14 s of accumulated 12 kHz audio.
+const FT8_DECODE_SAMPLES_12K: usize = 12_000 * 14; // fallback trigger if no wall-clock is available (tests).
+const FT8_SLOT_SECS: u64 = 15;
+
+fn current_ft8_slot_idx() -> Option<u64> {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs() / FT8_SLOT_SECS)
+}
 
 impl Ft8Stage {
     fn new() -> Option<Self> {
@@ -109,6 +123,7 @@ impl Ft8Stage {
             scratch_out: Vec::with_capacity(512),
             pending_samples: Vec::with_capacity(2048),
             samples_since_decode: 0,
+            last_slot_idx: current_ft8_slot_idx(),
         })
     }
 
@@ -139,7 +154,17 @@ impl Ft8Stage {
         }
 
         self.samples_since_decode += n;
-        if self.samples_since_decode >= FT8_DECODE_SAMPLES_12K {
+        // Prefer wall-clock slot alignment: when the UTC 15-second
+        // slot index ticks over, flush and decode. Fall back to the
+        // rolling 14-second counter if the clock is unavailable or
+        // running faster than real time (tests).
+        let slot_now = current_ft8_slot_idx();
+        let slot_boundary = match (slot_now, self.last_slot_idx) {
+            (Some(now), Some(last)) => now != last,
+            _ => false,
+        };
+        let rolling_full = self.samples_since_decode >= FT8_DECODE_SAMPLES_12K;
+        if slot_boundary || rolling_full {
             for d in self.monitor.decode(64, 10) {
                 out.push(DigitalDecode {
                     mode: DigitalMode::Ft8,
@@ -151,6 +176,9 @@ impl Ft8Stage {
             }
             self.monitor.reset();
             self.samples_since_decode = 0;
+            if let Some(idx) = slot_now {
+                self.last_slot_idx = Some(idx);
+            }
         }
     }
 }

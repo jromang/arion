@@ -2770,8 +2770,9 @@ impl EguiView {
 
                 // --- Signal browser: Ctrl+click on spectrum retunes
                 //     the active PSK decoder's carrier to the clicked
-                //     audio offset. USB / DIGU only; ignored on other
-                //     modes because the passband mapping isn't obvious.
+                //     audio offset. Works on USB/DIGU (audio =
+                //     rf-vfo) and LSB/DIGL (audio = vfo-rf) because
+                //     the audio passband is mirrored on LSB.
                 if spec_resp.clicked()
                     && ui.input(|i| i.modifiers.ctrl || i.modifiers.command)
                 {
@@ -2786,17 +2787,18 @@ impl EguiView {
                         .rx(r)
                         .map(|s| s.mode)
                         .unwrap_or(arion_core::WdspMode::Usb);
-                    let is_usb = matches!(
-                        rx_mode,
-                        arion_core::WdspMode::Usb | arion_core::WdspMode::DigU
-                    );
-                    if let (true, true, Some(click)) =
-                        (is_psk, is_usb, spec_resp.interact_pointer_pos())
+                    let sideband = match rx_mode {
+                        arion_core::WdspMode::Usb | arion_core::WdspMode::DigU => Some(1.0_f32),
+                        arion_core::WdspMode::Lsb | arion_core::WdspMode::DigL => Some(-1.0),
+                        _ => None,
+                    };
+                    if let (true, Some(sign), Some(click)) =
+                        (is_psk, sideband, spec_resp.interact_pointer_pos())
                     {
                         let frac = ((click.x - spec_rect.left()) / spec_rect.width())
                             .clamp(0.0, 1.0);
                         let rf = lo_hz + frac * (hi_hz - lo_hz);
-                        let audio_hz = (rf - center_hz as f32).clamp(100.0, 4000.0);
+                        let audio_hz = (sign * (rf - center_hz as f32)).clamp(100.0, 4000.0);
                         self.app.set_rx_digital_center_hz(rx_u8, audio_hz);
                     }
                 }

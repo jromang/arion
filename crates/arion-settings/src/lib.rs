@@ -344,11 +344,16 @@ pub struct RxSettings {
     pub tnf_notches:     Vec<TnfNotch>,
     #[serde(default)]
     pub sam_submode:     u8,
-    /// Digital decoder mode (PSK31/PSK63/RTTY/APRS). Stored as the
-    /// lowercase short name; `None` = no decoder layered on top.
+    /// Digital decoder mode (PSK31/PSK63/RTTY/APRS/FT8). Stored as
+    /// the lowercase short name; `None` = no decoder layered on top.
     #[serde(default)]
     pub digital_mode:    Option<String>,
+    /// Audio-passband carrier offset for the PSK-family decoders.
+    #[serde(default = "default_digital_center_hz")]
+    pub digital_center_hz: f32,
 }
+
+fn default_digital_center_hz() -> f32 { 1500.0 }
 
 fn default_squelch_db()     -> f32 { -30.0 }
 fn default_apf_freq()       -> f32 { 600.0 }
@@ -388,6 +393,7 @@ impl Default for RxSettings {
             tnf_notches:     Vec::new(),
             sam_submode:     0,
             digital_mode:    None,
+            digital_center_hz: default_digital_center_hz(),
         }
     }
 }
