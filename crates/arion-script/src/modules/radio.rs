@@ -189,6 +189,21 @@ impl ScriptModule for RadioModule {
             let _ = c.with_app(|app| app.delete_rx_tnf_notch(rx.index, nidx.max(0) as u32));
         });
 
+        // BPSNBA tuning (write-only, not persisted — defaults restore each boot)
+        let c = ctx.clone();
+        engine.register_fn("bpsnba_nc", move |rx: Rx, nc: i64| -> Result<(), Box<rhai::EvalAltResult>> {
+            let n = nc.max(0) as u32;
+            if n < 128 || !n.is_power_of_two() {
+                return Err(rhai_err("bpsnba_nc must be a power of 2 ≥ 128"));
+            }
+            c.with_app(|app| app.set_rx_bpsnba_nc(rx.index, n)).map_err(rhai_err)?;
+            Ok(())
+        });
+        let c = ctx.clone();
+        engine.register_fn("bpsnba_mp", move |rx: Rx, mp: bool| {
+            let _ = c.with_app(|app| app.set_rx_bpsnba_mp(rx.index, mp));
+        });
+
         let c = ctx.clone();
         engine.register_fn("agc", move |rx: Rx, preset: &str| -> Result<(), Box<rhai::EvalAltResult>> {
             let a = parse_agc(preset).map_err(rhai_err)?;

@@ -198,6 +198,17 @@ ctcss_hz(rx, 67.0);
 radio[0].fm_deviation_hz = 2500.0;   // narrow; 5000.0 = wide
 ```
 
+### 4.3e BPSNBA tuning (advanced)
+
+BPSNBA auto-routes when SNBA + TNF are both active. Only the FIR
+filter length and phase shape are tunable — write-only, not
+persisted (defaults restore on every boot).
+
+```rhai
+bpsnba_nc(rx, 4096);    // power-of-2, ≥ 128 (default 2048)
+bpsnba_mp(rx, false);   // true = minimum phase, false = linear
+```
+
 ### 4.4 AGC
 
 ```rhai
