@@ -270,6 +270,63 @@ recall, …
 Browser frontend with live state push and audio streaming.
 Enabled via `ARION_WEB_LISTEN=<addr>`. Design may evolve.
 
+## Credits
+
+Arion stands on the shoulders of a lot of amateur-radio, DSP and
+systems work. The binary wouldn't exist without the people and
+projects below, who each get the credit and the blame-for-
+misuse-by-us separately:
+
+- **[Thetis](https://github.com/ramdor/Thetis)** — Rich (W4WMT), Doug (W5WC),
+  Warren (NR0V), and the whole PowerSDR/Thetis lineage. Arion is a
+  ground-up rewrite, not a port, but the feature set, terminology,
+  and a lot of the DSP conventions come straight from Thetis.
+- **[WDSP](https://github.com/TAPR/OpenHPSDR-Thetis/tree/master/Project%20Files/Source/wdsp)** —
+  Warren Pratt (NR0V). The C DSP core behind every RX in Arion
+  (demod, NR family, ANF, AGC, EQ, waterfall). Vendored under
+  `crates/wdsp-sys/vendor/`.
+- **[FFTW](https://www.fftw.org/)** — Matteo Frigo and Steven G. Johnson (MIT).
+  Powers every FFT inside WDSP. Vendored (single + double precision
+  build) alongside WDSP.
+- **[RNNoise](https://github.com/xiph/rnnoise)** — Jean-Marc Valin /
+  Xiph.Org. Feeds the NR3 noise reducer.
+- **[libspecbleach](https://github.com/lucianodato/libspecbleach)** —
+  Luciano Dato. Drives the NR4 spectral noise reducer.
+- **[liquid-dsp](https://liquidsdr.org/)** — Joseph Gaeddert, Virginia
+  Tech. Modems, symbol sync, NCO, polyphase resampler used by
+  the PSK31 / RTTY / APRS pipelines. Vendored under
+  `crates/liquid-sys/vendor/`.
+- **[ft8_lib](https://github.com/kgoba/ft8_lib)** — Kārlis Goba (YL3JG).
+  Waterfall + Costas sync + LDPC for FT8 decoding. Vendored under
+  `crates/ft8-sys/vendor/` (also includes Mark Borgerding's
+  [kissfft](https://github.com/mborgerding/kissfft)).
+- **[WSJT-X](https://wsjt.sourceforge.io/)** — Joe Taylor (K1JT),
+  Steven Franke (K9AN), and contributors. Arion's WSPR decoder
+  compiles the FFTW-free subset of WSJT-X's `lib/wsprd/` (Fano
+  decoder, metric tables, callsign hash, unpacker, encoder
+  utilities). The K=32 rate-1/2 Fano sequential decoder itself is
+  **Phil Karn's (KA9Q)** original work, minor modifications by
+  K1JT. Vendored under `crates/wsprd-sys/vendor/`.
+- **Rust crates** that do a lot of heavy lifting:
+  [egui](https://github.com/emilk/egui) (Emil Ernerfeldt),
+  [wgpu](https://wgpu.rs/),
+  [ratatui](https://github.com/ratatui/ratatui),
+  [cpal](https://github.com/RustAudio/cpal) and
+  [rubato](https://github.com/HEnquist/rubato) (Henrik Enquist)
+  for audio I/O and resampling,
+  [rustfft](https://github.com/ejmahler/RustFFT),
+  [rhai](https://github.com/rhaiscript/rhai),
+  [axum](https://github.com/tokio-rs/axum),
+  [midir](https://github.com/Boddlnagg/midir) + [wmidi](https://github.com/RustyYato/wmidi),
+  [arc-swap](https://github.com/vorner/arc-swap),
+  [rtrb](https://github.com/mgeier/rtrb),
+  and many more listed in `Cargo.lock`.
+
+Vendored C sources keep their upstream licenses (see each
+`vendor/` directory's `LICENSE` / `COPYING`). Arion as a whole is
+distributed under GPL-3.0-or-later, which is compatible with all
+of the above (the strongest constraint being WSJT-X's GPLv3).
+
 ## Contributing
 
 Arion is in early development. Bug reports and feature requests via
