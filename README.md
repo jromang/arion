@@ -55,6 +55,12 @@ namesake, Arion transforms waves into music — radio waves into audio.
   binaural mixing, fine-grained AGC (top / hang / decay / fixed
   gain), FM CTCSS + deviation, 10-band graphic EQ, variable
   passband filter
+- **Digital modes** — PSK31, PSK63, RTTY (Baudot ITA2), APRS
+  (AFSK Bell 202 + HDLC + AX.25 UI frames), and FT8 (via vendored
+  `ft8_lib`). Full round-trip tested encoders + demodulators,
+  UTC-aligned 15 s slots for FT8, Ctrl+click signal browser on the
+  spectrum, constellation diagram for PSK-family modes. See the
+  new `liquid`, `liquid-sys`, `ft8`, `ft8-sys` crates below.
 - **Spectrum & Waterfall** — real-time display with peak hold,
   averaging, configurable dB range, spectrum fill
 - **S-Meter** — S-units display with per-band calibration
@@ -128,6 +134,8 @@ Model / Ports              arion-core (Radio, DSP thread)
                            arion-script (Rhai engine)
                                 │
 Infrastructure             wdsp / wdsp-sys (WDSP C FFI)
+                           liquid / liquid-sys (digital DSP FFI)
+                           ft8 / ft8-sys (ft8_lib FFI)
                            hpsdr-net (HPSDR P1 UDP)
                            arion-audio (cpal + rubato)
 ```
@@ -147,6 +155,10 @@ including data flow diagrams, threading model, and design patterns.
 crates/
   wdsp-sys/          Raw FFI to vendored WDSP (FFTW, rnnoise, specbleach)
   wdsp/              Safe Rust wrapper (Channel, Mode, EQ, wisdom)
+  liquid-sys/        Raw FFI to vendored liquid-dsp (modems, NCO, symsync)
+  liquid/            Safe Rust wrapper (Modem, MsResamp, Nco, SymSync)
+  ft8-sys/           Raw FFI to vendored ft8_lib (KGoba) — Monitor + LDPC
+  ft8/               Safe Rust wrapper (encode_to_audio + Monitor::decode)
   hpsdr-protocol/    HPSDR Protocol 1 wire types
   hpsdr-net/         UDP discovery + multi-RX session
   arion-audio/       cpal output + ring buffer + rubato resampling

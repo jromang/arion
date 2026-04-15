@@ -227,6 +227,53 @@ get/set properties, free functions, removal of
 
 ---
 
+### Done — Phase F — Digital modes (PSK31 / RTTY / APRS / FT8)
+
+**To do**: ground-up digital-mode support in Arion with a reusable
+`DigitalPipeline` wired into the DSP thread, round-trip tested
+encoders + demods, persistence, and UI surfaces on both frontends.
+
+**Delivered** (19 commits, `Phase F.1.0` → `Phase F.2.5`):
+
+- New crates — `liquid-sys` + `liquid` (vendored `liquid-dsp` for
+  modem, symsync, NCO, polyphase resampler); `ft8-sys` + `ft8`
+  (vendored `ft8_lib` by KGoba for Costas sync + LDPC + Monitor).
+  Both use hand-written FFI for cohesion with `wdsp-sys`.
+- `arion-core/digital/` module with `DigitalPipeline` that taps the
+  post-AGC 48 kHz audio in `dsp_loop`, resamples / mixes / demods
+  per mode, and drains decodes into `Telemetry.digital_decodes`.
+  Four working modes:
+  - **PSK31 / PSK63**: BPSK / DPSK + `liquid::SymSync` symbol
+    recovery + varicode (G3PLX 1998 table) → ASCII.
+  - **RTTY** (45.45 bd, 170 Hz shift, ITA2 Baudot): dual-NCO FSK
+    energy detector with per-tone I/Q low-pass (Band-W ~40 Hz).
+  - **APRS** (Bell 202 @ 1200 bd): AFSK + NRZI + DPLL bit clock +
+    HDLC bit-stuffing + CRC-16-CCITT + AX.25 UI frame parser.
+  - **FT8**: `ft8::Monitor` (`ft8_lib`) with UTC-15-s slot-aligned
+    decoding, score/freq/time metadata, text-based dedupe.
+- Full MVVM wiring: `DspCommand::SetRxDigitalMode` +
+  `SetRxDigitalCenterHz`, `RxTelemetry.digital_*`, `RxState` fields,
+  `App::{set_rx_digital_mode, rx_digital_decodes, ...}`, Rhai
+  bindings (`radio.rx(i).digital_mode = "psk31"`,
+  `.digital_decodes()`), `WindowKind::{Digital, Constellation}`
+  egui windows, TUI side-panel section with live Decodes log.
+- Persistence: `RxSettings.{digital_mode, digital_center_hz}` in
+  TOML, re-applied on reconnect.
+- Self-contained round-trip tests for every mode (no external
+  WAVs); 21 arion-core digital tests + 4 ft8 tests green.
+- Signal browser: Ctrl+click on the spectrum retunes the PSK
+  carrier for USB/DIGU and LSB/DIGL.
+- Constellation window showing the last 256 post-symsync I/Q
+  points for PSK-family modes.
+
+**Known non-goals / follow-ups**:
+- TX path for digital modes (requires Phase E TX scaffolding).
+- Real SNR in dB for FT8 (ft8_lib exposes sync score, not SNR;
+  computing one per candidate would need extensions to the lib).
+- JS8 / FreeDV / WSPR (each a separate encoder/decoder module).
+
+---
+
 ## Global verification
 
 At each phase:

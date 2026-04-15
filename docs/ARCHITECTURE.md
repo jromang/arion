@@ -111,6 +111,10 @@ without code duplication.
 | `hpsdr-protocol` | HPSDR Protocol 1 wire format (pure data, no I/O) | `IqSample`, `CommandFrame`, `ControlByte` |
 | `wdsp-sys` | Raw `extern "C"` FFI to the vendored WDSP library | `OpenChannel`, `SetRXAMode`, `fexchange0`, `SetRXAGrphEQ10`, etc. |
 | `wdsp` | Safe Rust wrapper around `wdsp-sys` | `Channel`, `Mode`, `AgcMode`, wisdom management |
+| `liquid-sys` | Hand-written FFI to vendored `liquid-dsp` (modems, symsync, NCO, polyphase resampler) | `modemcf_*`, `symsync_crcf_*`, `nco_crcf_*`, `msresamp_crcf_*` |
+| `liquid` | Safe wrapper feeding the digital-mode pipeline in `arion-core` | `Modem`, `MsResamp`, `Nco`, `SymSync` |
+| `ft8-sys` | Hand-written FFI to vendored `ft8_lib` (KGoba) — waterfall, Costas sync, LDPC | `monitor_*`, `ftx_find_candidates`, `ftx_decode_candidate`, `ft8_encode` |
+| `ft8` | Safe wrapper exposing `encode_to_audio` + `Monitor::{process,decode}` | `Monitor`, `Decode` |
 
 ### Layer 1 — Infrastructure
 
@@ -243,6 +247,15 @@ rtrb::Producer<IqSample> ──── ring buffer ────► rtrb::Consumer
     │                                        │  NR → EQ → demod)
     │                                        ▼
     │                                    demodulated audio f32
+    │                                        │
+    │                                        ├──► arion-core::digital
+    │                                        │      (optional tap:
+    │                                        │       48 k → liquid
+    │                                        │       resampler / NCO /
+    │                                        │       SymSync → PSK31 /
+    │                                        │       RTTY / APRS, or
+    │                                        │       ft8::Monitor for
+    │                                        │       UTC-aligned FT8)
     │                                        │
     │                                        ▼
     │                                    rtrb ring → arion-audio
