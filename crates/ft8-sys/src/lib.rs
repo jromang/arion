@@ -65,6 +65,17 @@ pub type monitor_t = c_void;
 extern "C" {
     pub fn arion_ft8_monitor_sizeof() -> usize;
     pub fn arion_ft8_monitor_waterfall(me: *const monitor_t) -> *const ftx_waterfall_t;
+    pub fn arion_ft8_synth_gfsk(
+        symbols: *const u8,
+        n_sym: c_int,
+        f0: c_float,
+        symbol_bt: c_float,
+        symbol_period: c_float,
+        signal_rate: c_int,
+        pulse_scratch: *mut c_float,
+        dphi_scratch: *mut c_float,
+        signal: *mut c_float,
+    );
     pub fn monitor_init(me: *mut monitor_t, cfg: *const monitor_config_t);
     pub fn monitor_reset(me: *mut monitor_t);
     pub fn monitor_process(me: *mut monitor_t, frame: *const c_float);
@@ -87,13 +98,17 @@ extern "C" {
 pub struct ftx_message_t {
     pub payload: [u8; 10],
     pub hash: u16,
-    _reserved: [u8; 4],
 }
 
+pub type ftx_field_t = c_int;
+
+/// Matches ft8_lib's `ftx_message_offsets_t`: 3 field-type tags +
+/// 3 int16 byte offsets (FTX_MAX_MESSAGE_FIELDS = 3).
 #[repr(C)]
 #[derive(Copy, Clone, Default)]
 pub struct ftx_message_offsets_t {
-    pub offsets: [i16; 6],
+    pub types: [ftx_field_t; 3],
+    pub offsets: [i16; 3],
 }
 
 extern "C" {

@@ -18,8 +18,6 @@ pub use error::Ft8Error;
 
 const FT8_SYMBOLS: usize = 79;
 const FT8_SYMBOL_PERIOD: f32 = 0.16; // seconds
-const FT8_NSPSYM: f32 = 12_000.0 * FT8_SYMBOL_PERIOD; // 1920 samples/symbol @ 12 kHz
-const FT8_TONE_SPACING: f32 = 6.25; // Hz
 /// Canonical base frequency of the FT8 sub-band.
 pub const DEFAULT_BASE_FREQ_HZ: f32 = 1_000.0;
 
@@ -41,33 +39,39 @@ pub fn encode_to_audio(message_text: &str, base_freq_hz: f32) -> Result<Vec<f32>
     let mut tones = [0u8; FT8_SYMBOLS];
     unsafe { sys::ft8_encode(msg.payload.as_ptr(), tones.as_mut_ptr()) };
 
-    // Rectangular FSK tones. Real FT8 TX uses GFSK pulse shaping
-    // for a narrow spectrum, but the decoder's STFT stage is
-    // tolerant enough that rectangular tones decode fine for tests.
-    // Real-world shaping belongs in a follow-up.
-    let nspsym = FT8_NSPSYM as usize;
-    let sample_rate = 12_000.0_f32;
-    let total_samples = nspsym * FT8_SYMBOLS;
-    let mut phase = 0.0_f32;
-    let mut audio = Vec::with_capacity(total_samples);
-    let dt = 1.0 / sample_rate;
-    for &t in &tones {
-        let tone_hz = base_freq_hz + t as f32 * FT8_TONE_SPACING;
-        let dphi = 2.0 * std::f32::consts::PI * tone_hz * dt;
-        for _ in 0..nspsym {
-            audio.push(phase.cos());
-            phase += dphi;
-            if phase > std::f32::consts::TAU {
-                phase -= std::f32::consts::TAU;
-            }
-        }
+    // GFSK synthesis delegated to the shim wrapper that mirrors
+    // demo/gen_ft8.c:synth_gfsk byte-for-byte. This avoids subtle
+    // divergences between a hand-ported Rust version and the C
+    // reference that powers the decoder.
+    let sample_rate = 12_000_i32;
+    let symbol_period = FT8_SYMBOL_PERIOD;
+    let symbol_bt = 2.0_f32;
+    let nspsym = (0.5 + sample_rate as f32 * symbol_period) as usize;
+    let n_wave = FT8_SYMBOLS * nspsym;
+    let mut pulse_scratch = vec![0.0_f32; 3 * nspsym];
+    let mut dphi_scratch = vec![0.0_f32; n_wave + 2 * nspsym];
+    let mut audio = vec![0.0_f32; n_wave];
+    unsafe {
+        sys::arion_ft8_synth_gfsk(
+            tones.as_ptr(),
+            FT8_SYMBOLS as i32,
+            base_freq_hz,
+            symbol_bt,
+            symbol_period,
+            sample_rate,
+            pulse_scratch.as_mut_ptr(),
+            dphi_scratch.as_mut_ptr(),
+            audio.as_mut_ptr(),
+        );
     }
     Ok(audio)
 }
 
-/// FT8 receiver.
+/// FT8 receiver. `storage` is allocated with 8-byte alignment
+/// because monitor_t contains double-aligned fields (function
+/// pointers, kiss_fft config).
 pub struct Monitor {
-    storage: Vec<u8>,
+    storage: Box<[u64]>,
     block_size: usize,
 }
 
@@ -75,7 +79,8 @@ impl Monitor {
     /// Build a 12 kHz FT8 monitor watching 300–3000 Hz.
     pub fn new() -> Result<Self, Ft8Error> {
         let size = unsafe { sys::arion_ft8_monitor_sizeof() };
-        let mut storage = vec![0u8; size];
+        let words = size.div_ceil(8);
+        let mut storage: Box<[u64]> = vec![0u64; words].into_boxed_slice();
         let cfg = sys::monitor_config_t {
             f_min: 200.0,
             f_max: 3_000.0,
@@ -85,11 +90,10 @@ impl Monitor {
             protocol: sys::FTX_PROTOCOL_FT8,
         };
         unsafe { sys::monitor_init(storage.as_mut_ptr() as *mut _, &cfg) };
-        // Re-read block_size by peeking: monitor_process needs exactly
-        // that many samples per call. Field offset mirrors the C struct
-        // (float sym_period, int min_bin, int max_bin, int block_size);
-        // we avoid binding-the-layout by re-computing it from cfg.
-        let block_size = (cfg.sample_rate as f32 * FT8_SYMBOL_PERIOD / cfg.time_osr as f32) as usize;
+        // monitor_process consumes `time_osr × subblock_size` = one
+        // full symbol period per call (each call runs time_osr inner
+        // FFTs). The subblock_size is block_size / time_osr.
+        let block_size = (cfg.sample_rate as f32 * FT8_SYMBOL_PERIOD) as usize;
         Ok(Self {
             storage,
             block_size,
@@ -124,10 +128,14 @@ impl Monitor {
             sys::ftx_find_candidates(wf_ptr, max_candidates as i32, heap.as_mut_ptr(), min_score)
         };
         let mut out = Vec::new();
-        for cand in &heap[..n_found as usize] {
+        // Sort by score descending so the first decode wins.
+        let mut sorted: Vec<_> = heap[..n_found as usize].to_vec();
+        sorted.sort_by_key(|c| -(c.score as i32));
+        for cand in &sorted {
             let mut msg = sys::ftx_message_t::default();
             let mut status = sys::ftx_decode_status_t::default();
-            let ok = unsafe { sys::ftx_decode_candidate(wf_ptr, cand, 20, &mut msg, &mut status) };
+            let ok = unsafe { sys::ftx_decode_candidate(wf_ptr, cand, 25, &mut msg, &mut status) };
+            if !ok { continue; }
             if !ok {
                 continue;
             }
@@ -173,37 +181,33 @@ mod tests {
 
     #[test]
     fn encode_produces_expected_length() {
-        let audio = encode_to_audio("CQ F4XYZ JN06", DEFAULT_BASE_FREQ_HZ).unwrap();
+        let audio = encode_to_audio("CQ AA0AA FN42", DEFAULT_BASE_FREQ_HZ).unwrap();
         // 79 symbols × 1920 samples @ 12 kHz ≈ 12.6 s of signal.
         assert_eq!(audio.len(), 79 * 1920);
     }
 
-    // TODO(F.2.2): rectangular FSK tones decode poorly; the ft8_lib
-    // sync stage expects GFSK-shaped edges. Re-enable once encode_to_audio
-    // gains proper Gaussian-pulse shaping (BT=2, matching FT8 spec).
     #[test]
-    #[ignore]
     fn round_trip_decode() {
-        let audio = encode_to_audio("CQ F4XYZ JN06", DEFAULT_BASE_FREQ_HZ).unwrap();
         let mut m = Monitor::new().unwrap();
-        // Pad with 0.5 s of silence at the start so the decoder has
-        // a chance to observe the leading noise floor.
-        let pad = vec![0.0_f32; m.block_size() * 6];
-        for chunk in pad.chunks_exact(m.block_size()) {
+        let audio = encode_to_audio("CQ AA0AA FN42", DEFAULT_BASE_FREQ_HZ).unwrap();
+        // 79 symbols × time_osr = 158 subblocks of signal, plus a
+        // short guard of leading + trailing silence (mirrors a real
+        // slot where TX starts ~0.5 s after the UTC boundary and
+        // leaves trailing margin before the next slot).
+        let guard = vec![0.0_f32; m.block_size() * 3];
+        for chunk in guard.chunks_exact(m.block_size()) {
             m.process(chunk);
         }
         for chunk in audio.chunks_exact(m.block_size()) {
             m.process(chunk);
         }
-        // Trailing padding so the STFT flush captures the last symbols.
-        let trail = vec![0.0_f32; m.block_size() * 6];
-        for chunk in trail.chunks_exact(m.block_size()) {
+        for chunk in guard.chunks_exact(m.block_size()) {
             m.process(chunk);
         }
-        let decodes = m.decode(64, 0);
+        let decodes = m.decode(64, 10);
         let joined: String = decodes.iter().map(|d| d.text.as_str()).collect();
         assert!(
-            joined.contains("F4XYZ") || joined.contains("JN06"),
+            joined.contains("AA0AA") || joined.contains("FN42"),
             "no expected text in: {joined:?}"
         );
     }
@@ -211,8 +215,20 @@ mod tests {
     #[test]
     fn monitor_accepts_expected_block_size() {
         let mut m = Monitor::new().unwrap();
-        assert_eq!(m.block_size(), 960);
+        // One full FT8 symbol @ 12 kHz = 1920 samples.
+        assert_eq!(m.block_size(), 1920);
         let block = vec![0.0_f32; m.block_size()];
         m.process(&block);
+    }
+
+    #[test]
+    fn decode_silence_returns_empty() {
+        let mut m = Monitor::new().unwrap();
+        let block = vec![0.0_f32; m.block_size()];
+        for _ in 0..20 {
+            m.process(&block);
+        }
+        let decodes = m.decode(16, 10);
+        assert!(decodes.is_empty());
     }
 }
