@@ -15,6 +15,8 @@
 //!
 //! Canonical reference: G3PLX, "PSK31 Fundamentals" (1998).
 
+use liquid::{Complex32, MsResamp, SymSync};
+
 use super::varicode::{self, VaricodeDecoder};
 
 pub const SAMPLE_RATE: f32 = 48_000.0;
@@ -42,10 +44,12 @@ pub fn encode_text(text: &str, carrier_hz: f32) -> Vec<f32> {
     // (continuous phase reversals every symbol). In varicode the "00"
     // separator resets the accumulator, so idle zeros produce no
     // character and cleanly frame the first real code that follows.
-    // 33 = 32 + 1 sacrificial bit consumed by the demod's priming
-    // step, so the varicode stream heading into the first real
-    // character starts on a clean "00" boundary.
-    bits.extend(std::iter::repeat_n(false, 33));
+    // Lead-in idle: zero bits = continuous phase reversals. Long
+    // enough to absorb the demod pipeline delay (NCO phase lock +
+    // MsResamp transient + SymSync filter bank warm-up + one
+    // priming symbol) and leave the varicode decoder on a clean
+    // "00" boundary before the first real character.
+    bits.extend(std::iter::repeat_n(false, 256));
     for c in text.bytes() {
         if let Some(code) = varicode::code_for(c) {
             for b in code.bytes() {
@@ -55,10 +59,12 @@ pub fn encode_text(text: &str, carrier_hz: f32) -> Vec<f32> {
             bits.push(false);
         }
     }
-    // 33 = 32 + 1 sacrificial bit consumed by the demod's priming
-    // step, so the varicode stream heading into the first real
-    // character starts on a clean "00" boundary.
-    bits.extend(std::iter::repeat_n(false, 33));
+    // Lead-in idle: zero bits = continuous phase reversals. Long
+    // enough to absorb the demod pipeline delay (NCO phase lock +
+    // MsResamp transient + SymSync filter bank warm-up + one
+    // priming symbol) and leave the varicode decoder on a clean
+    // "00" boundary before the first real character.
+    bits.extend(std::iter::repeat_n(false, 128));
 
     // Differential BPSK: symbol[k] = symbol[k-1] * (bit==1 ? +1 : -1).
     // PSK31 convention: "1" = no phase change, "0" = 180° phase change.
@@ -85,21 +91,36 @@ pub fn encode_text(text: &str, carrier_hz: f32) -> Vec<f32> {
     out
 }
 
+// Baseband pipeline:
+//   48 kHz real in → NCO mix-down → 48 kHz complex baseband
+//   → MsResamp → ~250 Hz complex (8 samples per 31.25 baud symbol)
+//   → SymSync (Kaiser polyphase) → 1 sample per symbol
+//   → differential BPSK → bit → varicode
+//
+// Decimating first makes the symsync filter bank tractable
+// (internal state proportional to k·m·M; k=8 keeps it tiny).
+const SYMSYNC_K: u32 = 8;
+const SYMSYNC_M: u32 = 3;
+const SYMSYNC_BETA: f32 = 0.3;
+const SYMSYNC_BANK: u32 = 32;
+const BASEBAND_RATE: f32 = SYMSYNC_K as f32 * BAUD; // 250 Hz
+
 /// PSK31 demodulator. Operates on 48 kHz real audio (same rate as the
 /// DSP tap feeding `DigitalPipeline`).
 pub struct Psk31Demod {
     carrier_hz: f32,
     /// NCO accumulator (radians).
     phase: f32,
-    /// Running matched-filter accumulator over one symbol.
-    acc_i: f32,
-    acc_q: f32,
-    /// Sample counter within the current symbol window [0,
-    /// SAMPLES_PER_SYMBOL).
-    symbol_phase: usize,
-    /// Previous symbol's complex value (for differential demod).
-    prev: (f32, f32),
-    /// Seen at least one complete symbol yet?
+    /// 48 kHz → BASEBAND_RATE complex decimator.
+    resampler: MsResamp,
+    /// Kaiser polyphase symbol synchronizer (BASEBAND_RATE → 1 sa/sym).
+    symsync: SymSync,
+    /// Scratch buffers.
+    baseband: Vec<Complex32>,
+    decimated: Vec<Complex32>,
+    symbols: Vec<Complex32>,
+    /// Differential demod state: previous symbol.
+    prev: Complex32,
     primed: bool,
     varicode: VaricodeDecoder,
     pending_text: String,
@@ -107,13 +128,23 @@ pub struct Psk31Demod {
 
 impl Psk31Demod {
     pub fn new(carrier_hz: f32) -> Self {
+        let resampler = MsResamp::new(BASEBAND_RATE / SAMPLE_RATE, 60.0)
+            .expect("msresamp_crcf_create");
+        let mut symsync = SymSync::new_kaiser(SYMSYNC_K, SYMSYNC_M, SYMSYNC_BETA, SYMSYNC_BANK)
+            .expect("symsync_crcf_create_kaiser");
+        // Moderate loop bandwidth: fast enough to lock within the
+        // encoder's 128-bit idle preamble, narrow enough to track
+        // through a real HF channel without chasing noise.
+        symsync.set_loop_bandwidth(0.05);
         Self {
             carrier_hz,
             phase: 0.0,
-            acc_i: 0.0,
-            acc_q: 0.0,
-            symbol_phase: 0,
-            prev: (1.0, 0.0),
+            resampler,
+            symsync,
+            baseband: Vec::with_capacity(2048),
+            decimated: Vec::with_capacity(64),
+            symbols: Vec::with_capacity(16),
+            prev: Complex32 { re: 1.0, im: 0.0 },
             primed: false,
             varicode: VaricodeDecoder::new(),
             pending_text: String::new(),
@@ -123,45 +154,48 @@ impl Psk31Demod {
     /// Feed audio samples at 48 kHz. Any newly-decoded characters are
     /// appended to an internal buffer — drain with `drain_text`.
     pub fn process_block(&mut self, audio: &[f32]) {
+        // Stage 1: NCO mix-down to complex baseband.
+        self.baseband.clear();
+        self.baseband.reserve(audio.len());
         let dtheta = 2.0 * std::f32::consts::PI * self.carrier_hz / SAMPLE_RATE;
         for &x in audio {
-            // Mix down with cos + sin NCO to get complex baseband.
             let (s, c) = (self.phase.sin(), self.phase.cos());
-            self.acc_i += x * c;
-            self.acc_q += x * -s;
-
+            self.baseband.push(Complex32 {
+                re: x * c,
+                im: -x * s,
+            });
             self.phase += dtheta;
             if self.phase > std::f32::consts::TAU {
                 self.phase -= std::f32::consts::TAU;
             }
+        }
 
-            self.symbol_phase += 1;
-            if self.symbol_phase >= SAMPLES_PER_SYMBOL {
-                // Symbol boundary: matched filter output is (acc_i,
-                // acc_q) summed over exactly one symbol. For a BPSK
-                // signal this is ±magnitude along the carrier axis.
-                let cur = (self.acc_i, self.acc_q);
-                if self.primed {
-                    // Differential demod: bit = sign(<cur, prev>).
-                    // Positive dot product → same phase → bit 1.
-                    let dot = cur.0 * self.prev.0 + cur.1 * self.prev.1;
-                    let bit = dot > 0.0;
-                    self.varicode.push_bit(bit);
-                    let decoded = self.varicode.drain();
-                    if !decoded.is_empty() {
-                        self.pending_text.push_str(&decoded);
-                    }
+        // Stage 2: decimate 48 k → ~250 Hz.
+        let cap = self.resampler.num_output(audio.len() as u32) as usize + 16;
+        if self.decimated.len() < cap {
+            self.decimated.resize(cap, Complex32 { re: 0.0, im: 0.0 });
+        }
+        let n_dec = self.resampler.execute(&self.baseband, &mut self.decimated);
+
+        // Stage 3: symbol sync → one complex sample per symbol.
+        let sym_cap = n_dec / SYMSYNC_K as usize + 4;
+        if self.symbols.len() < sym_cap {
+            self.symbols.resize(sym_cap, Complex32 { re: 0.0, im: 0.0 });
+        }
+        let n_sym = self.symsync.execute(&self.decimated[..n_dec], &mut self.symbols);
+
+        // Stage 4: differential BPSK → bit → varicode.
+        for &cur in &self.symbols[..n_sym] {
+            if self.primed {
+                let dot = cur.re * self.prev.re + cur.im * self.prev.im;
+                self.varicode.push_bit(dot > 0.0);
+                let decoded = self.varicode.drain();
+                if !decoded.is_empty() {
+                    self.pending_text.push_str(&decoded);
                 }
-                self.prev = cur;
-                self.primed = true;
-                self.acc_i = 0.0;
-                self.acc_q = 0.0;
-                self.symbol_phase = 0;
-                // TODO(F.1.2d): Gardner or liquid symsync timing
-                // correction around here to lock onto signals whose
-                // symbol phase doesn't match the arbitrary block
-                // boundary we chose at init.
             }
+            self.prev = cur;
+            self.primed = true;
         }
     }
 
@@ -181,6 +215,23 @@ mod tests {
         d.process_block(&audio);
         let out = d.drain_text();
         assert!(out.contains("hi"), "decoded text: {out:?}");
+    }
+
+    /// Simulate an off-air signal starting mid-symbol — the symsync
+    /// loop must re-lock timing and recover the message. The first
+    /// character may be lost or garbled during lock acquisition
+    /// (matches fldigi behaviour; real PSK31 operators always expect
+    /// some preamble text to be corrupted before carrier+symbol locks
+    /// settle). Check that a substring of the trailing message
+    /// decodes cleanly.
+    #[test]
+    fn round_trip_with_timing_offset() {
+        let mut audio = encode_text("garbagexxxhello", DEFAULT_CARRIER_HZ);
+        audio.drain(..737); // ≈ 0.48 of a 1536-sample symbol
+        let mut d = Psk31Demod::new(DEFAULT_CARRIER_HZ);
+        d.process_block(&audio);
+        let out = d.drain_text();
+        assert!(out.contains("hello"), "decoded text: {out:?}");
     }
 
     #[test]

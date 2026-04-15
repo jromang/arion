@@ -55,6 +55,30 @@ extern "C" {
     pub fn modemcf_get_demodulator_sample(q: modemcf, x_hat: *mut LiquidFloatComplex) -> c_int;
 }
 
+// --- symbol synchronizer (symsync_crcf) -------------------------------------
+
+pub type symsync_crcf = *mut c_void;
+
+extern "C" {
+    pub fn symsync_crcf_create_kaiser(
+        k: c_uint,
+        m: c_uint,
+        beta: c_float,
+        num_filters: c_uint,
+    ) -> symsync_crcf;
+    pub fn symsync_crcf_destroy(q: symsync_crcf) -> c_int;
+    pub fn symsync_crcf_reset(q: symsync_crcf) -> c_int;
+    pub fn symsync_crcf_set_output_rate(q: symsync_crcf, k_out: c_uint) -> c_int;
+    pub fn symsync_crcf_set_lf_bw(q: symsync_crcf, bt: c_float) -> c_int;
+    pub fn symsync_crcf_execute(
+        q: symsync_crcf,
+        x: *mut LiquidFloatComplex,
+        nx: c_uint,
+        y: *mut LiquidFloatComplex,
+        ny: *mut c_uint,
+    ) -> c_int;
+}
+
 // --- NCO / PLL (nco_crcf) ---------------------------------------------------
 
 pub type nco_crcf = *mut c_void;

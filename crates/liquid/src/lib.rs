@@ -10,11 +10,13 @@ pub mod error;
 pub mod modem;
 pub mod msresamp;
 pub mod nco;
+pub mod symsync;
 
 pub use error::LiquidError;
 pub use modem::{Modem, ModemScheme};
 pub use msresamp::{Complex32, MsResamp};
 pub use nco::Nco;
+pub use symsync::SymSync;
 
 pub fn version() -> &'static str {
     unsafe {
