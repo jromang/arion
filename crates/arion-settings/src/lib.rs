@@ -305,7 +305,44 @@ pub struct RxSettings {
     pub anr:          bool,
     #[serde(default)]
     pub emnr:         bool,
+    #[serde(default)]
+    pub squelch:         bool,
+    #[serde(default = "default_squelch_db")]
+    pub squelch_db:      f32,
+    #[serde(default)]
+    pub apf:             bool,
+    #[serde(default = "default_apf_freq")]
+    pub apf_freq_hz:     f32,
+    #[serde(default = "default_apf_bw")]
+    pub apf_bw_hz:       f32,
+    #[serde(default = "default_apf_gain")]
+    pub apf_gain_db:     f32,
+    #[serde(default = "default_agc_top")]
+    pub agc_top_dbm:     f32,
+    #[serde(default = "default_agc_hang_level")]
+    pub agc_hang_level:  f32,
+    #[serde(default = "default_agc_decay")]
+    pub agc_decay_ms:    i32,
+    #[serde(default = "default_agc_fixed_gain")]
+    pub agc_fixed_gain:  f32,
+    #[serde(default = "default_fm_deviation")]
+    pub fm_deviation_hz: f32,
+    #[serde(default)]
+    pub ctcss_on:        bool,
+    #[serde(default = "default_ctcss_hz")]
+    pub ctcss_hz:        f32,
 }
+
+fn default_squelch_db()     -> f32 { -30.0 }
+fn default_apf_freq()       -> f32 { 600.0 }
+fn default_apf_bw()         -> f32 { 50.0 }
+fn default_apf_gain()       -> f32 { 6.0 }
+fn default_agc_top()        -> f32 { -30.0 }
+fn default_agc_hang_level() -> f32 { -20.0 }
+fn default_agc_decay()      -> i32 { 250 }
+fn default_agc_fixed_gain() -> f32 { 10.0 }
+fn default_fm_deviation()   -> f32 { 5000.0 }
+fn default_ctcss_hz()       -> f32 { 67.0 }
 
 impl Default for RxSettings {
     fn default() -> Self {
@@ -318,6 +355,19 @@ impl Default for RxSettings {
             nr4:          false,
             anr:          false,
             emnr:         false,
+            squelch:         false,
+            squelch_db:      default_squelch_db(),
+            apf:             false,
+            apf_freq_hz:     default_apf_freq(),
+            apf_bw_hz:       default_apf_bw(),
+            apf_gain_db:     default_apf_gain(),
+            agc_top_dbm:     default_agc_top(),
+            agc_hang_level:  default_agc_hang_level(),
+            agc_decay_ms:    default_agc_decay(),
+            agc_fixed_gain:  default_agc_fixed_gain(),
+            fm_deviation_hz: default_fm_deviation(),
+            ctcss_on:        false,
+            ctcss_hz:        default_ctcss_hz(),
         }
     }
 }

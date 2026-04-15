@@ -78,6 +78,20 @@ pub struct RxState {
     pub nr4:          bool,
     pub anr:          bool,
     pub emnr:         bool,
+    // --- E.10–E.13 (squelch / APF / AGC fine / FM) ---
+    pub squelch:         bool,
+    pub squelch_db:      f32,
+    pub apf:             bool,
+    pub apf_freq_hz:     f32,
+    pub apf_bw_hz:       f32,
+    pub apf_gain_db:     f32,
+    pub agc_top_dbm:     f32,
+    pub agc_hang_level:  f32,
+    pub agc_decay_ms:    i32,
+    pub agc_fixed_gain:  f32,
+    pub fm_deviation_hz: f32,
+    pub ctcss_on:        bool,
+    pub ctcss_hz:        f32,
     pub filter_lo:    f64,
     pub filter_hi:    f64,
     // --- DSP toggles (UI + persist, DSP binding in E) ---
@@ -112,6 +126,19 @@ impl Default for RxState {
             nr4:          false,
             anr:          false,
             emnr:         false,
+            squelch:         false,
+            squelch_db:      -30.0,
+            apf:             false,
+            apf_freq_hz:     600.0,
+            apf_bw_hz:       50.0,
+            apf_gain_db:     6.0,
+            agc_top_dbm:     -30.0,
+            agc_hang_level:  -20.0,
+            agc_decay_ms:    250,
+            agc_fixed_gain:  10.0,
+            fm_deviation_hz: 5000.0,
+            ctcss_on:        false,
+            ctcss_hz:        67.0,
             filter_lo:    lo,
             filter_hi:    hi,
             agc_mode:     AgcPreset::Med,
@@ -503,6 +530,19 @@ impl App {
                 nr4:          serde_rx.nr4,
                 anr:          serde_rx.anr,
                 emnr:         serde_rx.emnr,
+                squelch:         serde_rx.squelch,
+                squelch_db:      serde_rx.squelch_db,
+                apf:             serde_rx.apf,
+                apf_freq_hz:     serde_rx.apf_freq_hz,
+                apf_bw_hz:       serde_rx.apf_bw_hz,
+                apf_gain_db:     serde_rx.apf_gain_db,
+                agc_top_dbm:     serde_rx.agc_top_dbm,
+                agc_hang_level:  serde_rx.agc_hang_level,
+                agc_decay_ms:    serde_rx.agc_decay_ms,
+                agc_fixed_gain:  serde_rx.agc_fixed_gain,
+                fm_deviation_hz: serde_rx.fm_deviation_hz,
+                ctcss_on:        serde_rx.ctcss_on,
+                ctcss_hz:        serde_rx.ctcss_hz,
                 filter_lo:    flo,
                 filter_hi:    fhi,
                 ..RxState::default()
@@ -722,6 +762,131 @@ impl App {
         view.emnr = on;
         if let Some(r) = &self.radio {
             let _ = r.set_rx_emnr(rx, on);
+        }
+        self.mark_dirty();
+    }
+
+    // --- E.10 Squelch ---
+
+    pub fn set_rx_squelch(&mut self, rx: u8, on: bool) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.squelch = on;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_squelch_run(rx, on);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_squelch_threshold(&mut self, rx: u8, db: f32) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.squelch_db = db;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_squelch_threshold(rx, db as f64);
+        }
+        self.mark_dirty();
+    }
+
+    // --- E.11 APF ---
+
+    pub fn set_rx_apf(&mut self, rx: u8, on: bool) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.apf = on;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_apf_run(rx, on);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_apf_freq(&mut self, rx: u8, hz: f32) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.apf_freq_hz = hz;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_apf_freq(rx, hz as f64);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_apf_bandwidth(&mut self, rx: u8, hz: f32) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.apf_bw_hz = hz;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_apf_bandwidth(rx, hz as f64);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_apf_gain(&mut self, rx: u8, db: f32) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.apf_gain_db = db;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_apf_gain(rx, db as f64);
+        }
+        self.mark_dirty();
+    }
+
+    // --- E.12 AGC fine ---
+
+    pub fn set_rx_agc_top(&mut self, rx: u8, dbm: f32) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.agc_top_dbm = dbm;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_agc_top(rx, dbm as f64);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_agc_hang_level(&mut self, rx: u8, level: f32) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.agc_hang_level = level;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_agc_hang_level(rx, level as f64);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_agc_decay(&mut self, rx: u8, ms: i32) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.agc_decay_ms = ms;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_agc_decay(rx, ms);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_agc_fixed_gain(&mut self, rx: u8, db: f32) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.agc_fixed_gain = db;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_agc_fixed_gain(rx, db as f64);
+        }
+        self.mark_dirty();
+    }
+
+    // --- E.13 FM ---
+
+    pub fn set_rx_fm_deviation(&mut self, rx: u8, hz: f32) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.fm_deviation_hz = hz;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_fm_deviation(rx, hz as f64);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_ctcss(&mut self, rx: u8, on: bool) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.ctcss_on = on;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_ctcss_run(rx, on);
+        }
+        self.mark_dirty();
+    }
+
+    pub fn set_rx_ctcss_freq(&mut self, rx: u8, hz: f32) {
+        let Some(view) = self.rxs.get_mut(rx as usize) else { return };
+        view.ctcss_hz = hz;
+        if let Some(r) = &self.radio {
+            let _ = r.set_rx_ctcss_freq(rx, hz as f64);
         }
         self.mark_dirty();
     }
@@ -1035,6 +1200,19 @@ impl App {
                 nr4:          view.nr4,
                 anr:          view.anr,
                 emnr:         view.emnr,
+                squelch:         view.squelch,
+                squelch_db:      view.squelch_db,
+                apf:             view.apf,
+                apf_freq_hz:     view.apf_freq_hz,
+                apf_bw_hz:       view.apf_bw_hz,
+                apf_gain_db:     view.apf_gain_db,
+                agc_top_dbm:     view.agc_top_dbm,
+                agc_hang_level:  view.agc_hang_level,
+                agc_decay_ms:    view.agc_decay_ms,
+                agc_fixed_gain:  view.agc_fixed_gain,
+                fm_deviation_hz: view.fm_deviation_hz,
+                ctcss_on:        view.ctcss_on,
+                ctcss_hz:        view.ctcss_hz,
             };
         }
         s.band_stacks  = self.band_stack.to_settings();

@@ -176,6 +176,49 @@ unsafe extern "C" {
     /// Toggle LMS adaptive noise reduction (Thetis-branded "NR").
     pub fn SetRXAANRRun(channel: c_int, run: c_int);
 
+    // --- Squelch --------------------------------------------------------
+
+    /// SSB/CW voice squelch toggle.
+    pub fn SetRXASSQLRun(channel: c_int, run: c_int);
+    /// SSB/CW voice squelch threshold in dB (negative; -100..0 typical).
+    pub fn SetRXASSQLThreshold(channel: c_int, threshold: c_double);
+
+    /// FM squelch toggle.
+    pub fn SetRXAFMSQRun(channel: c_int, run: c_int);
+    /// FM squelch threshold (level 0..1, 0.3 = typical).
+    pub fn SetRXAFMSQThreshold(channel: c_int, threshold: c_double);
+
+    /// AM squelch toggle.
+    pub fn SetRXAAMSQRun(channel: c_int, run: c_int);
+    /// AM squelch threshold in dB.
+    pub fn SetRXAAMSQThreshold(channel: c_int, threshold: c_double);
+
+    // --- APF (Audio Peak Filter for CW, upstream name SPCW) -------------
+
+    pub fn SetRXASPCWRun(channel: c_int, run: c_int);
+    pub fn SetRXASPCWFreq(channel: c_int, f_center: c_double);
+    pub fn SetRXASPCWBandwidth(channel: c_int, bandwidth: c_double);
+    pub fn SetRXASPCWGain(channel: c_int, gain: c_double);
+
+    // --- AGC fine controls (SetRXAAGCTop is declared above) -------------
+
+    pub fn SetRXAAGCHang(channel: c_int, hang: c_int);
+    pub fn SetRXAAGCHangLevel(channel: c_int, hang_level: c_double);
+    pub fn SetRXAAGCHangThreshold(channel: c_int, hang_threshold: c_int);
+    pub fn SetRXAAGCDecay(channel: c_int, decay: c_int);
+    pub fn SetRXAAGCSlope(channel: c_int, slope: c_int);
+    pub fn SetRXAAGCFixed(channel: c_int, fixed_agc: c_double);
+    pub fn SetRXAAGCAttack(channel: c_int, attack: c_int);
+
+    // --- FM demod parameters --------------------------------------------
+
+    /// FM deviation in Hz (e.g. 2500 for narrow, 5000 for wide).
+    pub fn SetRXAFMDeviation(channel: c_int, deviation: c_double);
+    /// CTCSS sub-audible tone squelch toggle.
+    pub fn SetRXACTCSSRun(channel: c_int, run: c_int);
+    /// CTCSS sub-audible tone frequency in Hz (67.0..254.1 range).
+    pub fn SetRXACTCSSFreq(channel: c_int, freq: c_double);
+
     // --- NR3 (RNNoise) --------------------------------------------------
     //
     // These are only meaningful when `wdsp-sys` was built against a

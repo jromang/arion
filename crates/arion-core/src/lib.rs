@@ -220,6 +220,20 @@ enum DspCommand {
     SetRxEmnr { rx: u8, enabled: bool },
     SetRxAnr  { rx: u8, enabled: bool },
     SetRxBinaural { rx: u8, enabled: bool },
+    // --- Phase E.10–E.13 ---
+    SetRxSquelchRun       { rx: u8, enabled: bool },
+    SetRxSquelchThreshold { rx: u8, threshold: f64 },
+    SetRxApfRun           { rx: u8, enabled: bool },
+    SetRxApfFreq          { rx: u8, freq_hz: f64 },
+    SetRxApfBandwidth     { rx: u8, bw_hz:   f64 },
+    SetRxApfGain          { rx: u8, gain_db: f64 },
+    SetRxAgcTop           { rx: u8, dbm:     f64 },
+    SetRxAgcHangLevel     { rx: u8, level:   f64 },
+    SetRxAgcDecay         { rx: u8, decay_ms: i32 },
+    SetRxAgcFixedGain     { rx: u8, gain_db: f64 },
+    SetRxFmDeviation      { rx: u8, hz:      f64 },
+    SetRxCtcssRun         { rx: u8, enabled: bool },
+    SetRxCtcssFreq        { rx: u8, hz:      f64 },
 }
 
 /// A running end-to-end receive session.
@@ -497,6 +511,59 @@ impl Radio {
 
     pub fn set_rx_anr(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
         self.commands.send(DspCommand::SetRxAnr { rx, enabled })?;
+        Ok(())
+    }
+
+    pub fn set_rx_squelch_run(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxSquelchRun { rx, enabled })?;
+        Ok(())
+    }
+    pub fn set_rx_squelch_threshold(&self, rx: u8, threshold: f64) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxSquelchThreshold { rx, threshold })?;
+        Ok(())
+    }
+    pub fn set_rx_apf_run(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxApfRun { rx, enabled })?;
+        Ok(())
+    }
+    pub fn set_rx_apf_freq(&self, rx: u8, hz: f64) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxApfFreq { rx, freq_hz: hz })?;
+        Ok(())
+    }
+    pub fn set_rx_apf_bandwidth(&self, rx: u8, hz: f64) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxApfBandwidth { rx, bw_hz: hz })?;
+        Ok(())
+    }
+    pub fn set_rx_apf_gain(&self, rx: u8, gain_db: f64) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxApfGain { rx, gain_db })?;
+        Ok(())
+    }
+    pub fn set_rx_agc_top(&self, rx: u8, dbm: f64) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxAgcTop { rx, dbm })?;
+        Ok(())
+    }
+    pub fn set_rx_agc_hang_level(&self, rx: u8, level: f64) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxAgcHangLevel { rx, level })?;
+        Ok(())
+    }
+    pub fn set_rx_agc_decay(&self, rx: u8, decay_ms: i32) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxAgcDecay { rx, decay_ms })?;
+        Ok(())
+    }
+    pub fn set_rx_agc_fixed_gain(&self, rx: u8, gain_db: f64) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxAgcFixedGain { rx, gain_db })?;
+        Ok(())
+    }
+    pub fn set_rx_fm_deviation(&self, rx: u8, hz: f64) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxFmDeviation { rx, hz })?;
+        Ok(())
+    }
+    pub fn set_rx_ctcss_run(&self, rx: u8, enabled: bool) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxCtcssRun { rx, enabled })?;
+        Ok(())
+    }
+    pub fn set_rx_ctcss_freq(&self, rx: u8, hz: f64) -> anyhow::Result<()> {
+        self.commands.send(DspCommand::SetRxCtcssFreq { rx, hz })?;
         Ok(())
     }
 
@@ -836,6 +903,64 @@ fn dsp_loop(
                         tracing::info!(rx, enabled, "DSP: binaural toggle");
                         channels[r].set_binaural(enabled);
                     }
+                }
+                DspCommand::SetRxSquelchRun { rx, enabled } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        let m = channels[r].mode();
+                        channels[r].set_squelch_enabled(m, enabled);
+                    }
+                }
+                DspCommand::SetRxSquelchThreshold { rx, threshold } => {
+                    let r = rx as usize;
+                    if r < num_rx {
+                        let m = channels[r].mode();
+                        channels[r].set_squelch_threshold(m, threshold);
+                    }
+                }
+                DspCommand::SetRxApfRun { rx, enabled } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_apf_enabled(enabled); }
+                }
+                DspCommand::SetRxApfFreq { rx, freq_hz } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_apf_freq(freq_hz); }
+                }
+                DspCommand::SetRxApfBandwidth { rx, bw_hz } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_apf_bandwidth(bw_hz); }
+                }
+                DspCommand::SetRxApfGain { rx, gain_db } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_apf_gain(gain_db); }
+                }
+                DspCommand::SetRxAgcTop { rx, dbm } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_agc_top(dbm); }
+                }
+                DspCommand::SetRxAgcHangLevel { rx, level } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_agc_hang_level(level); }
+                }
+                DspCommand::SetRxAgcDecay { rx, decay_ms } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_agc_decay(decay_ms); }
+                }
+                DspCommand::SetRxAgcFixedGain { rx, gain_db } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_agc_fixed_gain(gain_db); }
+                }
+                DspCommand::SetRxFmDeviation { rx, hz } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_fm_deviation(hz); }
+                }
+                DspCommand::SetRxCtcssRun { rx, enabled } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_ctcss_enabled(enabled); }
+                }
+                DspCommand::SetRxCtcssFreq { rx, hz } => {
+                    let r = rx as usize;
+                    if r < num_rx { channels[r].set_ctcss_freq(hz); }
                 }
             }
         }

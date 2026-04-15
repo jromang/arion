@@ -358,6 +358,88 @@ impl Channel {
         unsafe { sys::SetRXAANRRun(self.id, i32::from(enabled)); }
     }
 
+    // --- Squelch (mode-aware) -----------------------------------------
+
+    /// Toggle the squelch appropriate for the current demod mode. FM
+    /// uses the FM amplitude-discriminator squelch, AM uses the AM
+    /// level squelch, every other mode (SSB / CW / DIG) uses SSQL.
+    pub fn set_squelch_enabled(&mut self, mode: Mode, enabled: bool) {
+        let run = i32::from(enabled);
+        unsafe {
+            match mode {
+                Mode::Fm => sys::SetRXAFMSQRun(self.id, run),
+                Mode::Am | Mode::Sam => sys::SetRXAAMSQRun(self.id, run),
+                _ => sys::SetRXASSQLRun(self.id, run),
+            }
+        }
+    }
+
+    /// Set the squelch threshold. Units depend on the squelch flavour:
+    /// FM uses a 0..1 level, AM and SSB/CW use dB (typically -40..0).
+    pub fn set_squelch_threshold(&mut self, mode: Mode, threshold: f64) {
+        unsafe {
+            match mode {
+                Mode::Fm => sys::SetRXAFMSQThreshold(self.id, threshold),
+                Mode::Am | Mode::Sam => sys::SetRXAAMSQThreshold(self.id, threshold),
+                _ => sys::SetRXASSQLThreshold(self.id, threshold),
+            }
+        }
+    }
+
+    // --- APF (CW peak filter) ------------------------------------------
+
+    pub fn set_apf_enabled(&mut self, enabled: bool) {
+        unsafe { sys::SetRXASPCWRun(self.id, i32::from(enabled)); }
+    }
+    pub fn set_apf_freq(&mut self, hz: f64) {
+        unsafe { sys::SetRXASPCWFreq(self.id, hz); }
+    }
+    pub fn set_apf_bandwidth(&mut self, hz: f64) {
+        unsafe { sys::SetRXASPCWBandwidth(self.id, hz); }
+    }
+    pub fn set_apf_gain(&mut self, gain_db: f64) {
+        unsafe { sys::SetRXASPCWGain(self.id, gain_db); }
+    }
+
+    // --- AGC fine controls ---------------------------------------------
+
+    pub fn set_agc_top(&mut self, dbm: f64) {
+        unsafe { sys::SetRXAAGCTop(self.id, dbm); }
+    }
+    pub fn set_agc_hang_enabled(&mut self, on: bool) {
+        unsafe { sys::SetRXAAGCHang(self.id, i32::from(on)); }
+    }
+    pub fn set_agc_hang_level(&mut self, level: f64) {
+        unsafe { sys::SetRXAAGCHangLevel(self.id, level); }
+    }
+    pub fn set_agc_hang_threshold(&mut self, threshold: i32) {
+        unsafe { sys::SetRXAAGCHangThreshold(self.id, threshold); }
+    }
+    pub fn set_agc_decay(&mut self, decay_ms: i32) {
+        unsafe { sys::SetRXAAGCDecay(self.id, decay_ms); }
+    }
+    pub fn set_agc_slope(&mut self, slope: i32) {
+        unsafe { sys::SetRXAAGCSlope(self.id, slope); }
+    }
+    pub fn set_agc_fixed_gain(&mut self, gain_db: f64) {
+        unsafe { sys::SetRXAAGCFixed(self.id, gain_db); }
+    }
+    pub fn set_agc_attack(&mut self, attack_ms: i32) {
+        unsafe { sys::SetRXAAGCAttack(self.id, attack_ms); }
+    }
+
+    // --- FM demod params -----------------------------------------------
+
+    pub fn set_fm_deviation(&mut self, hz: f64) {
+        unsafe { sys::SetRXAFMDeviation(self.id, hz); }
+    }
+    pub fn set_ctcss_enabled(&mut self, enabled: bool) {
+        unsafe { sys::SetRXACTCSSRun(self.id, i32::from(enabled)); }
+    }
+    pub fn set_ctcss_freq(&mut self, hz: f64) {
+        unsafe { sys::SetRXACTCSSFreq(self.id, hz); }
+    }
+
     /// Enable or disable binaural (true stereo) audio output.
     pub fn set_binaural(&mut self, enabled: bool) {
         unsafe { sys::SetRXAPanelBinaural(self.id, i32::from(enabled)); }

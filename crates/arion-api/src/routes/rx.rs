@@ -42,6 +42,15 @@ pub struct RxPatch {
     pub nr4:          Option<bool>,
     pub anr:          Option<bool>,
     pub emnr:         Option<bool>,
+    pub squelch:         Option<bool>,
+    pub squelch_db:      Option<f32>,
+    pub apf:             Option<bool>,
+    pub apf_freq_hz:     Option<f32>,
+    pub agc_top_dbm:     Option<f32>,
+    pub agc_decay_ms:    Option<i32>,
+    pub fm_deviation_hz: Option<f32>,
+    pub ctcss_on:        Option<bool>,
+    pub ctcss_hz:        Option<f32>,
     pub agc:          Option<String>,
 }
 
@@ -64,6 +73,15 @@ pub async fn patch_rx(
     if let Some(on) = body.nr4 { send(Action::SetRxNr4 { rx, on })?; }
     if let Some(on) = body.anr { send(Action::SetRxAnr { rx, on })?; }
     if let Some(on) = body.emnr { send(Action::SetRxEmnr { rx, on })?; }
+    if let Some(on) = body.squelch { send(Action::SetRxSquelch { rx, on })?; }
+    if let Some(db) = body.squelch_db { send(Action::SetRxSquelchThreshold { rx, db })?; }
+    if let Some(on) = body.apf { send(Action::SetRxApf { rx, on })?; }
+    if let Some(hz) = body.apf_freq_hz { send(Action::SetRxApfFreq { rx, hz })?; }
+    if let Some(dbm) = body.agc_top_dbm { send(Action::SetRxAgcTop { rx, dbm })?; }
+    if let Some(ms) = body.agc_decay_ms { send(Action::SetRxAgcDecay { rx, ms })?; }
+    if let Some(hz) = body.fm_deviation_hz { send(Action::SetRxFmDeviation { rx, hz })?; }
+    if let Some(on) = body.ctcss_on { send(Action::SetRxCtcss { rx, on })?; }
+    if let Some(hz) = body.ctcss_hz { send(Action::SetRxCtcssFreq { rx, hz })?; }
     if let Some(agc) = body.agc { send(Action::SetRxAgc { rx, agc })?; }
     Ok(Json(json!({ "ok": true })))
 }
