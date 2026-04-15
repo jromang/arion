@@ -9,10 +9,12 @@ use std::ffi::CStr;
 pub mod error;
 pub mod modem;
 pub mod msresamp;
+pub mod nco;
 
 pub use error::LiquidError;
 pub use modem::{Modem, ModemScheme};
 pub use msresamp::{Complex32, MsResamp};
+pub use nco::Nco;
 
 pub fn version() -> &'static str {
     unsafe {

@@ -55,6 +55,26 @@ extern "C" {
     pub fn modemcf_get_demodulator_sample(q: modemcf, x_hat: *mut LiquidFloatComplex) -> c_int;
 }
 
+// --- NCO / PLL (nco_crcf) ---------------------------------------------------
+
+pub type nco_crcf = *mut c_void;
+
+pub type liquid_ncotype = c_int;
+pub const LIQUID_NCO: liquid_ncotype = 0;
+
+extern "C" {
+    pub fn nco_crcf_create(ty: liquid_ncotype) -> nco_crcf;
+    pub fn nco_crcf_destroy(q: nco_crcf) -> c_int;
+    pub fn nco_crcf_reset(q: nco_crcf) -> c_int;
+    pub fn nco_crcf_set_frequency(q: nco_crcf, dtheta: c_float) -> c_int;
+    pub fn nco_crcf_step(q: nco_crcf) -> c_int;
+    pub fn nco_crcf_mix_down(
+        q: nco_crcf,
+        x: LiquidFloatComplex,
+        y: *mut LiquidFloatComplex,
+    ) -> c_int;
+}
+
 // --- multi-stage arbitrary resampler (msresamp_crcf) ------------------------
 
 pub type msresamp_crcf = *mut c_void;
