@@ -192,7 +192,10 @@ pub struct EguiView {
     /// Per-RX zoom/pan state for the spectrum display.
     view_states: Vec<RxViewState>,
     /// Per-RX passband drag state (which edge/center is being dragged).
-    passband_drags: Vec<PassbandDrag>,
+    band_drags: Vec<BandDrag>,
+    /// VFO-drag anchor: `center_hz` at drag start. Kept latched across
+    /// frames so the applied (snapped) center doesn't feed back.
+    vfo_drag_start_center: Vec<u32>,
     /// Per-RX display layout (Panafall / Spectrum / Waterfall / Split).
     display_modes: Vec<DisplayMode>,
     /// Per-RX split fraction in Split mode — height fraction for the spectrum ∈ [0.15, 0.85].
@@ -253,7 +256,8 @@ impl EguiView {
         let waterfalls: Vec<_> = (0..MAX_RX).map(Waterfall::new).collect();
         let overlays        = (0..MAX_RX).map(|_| SpectrumOverlay::new()).collect();
         let view_states     = (0..MAX_RX).map(|_| RxViewState::default()).collect();
-        let passband_drags  = (0..MAX_RX).map(|_| PassbandDrag::None).collect();
+        let band_drags  = (0..MAX_RX).map(|_| BandDrag::None).collect();
+        let vfo_drag_start_center = vec![0_u32; MAX_RX];
         let display_modes   = (0..MAX_RX).map(|_| DisplayMode::default()).collect();
         let split_fractions = (0..MAX_RX).map(|_| 0.5_f32).collect();
 
@@ -302,7 +306,8 @@ impl EguiView {
             digital_filter: (0..MAX_RX).map(|_| String::new()).collect(),
             digital_paused: (0..MAX_RX).map(|_| false).collect(),
             view_states,
-            passband_drags,
+            band_drags,
+            vfo_drag_start_center,
             display_modes,
             split_fractions,
             new_memory_name:    String::new(),
@@ -2886,22 +2891,13 @@ impl EguiView {
                         (self.view_states[r].z_factor + step).clamp(0.05, 1.0);
                 }
 
-                // --- Pan via Middle-drag ---
-                if spec_resp.dragged_by(egui::PointerButton::Middle) {
-                    let delta_x = spec_resp.drag_delta().x;
-                    let vis_w = (hi_bin - lo_bin) as f32;
-                    let max_lo = (n_bins as f32 - vis_w).max(1.0);
-                    let p_delta = -delta_x / spec_rect.width() * vis_w / max_lo;
-                    self.view_states[r].p_slider =
-                        (self.view_states[r].p_slider + p_delta).clamp(0.0, 1.0);
-                }
-
-                // --- Passband drag hit-test (checked before tune) ---
+                // --- Passband / VFO / Pan drag hit-test ---
                 let rx_state = self.app.rx(r).cloned().unwrap_or_default();
                 let center_f  = center_hz as f32;
                 let filter_lo_abs = center_f + rx_state.filter_lo as f32;
                 let filter_hi_abs = center_f + rx_state.filter_hi as f32;
                 let visible_span  = hi_hz - lo_hz;
+                let tune_step = span_to_tune_step_hz(visible_span);
 
                 // Pixel x of each filter edge (clamped to spec_rect)
                 let (x_flo, x_fhi) = if visible_span > 0.0 && filter_hi_abs > filter_lo_abs {
@@ -2913,7 +2909,6 @@ impl EguiView {
                 } else {
                     (spec_rect.left(), spec_rect.right())
                 };
-
                 const EDGE_TOL: f32 = 5.0;
                 let hp = ui.ctx().pointer_hover_pos();
                 let hover_lo = hp.is_some_and(|p| {
@@ -2932,60 +2927,110 @@ impl EguiView {
                 if hover_lo
                     || hover_hi
                     || matches!(
-                        self.passband_drags[r],
-                        PassbandDrag::LoEdge | PassbandDrag::HiEdge
+                        self.band_drags[r],
+                        BandDrag::LoEdge | BandDrag::HiEdge
                     )
                 {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
                 } else if hover_center
-                    || matches!(self.passband_drags[r], PassbandDrag::Center)
+                    || matches!(
+                        self.band_drags[r],
+                        BandDrag::Center | BandDrag::Vfo
+                    )
                 {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
                 }
 
-                // Detect drag start: classify which part was clicked
+                // Detect drag start: classify which part was clicked.
+                // Priority: passband edges > passband center > fallback = VFO
+                // fine-tune (left-drag anywhere else on spectrum).
                 let press_origin = ui.input(|i| i.pointer.press_origin());
                 if spec_resp.drag_started() {
-                    self.passband_drags[r] = PassbandDrag::None;
+                    self.band_drags[r] = BandDrag::None;
                     if let Some(o) = press_origin {
                         if spec_rect.contains(o) {
                             if (o.x - x_flo).abs() < EDGE_TOL {
-                                self.passband_drags[r] = PassbandDrag::LoEdge;
+                                self.band_drags[r] = BandDrag::LoEdge;
                             } else if (o.x - x_fhi).abs() < EDGE_TOL {
-                                self.passband_drags[r] = PassbandDrag::HiEdge;
+                                self.band_drags[r] = BandDrag::HiEdge;
                             } else if o.x > x_flo && o.x < x_fhi {
-                                self.passband_drags[r] = PassbandDrag::Center;
+                                self.band_drags[r] = BandDrag::Center;
+                            } else {
+                                self.band_drags[r] = BandDrag::Vfo;
+                                self.vfo_drag_start_center[r] = center_hz;
                             }
                         }
                     }
                 }
                 if !spec_resp.dragged() {
-                    self.passband_drags[r] = PassbandDrag::None;
+                    self.band_drags[r] = BandDrag::None;
                 }
 
-                // Apply drag: convert pixel delta → Hz delta → new offsets
-                let passband_active =
-                    !matches!(self.passband_drags[r], PassbandDrag::None);
+                // Dispatch drag by classified target.
+                let drag_target = self.band_drags[r];
+                let passband_active = matches!(
+                    drag_target,
+                    BandDrag::LoEdge | BandDrag::HiEdge | BandDrag::Center
+                );
+                let vfo_drag_active = matches!(drag_target, BandDrag::Vfo);
+
                 if passband_active && spec_resp.dragged() {
                     let delta_hz =
                         spec_resp.drag_delta().x / spec_rect.width() * visible_span;
                     let lo_off = rx_state.filter_lo as f32;
                     let hi_off = rx_state.filter_hi as f32;
-                    let (mut new_lo, mut new_hi) = match self.passband_drags[r] {
-                        PassbandDrag::LoEdge  => (lo_off + delta_hz, hi_off),
-                        PassbandDrag::HiEdge  => (lo_off, hi_off + delta_hz),
-                        PassbandDrag::Center  => (lo_off + delta_hz, hi_off + delta_hz),
-                        PassbandDrag::None    => (lo_off, hi_off),
+                    let (mut new_lo, mut new_hi) = match drag_target {
+                        BandDrag::LoEdge  => (lo_off + delta_hz, hi_off),
+                        BandDrag::HiEdge  => (lo_off, hi_off + delta_hz),
+                        BandDrag::Center  => (lo_off + delta_hz, hi_off + delta_hz),
+                        _ => (lo_off, hi_off),
                     };
                     // Enforce minimum 100 Hz bandwidth
                     if new_hi - new_lo < 100.0 {
-                        match self.passband_drags[r] {
-                            PassbandDrag::LoEdge => new_lo = new_hi - 100.0,
-                            PassbandDrag::HiEdge => new_hi = new_lo + 100.0,
+                        match drag_target {
+                            BandDrag::LoEdge => new_lo = new_hi - 100.0,
+                            BandDrag::HiEdge => new_hi = new_lo + 100.0,
                             _ => {}
                         }
                     }
                     self.app.set_rx_filter(r as u8, new_lo as f64, new_hi as f64);
+                }
+
+                // Left-drag on spectrum (outside passband) = VFO fine-tune:
+                // the VFO follows the cursor 1:1 in Hz, snapped to `tune_step`.
+                // The drag anchor is the press origin, so the clicked spot
+                // stays under the cursor (feels like dragging the band).
+                if vfo_drag_active && spec_resp.dragged() && spec_rect.width() > 0.0 {
+                    if let (Some(cur), Some(origin)) =
+                        (spec_resp.interact_pointer_pos(), press_origin)
+                    {
+                        // Pixel-absolute delta against the press origin: stable
+                        // across frames even as center_hz updates, because
+                        // press_origin and start_center are latched and
+                        // visible_span is constant during the drag.
+                        let dx_px = cur.x - origin.x;
+                        let hz_per_px = visible_span / spec_rect.width();
+                        let raw = (self.vfo_drag_start_center[r] as f32
+                            - dx_px * hz_per_px).max(0.0);
+                        let next = snap_to_step(raw, tune_step);
+                        if next != center_hz {
+                            pending_tunes.push((r, next));
+                        }
+                    }
+                }
+
+                // Middle-drag = horizontal pan of the zoomed spectrum.
+                if spec_resp.dragged_by(egui::PointerButton::Middle) {
+                    let delta_x = spec_resp.drag_delta().x;
+                    if delta_x.abs() > 0.0 && spec_rect.width() > 0.0 {
+                        let vis_w_f = (n_bins as f32 * self.view_states[r].z_factor)
+                            .clamp(2.0, n_bins as f32);
+                        let max_lo_f = (n_bins as f32 - vis_w_f).max(1.0);
+                        let bin_delta = -delta_x * vis_w_f / spec_rect.width();
+                        let cur_lo_bin_f = self.view_states[r].p_slider * max_lo_f;
+                        let new_lo_bin_f = (cur_lo_bin_f + bin_delta).clamp(0.0, max_lo_f);
+                        self.view_states[r].p_slider = new_lo_bin_f / max_lo_f;
+                    }
                 }
 
                 // --- Spectrum draw (zoomed slice) ---
@@ -3068,14 +3113,14 @@ impl EguiView {
                         Color32::from_rgba_premultiplied(80, 200, 255, 30),
                     );
                     let lo_col = if hover_lo
-                        || matches!(self.passband_drags[r], PassbandDrag::LoEdge)
+                        || matches!(self.band_drags[r], BandDrag::LoEdge)
                     {
                         Color32::WHITE
                     } else {
                         Color32::from_rgba_premultiplied(0, 0, 200, 200)
                     };
                     let hi_col = if hover_hi
-                        || matches!(self.passband_drags[r], PassbandDrag::HiEdge)
+                        || matches!(self.band_drags[r], BandDrag::HiEdge)
                     {
                         Color32::WHITE
                     } else {
@@ -3329,38 +3374,7 @@ fn handle_tune_input(
     hi_hz: f32,
 ) -> (Option<u32>, bool) {
     let response = ui.interact(rect, id, Sense::click_and_drag());
-
-    let mut new_freq: Option<u32> = None;
-    let clicked = response.clicked() || response.dragged();
-
-    if clicked {
-        if let Some(pos) = response.interact_pointer_pos() {
-            let t = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
-            let click_hz = lo_hz + t * (hi_hz - lo_hz);
-            let next = (click_hz.round() as i64).max(0) as u32;
-            if next != center_hz {
-                new_freq = Some(next);
-            }
-        }
-    }
-
-    if response.hovered() {
-        let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
-        let modifiers = ui.input(|i| i.modifiers);
-        // Ctrl+scroll = zoom (handled in draw_main). Skip tune here.
-        if scroll_y.abs() > 0.5 && !modifiers.ctrl {
-            let step_hz: i64 = if modifiers.shift { 100 } else { 10 };
-            let ticks = (scroll_y / 50.0).round() as i64;
-            let ticks = if ticks == 0 { if scroll_y > 0.0 { 1 } else { -1 } } else { ticks };
-            let base = new_freq.unwrap_or(center_hz) as i64;
-            let next = (base + ticks * step_hz).max(0) as u32;
-            if next as i64 != base {
-                new_freq = Some(next);
-            }
-        }
-    }
-
-    (new_freq, clicked)
+    tune_from_response(&response, ui, rect, center_hz, lo_hz, hi_hz)
 }
 
 /// Extract tune intent from an already-obtained Response (used when
@@ -3376,31 +3390,48 @@ fn tune_from_response(
     hi_hz: f32,
 ) -> (Option<u32>, bool) {
     let mut new_freq: Option<u32> = None;
-    let clicked = response.clicked() || response.dragged();
+    let visible_span = hi_hz - lo_hz;
+    let step = span_to_tune_step_hz(visible_span);
 
+    // Click-to-tune is one-shot on release (no drag): left-drag is reserved
+    // for pan / VFO-marker fine-tune / passband drag in the parent frame.
+    let clicked = response.clicked();
     if clicked {
         if let Some(pos) = response.interact_pointer_pos() {
             let t = ((pos.x - rect.left()) / rect.width()).clamp(0.0, 1.0);
-            let click_hz = lo_hz + t * (hi_hz - lo_hz);
-            let next = (click_hz.round() as i64).max(0) as u32;
+            let click_hz = lo_hz + t * visible_span;
+            let next = snap_to_step(click_hz, step);
             if next != center_hz {
                 new_freq = Some(next);
             }
         }
     }
 
+    // Wheel tuning: consume MouseWheel events directly (no smooth-scroll
+    // divisor that inverts sign near zero on high-res devices). Ctrl/Alt =
+    // zoom, handled in draw_main. Shift = ×10.
     if response.hovered() {
-        let scroll_y = ui.input(|i| i.smooth_scroll_delta.y);
         let modifiers = ui.input(|i| i.modifiers);
-        // Ctrl+scroll = zoom (handled in draw_main). Skip tune here.
-        if scroll_y.abs() > 0.5 && !modifiers.ctrl {
-            let step_hz: i64 = if modifiers.shift { 100 } else { 10 };
-            let ticks = (scroll_y / 50.0).round() as i64;
-            let ticks = if ticks == 0 { if scroll_y > 0.0 { 1 } else { -1 } } else { ticks };
-            let base = new_freq.unwrap_or(center_hz) as i64;
-            let next = (base + ticks * step_hz).max(0) as u32;
-            if next as i64 != base {
-                new_freq = Some(next);
+        if !(modifiers.ctrl || modifiers.alt || modifiers.command) {
+            let wheel_sign: i64 = ui.input(|i| {
+                let mut sum = 0.0_f32;
+                for e in &i.events {
+                    if let egui::Event::MouseWheel { delta, modifiers: m, .. } = e {
+                        if m.ctrl || m.alt || m.command { continue; }
+                        sum += delta.y;
+                    }
+                }
+                if sum > 0.5 { 1 } else if sum < -0.5 { -1 } else { 0 }
+            });
+            if wheel_sign != 0 {
+                let mult: i64 = if modifiers.shift { 10 } else { 1 };
+                let base = new_freq.unwrap_or(center_hz) as i64;
+                let delta = wheel_sign * (step as i64) * mult;
+                let raw = (base + delta).max(0) as f32;
+                let next = snap_to_step(raw, step);
+                if next != center_hz {
+                    new_freq = Some(next);
+                }
             }
         }
     }
@@ -3612,14 +3643,18 @@ fn level_color(db: f32) -> Color32 {
 
 // --- Zoom / pan view state -----------------------------------------------
 
-/// Which part of the filter passband is currently being dragged.
+/// Classifies what a spectrum left-drag is acting on. Determined at
+/// drag start from the press origin's position relative to the VFO
+/// marker and passband edges, and latched until drag end.
 #[derive(Default, Clone, Copy, PartialEq)]
-enum PassbandDrag {
+enum BandDrag {
     #[default]
     None,
     LoEdge,
     HiEdge,
     Center,
+    /// Left-drag anywhere outside a passband edge / center = VFO fine-tune.
+    Vfo,
 }
 
 /// Per-RX display layout. Panafall is the classic spectrum+waterfall view
@@ -3651,18 +3686,36 @@ impl Default for RxViewState {
 
 impl RxViewState {
     /// Return the `[lo_bin, hi_bin)` slice of the spectrum that is
-    /// currently visible given the zoom + pan.
-    ///
-    /// `z_factor = 1.0` → all bins visible (no zoom).
-    /// `z_factor = 0.05` → 5 % of bins visible (20× zoom).
+    /// currently visible given the zoom + pan. `.round()` (not truncation)
+    /// so small pan deltas move by the nearest bin instead of getting
+    /// swallowed until they cross the next floor.
     fn visible_bins(&self, n_bins: usize) -> (usize, usize) {
         let vis = ((n_bins as f32 * self.z_factor) as usize)
             .max(2)
             .min(n_bins);
         let max_lo = n_bins - vis;
-        let lo = ((self.p_slider * max_lo as f32) as usize).min(max_lo);
+        let lo = ((self.p_slider * max_lo as f32).round() as usize).min(max_lo);
         (lo, lo + vis)
     }
+}
+
+/// Round a tuning step to a power of 10 appropriate for the visible
+/// frequency span: roughly `span / 500`, so one click or tick lands on a
+/// nice round value that's small enough to land on a desired frequency.
+/// 4.8 kHz span → 10 Hz; 48 kHz → 100 Hz; 480 kHz → 1 kHz.
+fn span_to_tune_step_hz(visible_span_hz: f32) -> u32 {
+    let target = (visible_span_hz / 500.0).max(1.0);
+    let exp = target.log10().floor().clamp(0.0, 6.0) as u32;
+    10_u32.pow(exp)
+}
+
+/// Snap an absolute frequency (Hz) to the nearest multiple of `step`.
+fn snap_to_step(freq_hz: f32, step: u32) -> u32 {
+    if step <= 1 {
+        return freq_hz.round().max(0.0) as u32;
+    }
+    let s = step as f32;
+    ((freq_hz / s).round() * s).max(0.0) as u32
 }
 
 // --- Frequency axis -------------------------------------------------------
