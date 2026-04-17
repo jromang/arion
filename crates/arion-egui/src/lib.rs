@@ -2545,61 +2545,128 @@ impl EguiView {
             // LED 7-segment frequency display using the DSEG7 Classic
             // font. Renders "14.074.500" in big green digits on a dark
             // background, matching the look of a hardware radio VFO
-            // (Kenwood TS-2000 / Icom IC-7300 style). The DragValue
-            // underneath provides click-to-edit and drag-to-tune.
+            // (Kenwood TS-2000 / Icom IC-7300 style). Clicking a digit
+            // selects it as the active tuning step; the scroll wheel
+            // increments/decrements that digit.
             let freq = state.frequency_hz;
-            let led_bg    = Color32::from_rgb(6, 10, 6);
-            let led_color = Color32::from_rgb(80, 255, 100);
+            let led_bg        = Color32::from_rgb(6, 10, 6);
+            let led_color     = Color32::from_rgb(80, 255, 100);
+            let led_highlight = Color32::WHITE;
             let dseg_font = egui::FontId::new(
                 32.0,
                 egui::FontFamily::Name(FONT_DSEG7.into()),
             );
+
+            // char-index → Hz exponent (None for dots and the
+            // tens-of-MHz digit which is not selectable).
+            const CHAR_TO_EXP: [Option<u8>; 10] = [
+                None,    // [0] tens of MHz
+                Some(6), // [1] 1 MHz
+                None,    // [2] '.'
+                Some(5), // [3] 100 kHz
+                Some(4), // [4] 10 kHz
+                Some(3), // [5] 1 kHz
+                None,    // [6] '.'
+                Some(2), // [7] 100 Hz
+                Some(1), // [8] 10 Hz
+                Some(0), // [9] 1 Hz
+            ];
+
+            let active_exp = self.view_states[rx].tune_step_exp;
 
             egui::Frame::new()
                 .fill(led_bg)
                 .inner_margin(egui::Margin::symmetric(10, 4))
                 .corner_radius(4.0)
                 .show(ui, |ui| {
-                    // Override all text styles to DSEG7 + green for
-                    // this scope. DragValue uses Body or Button style
-                    // depending on whether it's being edited.
-                    for style in [
-                        egui::TextStyle::Body,
-                        egui::TextStyle::Button,
-                        egui::TextStyle::Monospace,
-                    ] {
-                        ui.style_mut().text_styles.insert(style, dseg_font.clone());
-                    }
-                    ui.visuals_mut().widgets.inactive.fg_stroke.color = led_color;
-                    ui.visuals_mut().widgets.hovered.fg_stroke.color  = led_color;
-                    ui.visuals_mut().widgets.active.fg_stroke.color   = led_color;
-                    ui.visuals_mut().widgets.noninteractive.fg_stroke.color = led_color;
-                    // Suppress the bg fill on the DragValue so only
-                    // the dark Frame background shows through.
-                    ui.visuals_mut().widgets.inactive.bg_fill = Color32::TRANSPARENT;
-                    ui.visuals_mut().widgets.hovered.bg_fill  = Color32::TRANSPARENT;
+                    let formatted = format!("{:>2}.{:03}.{:03}",
+                        freq / 1_000_000,
+                        (freq % 1_000_000) / 1_000,
+                        freq % 1_000);
 
-                    let mut freq_f = freq as f64;
-                    let resp = ui.add(
-                        egui::DragValue::new(&mut freq_f)
-                            .range(0.0..=60_000_000.0)
-                            .speed(10.0)
-                            .custom_formatter(|v, _| {
-                                let f = v as u32;
-                                format!("{:>2}.{:03}.{:03}",
-                                    f / 1_000_000,
-                                    (f % 1_000_000) / 1_000,
-                                    f % 1_000)
-                            })
-                            .custom_parser(|s| {
-                                let clean: String = s.chars()
-                                    .filter(|c| c.is_ascii_digit())
-                                    .collect();
-                                clean.parse::<f64>().ok()
-                            }),
+                    // Build a LayoutJob with per-character coloring:
+                    // the active digit is highlighted, others are
+                    // normal green, dots are normal green.
+                    let mut job = egui::text::LayoutJob::default();
+                    for (i, ch) in formatted.chars().enumerate() {
+                        let color = if CHAR_TO_EXP.get(i).copied().flatten() == Some(active_exp) {
+                            led_highlight
+                        } else {
+                            led_color
+                        };
+                        let start = job.text.len();
+                        job.text.push(ch);
+                        let end = job.text.len();
+                        job.sections.push(egui::text::LayoutSection {
+                            leading_space: 0.0,
+                            byte_range: start..end,
+                            format: egui::text::TextFormat {
+                                font_id: dseg_font.clone(),
+                                color,
+                                ..Default::default()
+                            },
+                        });
+                    }
+                    let galley = ui.ctx().fonts_mut(|f| f.layout_job(job));
+
+                    let (rect, response) = ui.allocate_exact_size(
+                        galley.size(),
+                        Sense::click() | Sense::hover(),
                     );
-                    if resp.changed() {
-                        self.app.set_rx_frequency(rx_u8, freq_f.max(0.0) as u32);
+
+                    ui.painter().galley(rect.min, galley.clone(), Color32::TRANSPARENT);
+
+                    // Build per-glyph hit rects from the galley layout.
+                    // Each entry is (screen Rect, char index).
+                    let mut glyph_rects: Vec<(Rect, usize)> = Vec::new();
+                    if let Some(placed) = galley.rows.first() {
+                        let row_y = rect.top() + placed.pos.y;
+                        for (gi, g) in placed.row.glyphs.iter().enumerate() {
+                            let gx = rect.left() + placed.pos.x + g.pos.x;
+                            let gr = Rect::from_min_size(
+                                Pos2::new(gx, row_y),
+                                Vec2::new(g.advance_width, g.line_height),
+                            );
+                            glyph_rects.push((gr, gi));
+                        }
+                    }
+
+                    // Click → select the digit under the cursor as
+                    // the active tuning step using actual glyph rects.
+                    if response.clicked() {
+                        if let Some(pos) = response.interact_pointer_pos() {
+                            for &(gr, ci) in &glyph_rects {
+                                if gr.contains(pos) {
+                                    if let Some(Some(exp)) = CHAR_TO_EXP.get(ci) {
+                                        self.view_states[rx].tune_step_exp = *exp;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    // Scroll on the frequency display → tune by the
+                    // active step (same logic as spectrum scroll).
+                    if response.hovered() {
+                        let wheel_sign: i64 = ui.input(|i| {
+                            let mut sum = 0.0_f32;
+                            for e in &i.events {
+                                if let egui::Event::MouseWheel { delta, modifiers: m, .. } = e {
+                                    if m.ctrl || m.alt || m.command { continue; }
+                                    sum += delta.y;
+                                }
+                            }
+                            if sum > 0.5 { 1 } else if sum < -0.5 { -1 } else { 0 }
+                        });
+                        if wheel_sign != 0 {
+                            let modifiers = ui.input(|i| i.modifiers);
+                            let mult: i64 = if modifiers.shift { 10 } else { 1 };
+                            let step = self.view_states[rx].tune_step_hz() as i64;
+                            let next = ((freq as i64) + wheel_sign * step * mult)
+                                .clamp(0, 60_000_000);
+                            self.app.set_rx_frequency(rx_u8, next as u32);
+                        }
                     }
                 });
 
@@ -2654,9 +2721,26 @@ impl EguiView {
                 self.app.set_rx_nr4(rx_u8, nr4_buf);
             }
 
-            // Status tags (read-only indicators)
             ui.separator();
-            ui.weak("AGC-MED");
+            let mut agc = state.agc_mode;
+            let agc_tag = match agc {
+                AgcPreset::Off  => "AGC-OFF",
+                AgcPreset::Long => "AGC-LONG",
+                AgcPreset::Slow => "AGC-SLOW",
+                AgcPreset::Med  => "AGC-MED",
+                AgcPreset::Fast => "AGC-FAST",
+            };
+            egui::ComboBox::from_id_salt(("agc-tag", rx))
+                .selected_text(agc_tag)
+                .width(70.0)
+                .show_ui(ui, |ui| {
+                    for m in [AgcPreset::Off, AgcPreset::Long, AgcPreset::Slow, AgcPreset::Med, AgcPreset::Fast] {
+                        ui.selectable_value(&mut agc, m, format!("{m:?}"));
+                    }
+                });
+            if agc != state.agc_mode {
+                self.app.set_rx_agc(rx_u8, agc);
+            }
 
             // Inline S-meter: compact bar + S-unit readout, Arion-
             // style multimeter position (right side of VFO row).
@@ -2897,7 +2981,6 @@ impl EguiView {
                 let filter_lo_abs = center_f + rx_state.filter_lo as f32;
                 let filter_hi_abs = center_f + rx_state.filter_hi as f32;
                 let visible_span  = hi_hz - lo_hz;
-                let tune_step = span_to_tune_step_hz(visible_span);
 
                 // Pixel x of each filter edge (clamped to spec_rect)
                 let (x_flo, x_fhi) = if visible_span > 0.0 && filter_hi_abs > filter_lo_abs {
@@ -3012,7 +3095,7 @@ impl EguiView {
                         let hz_per_px = visible_span / spec_rect.width();
                         let raw = (self.vfo_drag_start_center[r] as f32
                             - dx_px * hz_per_px).max(0.0);
-                        let next = snap_to_step(raw, tune_step);
+                        let next = snap_to_step(raw, 1);
                         if next != center_hz {
                             pending_tunes.push((r, next));
                         }
@@ -3191,9 +3274,10 @@ impl EguiView {
                         ui.close();
                     }
                 });
+                let tune_step = self.view_states[r].tune_step_hz();
                 if show_spec && !passband_active {
                     let (new_freq, clicked) = tune_from_response(
-                        &spec_resp, ui, spec_rect, center_hz, lo_hz, hi_hz,
+                        &spec_resp, ui, spec_rect, center_hz, lo_hz, hi_hz, tune_step,
                     );
                     if let Some(f) = new_freq { pending_tunes.push((r, f)); }
                     if clicked { newly_active = Some(r); }
@@ -3203,7 +3287,7 @@ impl EguiView {
                     let (new_freq, clicked) = handle_tune_input(
                         ui, water_rect,
                         egui::Id::new(("water-tune", r)),
-                        center_hz, lo_hz, hi_hz,
+                        center_hz, lo_hz, hi_hz, tune_step,
                     );
                     if let Some(f) = new_freq { pending_tunes.push((r, f)); }
                     if clicked { newly_active = Some(r); }
@@ -3372,9 +3456,10 @@ fn handle_tune_input(
     center_hz: u32,
     lo_hz: f32,
     hi_hz: f32,
+    step: u32,
 ) -> (Option<u32>, bool) {
     let response = ui.interact(rect, id, Sense::click_and_drag());
-    tune_from_response(&response, ui, rect, center_hz, lo_hz, hi_hz)
+    tune_from_response(&response, ui, rect, center_hz, lo_hz, hi_hz, step)
 }
 
 /// Extract tune intent from an already-obtained Response (used when
@@ -3388,10 +3473,10 @@ fn tune_from_response(
     center_hz: u32,
     lo_hz: f32,
     hi_hz: f32,
+    step: u32,
 ) -> (Option<u32>, bool) {
     let mut new_freq: Option<u32> = None;
     let visible_span = hi_hz - lo_hz;
-    let step = span_to_tune_step_hz(visible_span);
 
     // Click-to-tune is one-shot on release (no drag): left-drag is reserved
     // for pan / VFO-marker fine-tune / passband drag in the parent frame.
@@ -3676,15 +3761,21 @@ struct RxViewState {
     z_factor: f32,
     /// Pan position ∈ [0, 1].  0 = anchored at left edge; 1 = right edge.
     p_slider: f32,
+    /// Tuning-step exponent 0..6 → 10^exp Hz (1 Hz .. 1 MHz).
+    tune_step_exp: u8,
 }
 
 impl Default for RxViewState {
     fn default() -> Self {
-        RxViewState { z_factor: 1.0, p_slider: 0.5 }
+        RxViewState { z_factor: 1.0, p_slider: 0.5, tune_step_exp: 2 }
     }
 }
 
 impl RxViewState {
+    fn tune_step_hz(&self) -> u32 {
+        10_u32.pow(self.tune_step_exp as u32)
+    }
+
     /// Return the `[lo_bin, hi_bin)` slice of the spectrum that is
     /// currently visible given the zoom + pan. `.round()` (not truncation)
     /// so small pan deltas move by the nearest bin instead of getting
@@ -3697,16 +3788,6 @@ impl RxViewState {
         let lo = ((self.p_slider * max_lo as f32).round() as usize).min(max_lo);
         (lo, lo + vis)
     }
-}
-
-/// Round a tuning step to a power of 10 appropriate for the visible
-/// frequency span: roughly `span / 500`, so one click or tick lands on a
-/// nice round value that's small enough to land on a desired frequency.
-/// 4.8 kHz span → 10 Hz; 48 kHz → 100 Hz; 480 kHz → 1 kHz.
-fn span_to_tune_step_hz(visible_span_hz: f32) -> u32 {
-    let target = (visible_span_hz / 500.0).max(1.0);
-    let exp = target.log10().floor().clamp(0.0, 6.0) as u32;
-    10_u32.pow(exp)
 }
 
 /// Snap an absolute frequency (Hz) to the nearest multiple of `step`.
